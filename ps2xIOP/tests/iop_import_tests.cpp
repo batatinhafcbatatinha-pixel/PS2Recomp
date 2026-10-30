@@ -328,10 +328,71 @@ namespace
     }
 }
 
+bool testReverseRpcCompletion()
+{
+    using namespace ps2x::iop;
+    using namespace ps2x::iop::detail;
+    class Host final : public NullHost
+    {
+    public:
+        bool bound = false;
+        std::function<void(const void *, uint32_t)> completion;
+        bool canBindEeRpc(uint32_t sid) const override { return bound && sid == 0x12344321u; }
+        bool callEeRpc(uint32_t sid, uint32_t function, const void *data, uint32_t size,
+                       uint32_t replySize, std::function<void(const void *, uint32_t)> done) override
+        {
+            if (sid != 0x12344321u || function != 7u || size != 4u || replySize != 4u) return false;
+            uint32_t word = 0; std::memcpy(&word, data, 4);
+            if (word != 0x11223344u) return false;
+            completion = std::move(done);
+            return true;
+        }
+    } host;
+    IopMemory memory;
+    IopKernel kernel(memory);
+    kernel.reset();
+    IopRpcBridge bridge(host, memory, kernel);
+    if (!expect(memory.allocate(0x2000u, 16u, 0x130000u) == 0x130000u, "test RPC RAM allocation failed")) return false;
+    IopCpuState control{};
+    control.gpr[4] = 0x1000u;
+    memory.write32(0x1008u, 0x2000u);
+    memory.write32(0x100cu, 0x400u);
+    memory.write32(0x1010u, 0x40u);
+    if (!kernel.dispatchThreadImport(4u, control, 0u)) return false;
+    const uint32_t id = control.gpr[2];
+    control.gpr[4] = id;
+    if (!kernel.dispatchThreadImport(6u, control, 0u)) return false;
+    auto *thread = kernel.beginNextReady(0u);
+    if (!expect(thread != nullptr, "reverse RPC thread did not start")) return false;
+    auto &cpu = thread->cpu;
+    cpu.gpr[4] = 0x130000u; cpu.gpr[5] = 0x12344321u;
+    (void)bridge.dispatchSifCmdImport(15u, cpu);
+    if (!expect(memory.read32(0x130024u) == 0u, "bind succeeded before EE registration")) return false;
+    host.bound = true;
+    (void)bridge.dispatchSifCmdImport(15u, cpu);
+    if (!expect(memory.read32(0x130024u) != 0u, "bind ignored registered EE server")) return false;
+    cpu.gpr[5] = 7u; cpu.gpr[6] = 0u; cpu.gpr[7] = 0x130100u;
+    memory.write32(0x130100u, 0x11223344u);
+    cpu.gpr[29] = 0x131000u;
+    memory.write32(cpu.gpr[29] + 16u, 4u);
+    memory.write32(cpu.gpr[29] + 20u, 0x130200u);
+    memory.write32(cpu.gpr[29] + 24u, 4u);
+    (void)bridge.dispatchSifCmdImport(16u, cpu);
+    kernel.endTimeslice(*thread, 0xffffffffu);
+    if (!expect(bool(host.completion), "EE RPC was not queued") ||
+        !expect(kernel.beginNextReady(1u) == nullptr, "IOP resumed before EE reply")) return false;
+    const uint32_t reply = 0xaabbccddu;
+    host.completion(&reply, 4u);
+    thread = kernel.beginNextReady(2u);
+    return expect(thread && thread->id == static_cast<int>(id), "reply did not wake RPC owner") &&
+           expect(memory.read32(0x130200u) == reply, "EE reply was not copied into IOP RAM") &&
+           expect(thread->cpu.gpr[2] == 0u, "completed RPC returned failure");
+}
+
 int main()
 {
     if (!testLoadcoreRebootLibraryMode() || !testCdvdSpecialControl() || !testCdvdSearchFile() ||
-        !testTimrmanPeriodicCallback())
+        !testTimrmanPeriodicCallback() || !testReverseRpcCompletion())
         return 1;
     std::cout << "ps2xIOP import tests passed\n";
     return 0;

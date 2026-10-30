@@ -2,6 +2,7 @@
 
 #include "../core/iop_cpu.h"
 #include "../core/iop_memory.h"
+#include "iop_format.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -124,15 +125,22 @@ namespace ps2x::iop::detail
         case 18: // prnt
             setV0(0);
             return true;
-        case 19: // sprintf: preserve useful literal formats even before full vararg formatting.
-        case 42: // vsprintf fallback: copy format literal.
+        case 19: // sprintf(buffer, format, ...)
+        case 42: // vsprintf(buffer, format, va_list)
         {
             const std::string format = m_memory.readString(a1, 4096u);
-            for (size_t i = 0; i <= format.size(); ++i)
+            uint32_t argIndex = 0u;
+            const uint32_t stack = cpu.gpr[29];
+            const std::string text = formatIopString(m_memory, format, [&]() -> uint32_t
             {
-                m_memory.write8(a0 + static_cast<uint32_t>(i), i < format.size() ? static_cast<uint8_t>(format[i]) : 0u);
-            }
-            setV0(static_cast<uint32_t>(format.size()));
+                const uint32_t index = argIndex++;
+                if (ordinal == 42u)
+                    return m_memory.read32(a2 + index * 4u);
+                return index == 0u ? a2 : index == 1u ? cpu.gpr[7] : m_memory.read32(stack + 0x10u + (index - 2u) * 4u);
+            });
+            for (size_t i = 0; i <= text.size(); ++i)
+                m_memory.write8(a0 + static_cast<uint32_t>(i), i < text.size() ? static_cast<uint8_t>(text[i]) : 0u);
+            setV0(static_cast<uint32_t>(text.size()));
             return true;
         }
         case 20:

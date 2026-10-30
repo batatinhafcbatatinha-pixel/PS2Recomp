@@ -1,4 +1,6 @@
+#include <cstdlib>
 #include "iop_cdvd.h"
+#include <iostream>
 
 #include "../core/iop_cpu.h"
 #include "../core/iop_kernel.h"
@@ -594,12 +596,110 @@ namespace ps2x::iop::detail
             return &nodes[current];
         }
 
+        // Looks the path up in the real disc image's ISO9660 tree. readSectors serves the image when one is
+        // configured, so sceCdSearchFile must report LSNs of that same image: the virtual ISO built from the
+        // extracted files has another layout (Ben10's DATA.PAK: LSN 0x18 there, 0x98F on the disc), and the EE's
+        // native sceCdSt* streams read the image (intro FMV started 0x977 sectors early).
+        bool searchImage(std::string_view guestPath, uint32_t &lsn, uint32_t &size, bool &directory, std::string &leaf)
+        {
+            const std::string imagePath = host.hostPath(HostPathKind::CdImage);
+            if (imagePath.empty())
+                return false;
+            if (imageHandle == 0u)
+                imageHandle = host.openHostFile(imagePath);
+            if (imageHandle == 0u)
+                return false;
+            const auto readImage = [&](uint64_t offset, void *destination, size_t bytes)
+            {
+                size_t bytesRead = 0u;
+                return host.readHostFile(imageHandle, offset, destination, bytes, bytesRead) && bytesRead == bytes;
+            };
+            std::array<uint8_t, kSectorSize> pvd{};
+            if (!readImage(16ull * kSectorSize, pvd.data(), pvd.size()) || pvd[0] != 1u ||
+                std::memcmp(pvd.data() + 1u, "CD001", 5u) != 0)
+                return false;
+            const auto le32 = [](const uint8_t *p)
+            { return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                     (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24); };
+            lsn = le32(pvd.data() + 156u + 2u);
+            size = le32(pvd.data() + 156u + 10u);
+            directory = true;
+            leaf.clear();
+
+            const ParsedPs2Path parsed = parsePs2Path(guestPath);
+            if (!parsed || parsed.device != Ps2PathDevice::Cdrom)
+                return false;
+            size_t begin = 0u;
+            while (begin <= parsed.path.size())
+            {
+                const size_t end = parsed.path.find('/', begin);
+                const size_t length = (end == std::string::npos) ? parsed.path.size() - begin : end - begin;
+                const std::string_view component(parsed.path.data() + begin, length);
+                begin = (end == std::string::npos) ? parsed.path.size() + 1u : end + 1u;
+                if (component.empty() || component == ".")
+                    continue;
+                if (!directory || size == 0u || size > 16u * 1024u * 1024u)
+                    return false;
+                const std::string wanted = normalizedIsoComponent(component);
+                std::vector<uint8_t> records(size);
+                if (!readImage(static_cast<uint64_t>(lsn) * kSectorSize, records.data(), records.size()))
+                    return false;
+                bool found = false;
+                for (size_t offset = 0u; offset < records.size();)
+                {
+                    const uint8_t recordLength = records[offset];
+                    if (recordLength == 0u)
+                    {
+                        offset = (offset / kSectorSize + 1u) * kSectorSize; // records never cross a sector
+                        continue;
+                    }
+                    if (offset + 33u > records.size() || offset + recordLength > records.size())
+                        break;
+                    const uint8_t nameLength = records[offset + 32u];
+                    const std::string identifier(reinterpret_cast<const char *>(records.data() + offset + 33u),
+                                                 std::min<size_t>(nameLength, recordLength - 33u));
+                    if (nameLength > 1u || (nameLength == 1u && identifier[0] > 1))
+                    {
+                        if (normalizedIsoComponent(identifier) == wanted)
+                        {
+                            lsn = le32(records.data() + offset + 2u);
+                            size = le32(records.data() + offset + 10u);
+                            directory = (records[offset + 25u] & 2u) != 0u;
+                            leaf = normalizedIsoComponent(identifier);
+                            found = true;
+                            break;
+                        }
+                    }
+                    offset += recordLength;
+                }
+                if (!found)
+                    return false;
+            }
+            return true;
+        }
+
         bool searchFile(uint32_t resultAddress, uint32_t nameAddress)
         {
             if (resultAddress == 0u || nameAddress == 0u)
                 return false;
 
             const std::string guestPath = memory.readString(nameAddress, 1024u);
+            {
+                uint32_t lsn = 0u, size = 0u;
+                bool directory = false;
+                std::string leaf;
+                if (searchImage(guestPath, lsn, size, directory, leaf))
+                {
+                    std::array<uint8_t, 32u> result{};
+                    writeLe32(result.data(), lsn);
+                    writeLe32(result.data() + 4u, size);
+                    std::memcpy(result.data() + 8u, leaf.data(), std::min<size_t>(16u, leaf.size()));
+                    result[24u] = directory ? 2u : 0u;
+                    return memory.writeRam(resultAddress, result.data(), result.size());
+                }
+                if (!host.hostPath(HostPathKind::CdImage).empty())
+                    return false; // the image is authoritative; don't mix in LSNs of the virtual layout
+            }
             IsoNode *node = findVirtualIsoNode(guestPath);
             if (!node)
                 return false;
@@ -653,6 +753,10 @@ namespace ps2x::iop::detail
 
         bool readSectors(uint32_t lsn, uint32_t sectors, uint32_t destination)
         {
+            static unsigned readProbe = 0;
+            if (++readProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+                std::cerr << "[ff-iop-cd] lsn=" << lsn << " sectors=" << sectors
+                          << " dest=0x" << std::hex << destination << std::dec << std::endl;
             if (sectors == 0u)
             {
                 lastError = kCdvdErrorNone;

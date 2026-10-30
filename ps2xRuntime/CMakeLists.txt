@@ -10,6 +10,14 @@ set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 32 CACHE STRING "Unity build batch size f
 option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2EntryRunner" ON)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
+option(PS2X_ENABLE_CODWAW_SUPPLEMENTS "Include private Final Fronts code supplements and address hooks" ON)
+option(PS2X_REQUIRE_GPU_RASTERIZER "Reject software rasterizer fallback" OFF)
+option(PS2X_GPU_COMPUTE_SCANOUT "Decode and composite display scanout on the GPU" OFF)
+option(PS2X_GPU_TEXTURE_HANDOFF "Present a shared GL texture without RGBA CPU roundtrip" OFF)
+if(PS2X_GPU_TEXTURE_HANDOFF AND NOT PS2X_GPU_COMPUTE_SCANOUT)
+    message(FATAL_ERROR "PS2X_GPU_TEXTURE_HANDOFF requires PS2X_GPU_COMPUTE_SCANOUT")
+endif()
+
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" ON)
 option(PS2X_ENABLE_AGRESSIVE_LOGS "Enable very verbose/agressive PS2 runtime logs" ON)
 option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
@@ -260,12 +268,24 @@ elseif(WIN32)
     set(FFMPEG_PREBUILT_URL
         "https://github.com/System233/ffmpeg-msvc-prebuilt/releases/download/${FFMPEG_PREBUILT_TAG}/ffmpeg-${FFMPEG_PREBUILT_TAG}-lgpl-amd64-shared.zip")
 
+    set(PS2X_FFMPEG_ROOT "" CACHE PATH "Existing extracted Windows FFmpeg package (no download)")
     set(FFMPEG_PREFIX_DIR "${CMAKE_BINARY_DIR}/ThirdParty/ffmpeg-prefix")
-    set(FFMPEG_SOURCE_DIR "${FFMPEG_PREFIX_DIR}/src/ffmpeg_external")
+    if(PS2X_FFMPEG_ROOT)
+        set(FFMPEG_SOURCE_DIR "${PS2X_FFMPEG_ROOT}")
+        if(NOT EXISTS "${FFMPEG_SOURCE_DIR}/include/libavcodec/avcodec.h" OR
+           NOT EXISTS "${FFMPEG_SOURCE_DIR}/bin/avcodec.lib")
+            message(FATAL_ERROR "PS2X_FFMPEG_ROOT must contain include/libavcodec/avcodec.h and bin/avcodec.lib")
+        endif()
+    else()
+        set(FFMPEG_SOURCE_DIR "${FFMPEG_PREFIX_DIR}/src/ffmpeg_external")
+    endif()
     set(FFMPEG_INCLUDE_DIR "${FFMPEG_SOURCE_DIR}/include")
     set(FFMPEG_LIB_DIR "${FFMPEG_SOURCE_DIR}/bin")
     set(FFMPEG_BIN_DIR "${FFMPEG_SOURCE_DIR}/bin")
 
+    if(PS2X_FFMPEG_ROOT)
+        add_custom_target(ffmpeg_external)
+    else()
     ExternalProject_Add(ffmpeg_external
         URL "${FFMPEG_PREBUILT_URL}"
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -280,6 +300,8 @@ elseif(WIN32)
         "${FFMPEG_LIB_DIR}/swresample.lib"
         "${FFMPEG_LIB_DIR}/swscale.lib"
     )
+
+    endif()
 
     # Link against the import libraries shipped with the Windows DLLs.
     add_library(ffmpeg_avcodec STATIC IMPORTED GLOBAL)
@@ -383,9 +405,16 @@ add_library(ps2_runtime STATIC
     src/lib/gs/ps2_gs_memory.cpp
     src/lib/gs/gs_frontend.cpp
     src/lib/gs/gs_cpu_backend.cpp
+    src/lib/gs/gs_gpu_backend.cpp
+    src/lib/gs/gs_swizzle.cpp
+    src/lib/gs/gs_threaded_backend.cpp
+    src/lib/gs/gpu/gs_gl.cpp
+    src/lib/gs/gpu/gs_hw_backend.cpp
+    src/lib/gs/gpu/gs_texture_store.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
+    src/lib/ps2_profiler.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
@@ -396,6 +425,12 @@ add_library(ps2_runtime STATIC
     src/lib/games_database.cpp
 )
 
+# Per-source definitions avoid invalidating the generated game's heavy PCH.
+set_source_files_properties(src/lib/ps2_runtime.cpp PROPERTIES
+    COMPILE_DEFINITIONS "PS2X_REQUIRE_GPU_RASTERIZER=$<BOOL:${PS2X_REQUIRE_GPU_RASTERIZER}>")
+set_source_files_properties(src/lib/gs/gs_gpu_backend.cpp PROPERTIES
+    COMPILE_DEFINITIONS "PS2X_GPU_COMPUTE_SCANOUT=$<BOOL:${PS2X_GPU_COMPUTE_SCANOUT}>;PS2X_GPU_TEXTURE_HANDOFF=$<BOOL:${PS2X_GPU_TEXTURE_HANDOFF}>")
+
 if(PS2X_ENABLE_RUNTIME_LOGS)
     target_compile_definitions(ps2_runtime PUBLIC
         PS2_RUNTIME_LOGS=1
@@ -405,6 +440,14 @@ endif()
 if(PS2X_ENABLE_AGRESSIVE_LOGS)
     target_compile_definitions(ps2_runtime PUBLIC
         AGRESSIVE_LOGS=1
+    )
+endif()
+
+# Per-function enter/exit tracing in every recompiled function. Costly even with
+# the stream disabled, so it is a separate opt-in for tracing sessions.
+option(PS2X_FUNCTION_LOG_TRACKER "Trace entry/exit of every recompiled function" OFF)
+if(PS2X_FUNCTION_LOG_TRACKER)
+    target_compile_definitions(ps2_runtime PUBLIC
         PS2_FUNCTION_LOG_TRACKER=1
     )
 endif()
@@ -433,15 +476,42 @@ file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
 )
 
+# Private, independently compiled overlay supplements. Keep them out of the
+# runtime translation unit so ordinary runtime edits retain short build times.
+if(PS2X_ENABLE_CODWAW_SUPPLEMENTS)
+file(GLOB CODWAW_OVERLAY_SRC_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/codwaw_*_chunk_*.cpp"
+)
+endif()
+target_compile_definitions(ps2_runtime PRIVATE PS2X_ENABLE_CODWAW_SUPPLEMENTS=$<BOOL:${PS2X_ENABLE_CODWAW_SUPPLEMENTS}>)
+
+if(MSVC AND CODWAW_OVERLAY_SRC_FILES)
+    set_source_files_properties(${CODWAW_OVERLAY_SRC_FILES} PROPERTIES COMPILE_OPTIONS "/Ob1")
+endif()
+
 target_sources(ps2_runtime PRIVATE
     ${KERNEL_SRC_FILES}
+    ${CODWAW_OVERLAY_SRC_FILES}
 )
 
-file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/*.cpp"
-)
+set(PS2X_RUNNER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/runner" CACHE PATH "Directory holding the generated recompiled sources")
 
-set(RUNNER_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/main.cpp")
+# Optional directory of chunk files that #include the generated sources in groups
+# (see make_chunks.py). CMake then sees ~2.5k sources instead of ~80k, which turns a
+# ~17 minute generate step (and the per-build glob check) into seconds.
+set(PS2X_GAME_CHUNK_DIR "" CACHE PATH "Directory of chunk files that include the generated sources")
+
+if(PS2X_GAME_CHUNK_DIR)
+    file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
+        "${PS2X_GAME_CHUNK_DIR}/*.cpp"
+    )
+else()
+    file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
+        "${PS2X_RUNNER_DIR}/*.cpp"
+    )
+endif()
+
+set(RUNNER_MAIN_CPP "${PS2X_RUNNER_DIR}/main.cpp")
 set(ROOT_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
 if(EXISTS "${RUNNER_MAIN_CPP}")
@@ -450,29 +520,63 @@ elseif(EXISTS "${ROOT_MAIN_CPP}")
     list(APPEND RUNNER_SRC_FILES "${ROOT_MAIN_CPP}")
 endif()
 
-if(PS2X_IS_ANDROID)
+# Generated game code lives in its own static library so runtime edits do not
+# recompile ~80k translated functions. PS2X_GAME_LIB_PREBUILT links a saved copy
+# of that library instead of depending on the ps2_game_code target.
+if(WIN32 AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
+    set(PS2X_SPLIT_GAME_CODE_DEFAULT ON)
+else()
+    set(PS2X_SPLIT_GAME_CODE_DEFAULT OFF)
+endif()
+option(PS2X_SPLIT_GAME_CODE "Build generated sources as the ps2_game_code static library" ${PS2X_SPLIT_GAME_CODE_DEFAULT})
+set(PS2X_GAME_LIB_PREBUILT "" CACHE FILEPATH "Prebuilt ps2_game_code library to link instead of the ps2_game_code target")
+
+if(PS2X_SPLIT_GAME_CODE)
+    set(PS2X_GAME_SRC_FILES ${RUNNER_SRC_FILES})
+    list(REMOVE_ITEM PS2X_GAME_SRC_FILES "${RUNNER_MAIN_CPP}" "${ROOT_MAIN_CPP}")
+    set(PS2X_ENTRY_SRC_FILES ${RUNNER_SRC_FILES})
+    list(REMOVE_ITEM PS2X_ENTRY_SRC_FILES ${PS2X_GAME_SRC_FILES})
+    list(REMOVE_DUPLICATES PS2X_ENTRY_SRC_FILES)
+
+    add_library(ps2_game_code STATIC ${PS2X_GAME_SRC_FILES})
+    add_executable(ps2EntryRunner ${PS2X_ENTRY_SRC_FILES})
+    set(PS2X_GAME_CODE_TARGET ps2_game_code)
+elseif(PS2X_IS_ANDROID)
     add_library(ps2EntryRunner SHARED
         ${RUNNER_SRC_FILES}
     )
 
     target_link_options(ps2EntryRunner PRIVATE "-Wl,--undefined=ANativeActivity_onCreate")
+    set(PS2X_GAME_CODE_TARGET ps2EntryRunner)
 else()
     add_executable(ps2EntryRunner
         ${RUNNER_SRC_FILES}
     )
+    set(PS2X_GAME_CODE_TARGET ps2EntryRunner)
 endif()
 
-if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
-    set_target_properties(ps2EntryRunner PROPERTIES
+# Chunk files are already hand-made unity batches.
+if(PS2X_ENABLE_RUNNER_UNITY_BUILD AND NOT PS2X_GAME_CHUNK_DIR)
+    set_target_properties(${PS2X_GAME_CODE_TARGET} PROPERTIES
         UNITY_BUILD ON
         UNITY_BUILD_BATCH_SIZE "${PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE}"
     )
 endif()
 
+# Optional frozen header snapshot for the generated game code (see
+# codwaw-ff/scripts/sync_game_abi.py): runtime-only header edits then do not
+# invalidate the precompiled header or the ~2.8k game-code objects.
+set(PS2X_GAME_ABI_DIR "" CACHE PATH "Frozen runtime header snapshot used only by the game code")
+if(PS2X_GAME_ABI_DIR AND EXISTS "${PS2X_GAME_ABI_DIR}/runtime-include/ps2_runtime.h")
+    set(PS2X_GAME_HEADER_ROOT "${PS2X_GAME_ABI_DIR}/runtime-include")
+else()
+    set(PS2X_GAME_HEADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/include")
+endif()
+
 if(PS2X_ENABLE_RUNNER_PCH)
     set(PS2X_RUNNER_PCH_HEADERS
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_runtime_macros.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_runtime.h"
+        "${PS2X_GAME_HEADER_ROOT}/ps2_runtime_macros.h"
+        "${PS2X_GAME_HEADER_ROOT}/ps2_runtime.h"
     )
 
     foreach(PS2X_RUNNER_GENERATED_HEADER IN ITEMS
@@ -484,11 +588,58 @@ if(PS2X_ENABLE_RUNNER_PCH)
     endforeach()
 
     list(APPEND PS2X_RUNNER_PCH_HEADERS
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_syscalls.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_stubs.h"
+        "${PS2X_GAME_HEADER_ROOT}/ps2_syscalls.h"
+        "${PS2X_GAME_HEADER_ROOT}/ps2_stubs.h"
     )
 
-    target_precompile_headers(ps2EntryRunner PRIVATE ${PS2X_RUNNER_PCH_HEADERS})
+    target_precompile_headers(${PS2X_GAME_CODE_TARGET} PRIVATE ${PS2X_RUNNER_PCH_HEADERS})
+endif()
+
+if(PS2X_SPLIT_GAME_CODE)
+    target_link_libraries(ps2_game_code PRIVATE ps2_runtime)
+    target_include_directories(ps2_game_code PRIVATE "${PS2X_RUNNER_DIR}")
+    if(NOT PS2X_GAME_HEADER_ROOT STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        target_include_directories(ps2_game_code BEFORE PRIVATE
+            "${PS2X_GAME_ABI_DIR}/runtime-include"
+            "${PS2X_GAME_ABI_DIR}/kernel"
+            "${PS2X_GAME_ABI_DIR}/iop-include"
+        )
+    endif()
+    if(MSVC)
+        target_compile_options(ps2_game_code PRIVATE /FS /bigobj)
+    endif()
+    # The function-table initializer is ~400k lines of plain stores: optimizing it
+    # only costs compile time.
+    set(PS2X_GAME_REGISTER_SRC "${PS2X_GAME_CHUNK_DIR}/chunk_register.cpp")
+    if(PS2X_GAME_CHUNK_DIR AND EXISTS "${PS2X_GAME_REGISTER_SRC}" AND MSVC)
+        set_source_files_properties("${PS2X_GAME_REGISTER_SRC}" PROPERTIES
+            SKIP_PRECOMPILE_HEADERS ON
+            COMPILE_OPTIONS "/Od"
+        )
+    elseif(PS2X_GAME_CHUNK_DIR AND EXISTS "${PS2X_GAME_REGISTER_SRC}")
+        set_source_files_properties("${PS2X_GAME_REGISTER_SRC}" PROPERTIES
+            SKIP_PRECOMPILE_HEADERS ON
+            COMPILE_OPTIONS "-O0"
+        )
+    endif()
+    if(PS2X_GAME_LIB_PREBUILT)
+        target_link_libraries(ps2EntryRunner PRIVATE "${PS2X_GAME_LIB_PREBUILT}")
+    else()
+        target_link_libraries(ps2EntryRunner PRIVATE ps2_game_code)
+    endif()
+endif()
+
+# Native VU1 blocks generated by vu1n_gen.py from captured microcode (game data, not published).
+# The blocks register themselves at static initialisation, so they are compiled into the executable.
+set(PS2X_VU1N_DIR "" CACHE PATH "Folder with generated vu1n_part*.cpp (empty: exact engine only)")
+if(PS2X_VU1N_DIR)
+    file(GLOB PS2X_VU1N_PARTS CONFIGURE_DEPENDS "${PS2X_VU1N_DIR}/vu1n_part*.cpp")
+    if(PS2X_VU1N_PARTS)
+        target_sources(ps2EntryRunner PRIVATE ${PS2X_VU1N_PARTS})
+        if(MSVC)
+            set_source_files_properties(${PS2X_VU1N_PARTS} PROPERTIES COMPILE_OPTIONS "/bigobj")
+        endif()
+    endif()
 endif()
 
 if(PS2X_DEFAULT_BOOT_ELF_DEFINE)
@@ -507,10 +658,23 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+# The runtime and generated code use SSE4.1 intrinsics (_mm_extract_epi32/64, blends). MSVC accepts them
+# unconditionally; GCC/Clang need the target feature enabled for every consumer of the headers.
+if(NOT MSVC AND NOT PS2X_IS_ARM_TARGET AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i.86")
+    target_compile_options(ps2_runtime PUBLIC -msse4.1)
+endif()
+if(WIN32)
+    # Native GS renderer (gs/gpu): its own WGL context on the GS thread.
+    target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
+    target_link_libraries(ps2_runtime PRIVATE OpenGL::EGL OpenGL::OpenGL ${CMAKE_DL_LIBS})
+endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime
 )
+target_include_directories(ps2EntryRunner PRIVATE "${PS2X_RUNNER_DIR}")
 
 if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
     target_sources(ps2EntryRunner PRIVATE
@@ -557,6 +721,9 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
     EnableFastReleaseMode(ps2_runtime)
     EnableFastReleaseMode(ps2EntryRunner)
+    if(PS2X_SPLIT_GAME_CODE)
+        EnableFastReleaseMode(ps2_game_code)
+    endif()
 
     if(WIN32 AND NOT PS2X_SHOW_WINDOWS_CONSOLE)
         if(MSVC)
@@ -575,6 +742,8 @@ endif()
 # Work around WinAPI vs raylib symbol clash for CloseWindow on x64
 if(MSVC)
     target_link_options(ps2EntryRunner PRIVATE "/FORCE:MULTIPLE")
+    # Function address map for the built-in sampling profiler (PS2X_PROFILE=1).
+    target_link_options(ps2EntryRunner PRIVATE "/MAP:$<TARGET_FILE_DIR:ps2EntryRunner>/ps2EntryRunner.map")
 endif()
 
 # Vita: Work around for GCC 10's LTO plugin

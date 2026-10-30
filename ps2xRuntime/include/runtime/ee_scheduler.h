@@ -264,6 +264,8 @@ public:
     static constexpr int kLastThreadId = 255;
     static constexpr int kPriorityCount = 128;
     static constexpr uint64_t kEeClockHz = 294912000ull;
+    static constexpr uint64_t kHostSampleCycles = 4096ull;
+    static constexpr uint64_t kMaxHostCatchUpCycles = kEeClockHz / 60ull;
     static constexpr uint32_t kGeneratedCheckpointCycles = 32u;
     static constexpr uint32_t kGuestDispatchCycles = 8u;
     static constexpr uint64_t kDefaultTimeSliceCycles = 65536ull;
@@ -453,4 +455,10 @@ private:
     mutable std::mutex m_snapshotMutex;
     EeKernelSnapshot m_snapshot;
     uint64_t m_snapshotSequence = 0;
+    // Native timeline: guest EE cycles follow host steady_clock while run() executes.
+    std::chrono::steady_clock::time_point m_hostEpoch{};
+    uint64_t m_hostSampleCycles = 0;
+    // CP0 Count is one counter for the whole EE: every guest context mirrors it, so a
+    // thread created later never reads a different epoch than the one that stored a base.
+    uint32_t m_globalCount = 0;
 };

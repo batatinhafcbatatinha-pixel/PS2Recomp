@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <functional>
 
 namespace ps2x::iop
 {
@@ -110,6 +111,10 @@ namespace ps2x::iop
         virtual int32_t memoryCard(const MemoryCardRequest &request) = 0;
 
         virtual bool hasGuestFunction(uint32_t address) const = 0;
+        virtual bool canBindEeRpc(uint32_t sid) const { (void)sid; return false; }
+        virtual bool callEeRpc(uint32_t sid, uint32_t function, const void *data, uint32_t size,
+                               uint32_t replySize, std::function<void(const void *, uint32_t)> complete)
+        { (void)sid; (void)function; (void)data; (void)size; (void)replySize; (void)complete; return false; }
         virtual bool invokeGuestFunction(uint64_t callToken,
                                          uint32_t address,
                                          uint32_t a0,

@@ -410,6 +410,82 @@ void register_ps2_memory_tests()
             t.IsTrue(matches, "MPG num=0 should copy 2048 bytes into VU1 code memory");
         });
 
+        tc.Run("VIF1 MPG split across transfers completes in order", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x4Au, 4u, 2u)); // MPG 4 instructions at VU byte 0x10
+            for (uint32_t i = 0; i < 32u; ++i)
+                packet.push_back(static_cast<uint8_t>(0x40u + i));
+            appendU32(packet, makeVifCmd(0x00u, 0u, 0u)); // NOP after the payload
+
+            std::memset(mem.getVU1Code(), 0, PS2_VU1_CODE_SIZE);
+            mem.processVIF1Data(packet.data(), 12u);
+            mem.processVIF1Data(packet.data() + 12u, static_cast<uint32_t>(packet.size()) - 12u);
+
+            const uint8_t *vu1Code = mem.getVU1Code();
+            bool matches = true;
+            for (uint32_t i = 0; i < 32u; ++i)
+                matches = matches && vu1Code[0x10u + i] == static_cast<uint8_t>(0x40u + i);
+            t.IsTrue(matches, "split MPG payload should land contiguously at its destination");
+            t.Equals(static_cast<uint32_t>(vu1Code[0x30u]), 0u, "bytes after the MPG should stay untouched");
+        });
+
+        tc.Run("VIF1 UNPACK with CL=0 fills from ROW and consumes no data", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+
+            // Pattern used by the game: STCYCL CL=0 WL=4, STMASK, STROW, masked
+            // UNPACK V4-32 NUM=8, then the next VIFcode follows immediately.
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x01u, 0u, 0x0400u));
+            appendU32(packet, makeVifCmd(0x20u, 0u, 0u));
+            appendU32(packet, 0x55555555u); // every field reads ROW
+            appendU32(packet, makeVifCmd(0x30u, 0u, 0u));
+            appendU32(packet, 1u); appendU32(packet, 2u); appendU32(packet, 3u); appendU32(packet, 4u);
+            appendU32(packet, makeVifCmd(0x7Cu, 8u, 0u));
+            appendU32(packet, makeVifCmd(0x01u, 0u, 0x0101u)); // STCYCL CL=1 WL=1
+            appendU32(packet, makeVifCmd(0x6Cu, 1u, 0x20u));   // UNPACK V4-32 to qword 0x20
+            appendU32(packet, 0xA1u); appendU32(packet, 0xA2u); appendU32(packet, 0xA3u); appendU32(packet, 0xA4u);
+
+            std::memset(mem.getVU1Data(), 0, PS2_VU1_DATA_SIZE);
+            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+
+            uint32_t filled[4]{}, next[4]{};
+            std::memcpy(filled, mem.getVU1Data() + 7u * 16u, sizeof(filled));
+            std::memcpy(next, mem.getVU1Data() + 0x20u * 16u, sizeof(next));
+            t.Equals(filled[3], 4u, "CL=0 writes should come from ROW");
+            t.Equals(next[0], 0xA1u, "the VIFcode after a CL=0 UNPACK should start right after it");
+        });
+
+        tc.Run("VIF1 UNPACK split across transfers is not parsed as VIFcodes", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+
+            // UNPACK V4_32 of 2 vectors whose data resembles an MPG VIFcode.
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x6Cu, 2u, 0u));
+            for (uint32_t i = 0; i < 8u; ++i)
+                appendU32(packet, makeVifCmd(0x4Au, 1u, 0u));
+
+            std::memset(mem.getVU1Code(), 0, PS2_VU1_CODE_SIZE);
+            std::memset(mem.getVU1Data(), 0, PS2_VU1_DATA_SIZE);
+            mem.processVIF1Data(packet.data(), 16u);
+            mem.processVIF1Data(packet.data() + 16u, static_cast<uint32_t>(packet.size()) - 16u);
+
+            uint32_t lastWord = 0;
+            std::memcpy(&lastWord, mem.getVU1Data() + 28u, 4u);
+            t.Equals(lastWord, makeVifCmd(0x4Au, 1u, 0u), "second vector should receive the continued data");
+            bool codeUntouched = true;
+            for (uint32_t i = 0; i < 64u; ++i)
+                codeUntouched = codeUntouched && mem.getVU1Code()[i] == 0u;
+            t.IsTrue(codeUntouched, "continued UNPACK data must not execute as MPG");
+        });
+
         tc.Run("VIF UNPACK num zero uploads 256 vectors", [](TestCase &t)
         {
             PS2Memory mem;
@@ -2165,6 +2241,31 @@ void register_ps2_memory_tests()
             t.IsTrue(imageOk, "raw qwords after a DIRECT image tag should continue the PATH2 image upload");
         });
 
+        tc.Run("VIF1 image continuation excludes NOP DIRECT control words", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            GS gs;
+            gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
+            GifArbiter arbiter([&](const uint8_t *data, uint32_t size) { gs.processGIFPacket(data, size); });
+            mem.setGifArbiter(&arbiter);
+            gs.writeRegister(GS_REG_BITBLTBUF, (1ull << 16) | (1ull << 48));
+            gs.writeRegister(GS_REG_TRXPOS, 0ull);
+            gs.writeRegister(GS_REG_TRXREG, 4ull | (1ull << 32));
+            gs.writeRegister(GS_REG_TRXDIR, 0ull);
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x50u, 0u, 1u));
+            appendU64(packet, makeGifTag(1u, GIF_FMT_IMAGE, 0u, true));
+            appendU64(packet, 0ull);
+            appendU32(packet, 0u); // DMAtag upper-half NOP.
+            appendU32(packet, makeVifCmd(0x50u, 0u, 1u));
+            for (uint32_t index = 0; index < 4u; ++index) appendU32(packet, 0x80102030u + index);
+            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+            for (uint32_t index = 0; index < 4u; ++index)
+                t.Equals(gs.ReadVram(GS_PSM_CT32, 0u, 1u, index, 0u), 0x80102030u + index,
+                         "VIFcodes must not replace image pixels");
+        });
+
         tc.Run("VIF1 DIRECT finds an image continuation after packed setup", [](TestCase &t)
         {
             PS2Memory mem;
@@ -2214,6 +2315,29 @@ void register_ps2_memory_tests()
                 }
             }
             t.IsTrue(imageOk, "raw image continuation after packed setup should not be decoded as VIF/GIF registers");
+        });
+
+        tc.Run("quadword accesses ignore the low address bits", [](TestCase &t)
+        {
+            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0);
+            uint8_t *rdram = ram.data();
+            for (uint32_t i = 0; i < 48; ++i)
+                rdram[0x1000u + i] = static_cast<uint8_t>(i);
+
+            // MTSAB + LQ + LQ + QFSRV: the unaligned-load idiom used for 12-byte matrix rows.
+            const uint32_t addr = 0x100Cu;
+            const __m128i lo = Ps2FastRead128(rdram, addr);
+            const __m128i hi = Ps2FastRead128(rdram, addr + 16u);
+            alignas(16) uint8_t got[16];
+            _mm_store_si128(reinterpret_cast<__m128i *>(got), ps2_qfsrv(hi, lo, (addr & 0xFu) * 8u));
+            bool match = true;
+            for (uint32_t i = 0; i < 16; ++i)
+                match = match && got[i] == static_cast<uint8_t>(0x0Cu + i);
+            t.IsTrue(match, "LQ pair + QFSRV should yield the 16 bytes at the unaligned address");
+
+            Ps2FastWrite128(rdram, 0x1008u, _mm_set1_epi8(static_cast<char>(0xAB)));
+            t.Equals(rdram[0x1000u], static_cast<uint8_t>(0xABu), "SQ should store at the aligned quadword");
+            t.Equals(rdram[0x1010u], static_cast<uint8_t>(0x10u), "SQ must not spill into the next quadword");
         });
 
         tc.Run("unaligned accesses throw", [](TestCase &t)

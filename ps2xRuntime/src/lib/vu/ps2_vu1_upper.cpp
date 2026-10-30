@@ -5,6 +5,15 @@
 #include <cstring>
 #include <limits>
 
+// GOW-Port: la aritmética de VU no depende de /fp:fast. El runtime se compila con /fp:fast, que deja al
+// compilador fusionar a*b+c en FMA según dónde esté el código: el intérprete y el microcódigo compilado
+// (o dos versiones del intérprete) podían dar resultados distintos. Aquí cada operación se redondea por
+// separado, como en las FMAC de la PS2 (y en PCSX2).
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#pragma fp_contract(off)
+#endif
+
 namespace
 {
     int32_t vuFloatToInt(float value, float scale)
@@ -21,8 +30,10 @@ namespace
 // ============================================================================
 // Upper instructions (FMAC pipeline)
 // ============================================================================
+unsigned long long g_vuUpperHist[128]; // GOW-Port: GOW_VU1_STATS op histogram of the generic (non-specialised) path
 void VU1Interpreter::execUpper(uint32_t instr)
 {
+    ++g_vuUpperHist[(instr & 0x3Fu) < 0x3Cu ? (instr & 0x3Fu) : 0x40u + ((instr & 3u) | ((instr >> 4) & 0x7Cu))];
     m_currentUpperInstruction = instr;
     uint8_t dest = DEST(instr);
     uint8_t ft = FT(instr);
@@ -99,9 +110,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
     case 0x12:
     case 0x13: // MAXbc
     {
-        float bc = broadcast(vt, op & 3);
+        const float bc = m_state.vf[ft][op & 3];
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > bc) ? vs[c] : bc;
+            result[c] = vuMax(m_state.vf[fs][c], bc);
         applyDest(vd, result, dest);
         return;
     }
@@ -110,9 +121,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
     case 0x16:
     case 0x17: // MINIbc
     {
-        float bc = broadcast(vt, op & 3);
+        const float bc = m_state.vf[ft][op & 3];
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < bc) ? vs[c] : bc;
+            result[c] = vuMini(m_state.vf[fs][c], bc);
         applyDest(vd, result, dest);
         return;
     }
@@ -134,7 +145,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x1D: // MAXi
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > i) ? vs[c] : i;
+            result[c] = vuMax(m_state.vf[fs][c], m_state.i);
         applyDest(vd, result, dest);
         return;
     case 0x1E: // MULi
@@ -144,7 +155,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x1F: // MINIi
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < i) ? vs[c] : i;
+            result[c] = vuMini(m_state.vf[fs][c], m_state.i);
         applyDest(vd, result, dest);
         return;
     case 0x20: // ADDq
@@ -204,7 +215,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x2B: // MAX
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > vt[c]) ? vs[c] : vt[c];
+            result[c] = vuMax(m_state.vf[fs][c], m_state.vf[ft][c]);
         applyDest(vd, result, dest);
         return;
     case 0x2C: // SUB
@@ -226,7 +237,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x2F: // MINI
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < vt[c]) ? vs[c] : vt[c];
+            result[c] = vuMini(m_state.vf[fs][c], m_state.vf[ft][c]);
         applyDest(vd, result, dest);
         return;
 

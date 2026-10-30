@@ -23,3 +23,5 @@ android/app/.cxx/
 android/local.properties
 android/.gradle/ 
 .idea/
+# Private Call of Duty: Final Fronts supplements (they include that game's generated code); never published.
+ps2xRuntime/src/lib/codwaw_*_chunk_*.cpp

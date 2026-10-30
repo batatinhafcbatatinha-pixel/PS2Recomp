@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "Common.h"
 #include "Thread.h"
 #include "runtime/ee_scheduler.h"
@@ -112,6 +113,12 @@ namespace ps2_syscalls
             const int priority = static_cast<int>(getRegU32(ctx, 5));
             int oldPriority = 0;
             const int result = ee.changePriority(id, priority, interruptSafe, oldPriority);
+            static const bool trace = [] { const char *v = std::getenv("PS2X_TRACE_PRIORITY"); return v && *v == '1'; }();
+            static uint32_t traced = 0;
+            if (trace && traced++ < 400u)
+                std::cerr << "[prio] " << (interruptSafe ? "i" : "") << "ChangeThreadPriority id=" << id << " "
+                          << oldPriority << "->" << priority << " result=" << result << std::hex << " ra=0x"
+                          << getRegU32(ctx, 31) << std::dec << std::endl;
             setReturnS32(ctx, result);
             ee.transferIfRequested(interruptSafe);
         }

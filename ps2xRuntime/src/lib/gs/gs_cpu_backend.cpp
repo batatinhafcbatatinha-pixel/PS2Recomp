@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -602,6 +604,11 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
 
     const bool loadCsm1Suffix = tex0.csm == 0u && thirtyTwoBit && !fourBit;
     const uint32_t firstEntry = loadCsm1Suffix ? destinationBase : 0u;
+    static bool fontPaletteLogged = false;
+    const char *fontTrace = std::getenv("PS2X_FONT_TRACE");
+    const bool traceFontPalette = !fontPaletteLogged && fontTrace && std::strcmp(fontTrace, "1") == 0 &&
+                                  fourBit && tex0.tbp0 == 12288u && tex0.cbp == 14332u;
+    if (traceFontPalette) fontPaletteLogged = true;
 
     for (uint32_t entry = firstEntry; entry < entryCount; ++entry)
     {
@@ -623,6 +630,12 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
         }
 
         const uint32_t raw = ReadTextureVramUnlocked(tex0.cpsm, tex0.cbp, sourceWidth, sourceX, sourceY); 
+        if (traceFontPalette)
+            std::cerr << "[ff-font-palette] entry=" << entry << " xy=" << sourceX << ',' << sourceY
+                      << " cached=0x" << std::hex << raw
+                      << " raw=0x" << ReadVramUnlocked(tex0.cpsm, tex0.cbp, sourceWidth, sourceX, sourceY)
+                      << " linear=0x" << ReadVramUnlocked(tex0.cpsm, tex0.cbp, sourceWidth, entry, 0u)
+                      << std::dec << std::endl;
         const uint32_t destination = (loadCsm1Suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
         if (sixteenBit)
         {
@@ -712,6 +725,38 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const auto &ctx = state.context;
+    {
+        // On-demand capture: create analysis/gs-trace.trigger to log the next primitives.
+        static uint32_t checkCountdown = 0, remaining = 0;
+        static FILE *traceFile = nullptr;
+        if (remaining == 0u && checkCountdown++ % 4096u == 0u &&
+            std::filesystem::exists("analysis/gs-trace.trigger"))
+        {
+            std::filesystem::remove("analysis/gs-trace.trigger");
+            traceFile = std::fopen("analysis/gs-trace.txt", "w");
+            remaining = traceFile ? 3000u : 0u;
+        }
+        if (remaining != 0u)
+        {
+            std::fprintf(traceFile, "type=%u tme=%u abe=%u fst=%u fbp=%u psm=%x fbmsk=%x zbp=%u ztst=%llx alpha=%llx test=%llx tex0=%u/%u/%x tfx=%u tcc=%u v=",
+                         state.prim.type, state.prim.tme, state.prim.abe, state.prim.fst, ctx.frame.fbp, ctx.frame.psm,
+                         ctx.frame.fbmsk, ctx.zbuf.zbp, static_cast<unsigned long long>(ctx.zbuf.zmask),
+                         static_cast<unsigned long long>(ctx.alpha), static_cast<unsigned long long>(ctx.test),
+                         ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, ctx.tex0.tfx, ctx.tex0.tcc);
+            for (uint32_t i = 0; i < batch.vertexCount; ++i)
+            {
+                const GSVertex &v = batch.vertices[i];
+                std::fprintf(traceFile, "(%.1f,%.1f,%.0f rgba=%u,%u,%u,%u st=%.3f,%.3f,%.3f uv=%u,%u)",
+                             v.x, v.y, v.z, v.r, v.g, v.b, v.a, v.s, v.t, v.q, v.u, v.v);
+            }
+            std::fprintf(traceFile, "\n");
+            if (--remaining == 0u)
+            {
+                std::fclose(traceFile);
+                traceFile = nullptr;
+            }
+        }
+    }
     PS2_IF_AGRESSIVE_LOGS({
         const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
         if (primitiveIndex < 64u)

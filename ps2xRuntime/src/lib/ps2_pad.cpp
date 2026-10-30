@@ -1,6 +1,13 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <mutex>
+#include <array>
 
 namespace
 {
@@ -25,7 +32,7 @@ namespace
     constexpr uint16_t PAD_L2 = 0x0100u;
 }
 
-bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
+static bool readHostPadState(int port, uint8_t *data, size_t size)
 {
     if (!data || size < 32)
         return false;
@@ -38,8 +45,15 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
 
     uint16_t btns = 0xFFFFu;
-    constexpr int kGamepad = 0;
+    const int kGamepad = port;
     const bool useGamepad = IsGamepadAvailable(kGamepad);
+    static int connected[2] = {-1, -1};
+    if (port >= 0 && port < 2 && connected[port] != static_cast<int>(useGamepad)) {
+        connected[port] = useGamepad;
+        std::cerr << "[pad:host] port=" << port << " connected=" << useGamepad;
+        if (useGamepad) std::cerr << " name=" << GetGamepadName(kGamepad);
+        std::cerr << std::endl;
+    }
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
 
@@ -82,12 +96,17 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);
         float rx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_X);
         float ry = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_Y);
-        data[6] = static_cast<uint8_t>(128 + lx * 127);
-        data[7] = static_cast<uint8_t>(128 + ly * 127);
-        data[4] = static_cast<uint8_t>(128 + rx * 127);
-        data[5] = static_cast<uint8_t>(128 + ry * 127);
+        auto analog = [](float value) {
+            constexpr float deadzone = 0.18f;
+            value = std::clamp(value, -1.0f, 1.0f);
+            if (std::abs(value) <= deadzone) return kPadStickCenter;
+            value = std::copysign((std::abs(value) - deadzone) / (1.0f - deadzone), value);
+            return static_cast<uint8_t>(std::clamp(128 + static_cast<int>(std::lround(value * 127)), 0, 255));
+        };
+        data[6] = analog(lx); data[7] = analog(ly);
+        data[4] = analog(rx); data[5] = analog(ry);
     }
-    else
+    if (port == 0)
     {
         if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
             clearBit(PAD_UP);
@@ -113,13 +132,58 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             clearBit(PAD_L2);
         if (IsKeyDown(KEY_RIGHT_SHIFT))
             clearBit(PAD_R2);
-        if (IsKeyDown(KEY_ENTER))
+        if (IsKeyDown(KEY_ENTER) && !IsKeyDown(KEY_LEFT_ALT) && !IsKeyDown(KEY_RIGHT_ALT))
             clearBit(PAD_START);
         if (IsKeyDown(KEY_TAB))
             clearBit(PAD_SELECT);
+        if (IsKeyDown(KEY_LEFT_CONTROL)) clearBit(PAD_L3);
+        if (IsKeyDown(KEY_R)) clearBit(PAD_R3);
+        if (IsKeyDown(KEY_A) || IsKeyDown(KEY_D)) data[6] = IsKeyDown(KEY_A) == IsKeyDown(KEY_D) ? 128 : IsKeyDown(KEY_A) ? 1 : 255;
+        if (IsKeyDown(KEY_W) || IsKeyDown(KEY_S)) data[7] = IsKeyDown(KEY_W) == IsKeyDown(KEY_S) ? 128 : IsKeyDown(KEY_W) ? 1 : 255;
+        if (IsKeyDown(KEY_J) || IsKeyDown(KEY_L)) data[4] = IsKeyDown(KEY_J) == IsKeyDown(KEY_L) ? 128 : IsKeyDown(KEY_J) ? 1 : 255;
+        if (IsKeyDown(KEY_I) || IsKeyDown(KEY_K)) data[5] = IsKeyDown(KEY_I) == IsKeyDown(KEY_K) ? 128 : IsKeyDown(KEY_I) ? 1 : 255;
     }
 
+    // Optional deterministic controller input for port validation. The file is
+    // a hexadecimal pressed-button mask added to the keyboard/gamepad state, so a
+    // scripted session stays playable; absent configuration changes nothing.
+    const char *padFile = std::getenv("PS2X_PAD_FILE");
+    if (port == 0 && padFile && *padFile) {
+        std::ifstream input(padFile);
+        uint32_t pressed = 0;
+        if (input >> std::hex >> pressed) {
+            btns &= static_cast<uint16_t>(~pressed);
+            static uint32_t lastPressed = 0xffffffffu;
+            static uint32_t logs = 0;
+            if (pressed != lastPressed && logs++ < 64u)
+                std::cerr << "[pad:test] pressed=0x" << std::hex << pressed << std::dec << std::endl;
+            lastPressed = pressed;
+        }
+    }
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    return true;
+}
+
+namespace {
+    std::mutex hostPadMutex;
+    std::array<std::array<uint8_t, 32>, 2> hostPads{};
+    bool hostPadsReady = false;
+}
+void ps2UpdateHostPadInput() {
+    std::array<std::array<uint8_t, 32>, 2> next{};
+    for (int port = 0; port < 2; ++port) readHostPadState(port, next[port].data(), 32);
+    std::lock_guard<std::mutex> lock(hostPadMutex);
+    hostPads = next;
+    hostPadsReady = true;
+}
+bool PSPadBackend::readState(int port, int slot, uint8_t *data, size_t size) {
+    if (!data || size < 32 || port < 0 || port >= 2 || slot != 0) return false;
+    std::lock_guard<std::mutex> lock(hostPadMutex);
+    if (!hostPadsReady) {
+        std::memset(data, 0, 32);
+        data[0] = 1; data[1] = 0x73; data[2] = data[3] = 0xff;
+        data[4] = data[5] = data[6] = data[7] = 0x80;
+    } else std::memcpy(data, hostPads[port].data(), 32);
     return true;
 }

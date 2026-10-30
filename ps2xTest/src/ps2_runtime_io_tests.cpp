@@ -581,6 +581,25 @@ void register_ps2_runtime_io_tests()
                      "sceMcGetDir should report the host file size");
             t.IsTrue((entries[2].attrFile & 0x0080u) != 0u,
                      "sceMcGetDir file entries should carry the closed-file attribute");
+
+            setRegU32(test.ctx, 7, 1u);
+            ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram), 0, "continuation must terminate after all entries");
+
+            setRegU32(test.ctx, 7, 0u);
+            setRegU32(test.ctx, 8, 1u);
+            ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram), 1, "new listing starts at the first entry");
+            t.Equals(std::string(entries[0].entryName), std::string("."), "first page");
+            setRegU32(test.ctx, 7, 1u);
+            ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram), 1, "second page size");
+            t.Equals(std::string(entries[0].entryName), std::string(".."), "second page");
+            ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram), 1, "third page size");
+            t.Equals(std::string(entries[0].entryName), std::string("game.dat"), "third page");
+            ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram), 0, "paged listing terminates");
         });
 
         tc.Run("sceMcGetInfo reports formatted and unformatted states", [](TestCase &t)

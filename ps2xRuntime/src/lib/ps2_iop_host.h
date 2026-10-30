@@ -75,6 +75,9 @@ public:
     int32_t memoryCard(const ps2x::iop::MemoryCardRequest &request) override;
 
     bool hasGuestFunction(uint32_t address) const override;
+    bool canBindEeRpc(uint32_t sid) const override;
+    bool callEeRpc(uint32_t sid, uint32_t function, const void *data, uint32_t size,
+                   uint32_t replySize, std::function<void(const void *, uint32_t)> complete) override;
     bool invokeGuestFunction(uint64_t callToken,
                              uint32_t address,
                              uint32_t a0,

@@ -3,10 +3,43 @@
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
 
+std::string ps2xDispatchTrail();
+
+// Interrupt and alarm handlers run in interrupt context on the console: the kernel never preempts them. A
+// reschedule requested inside one (iSignalSema, iWakeupThread, ...) stays pending until the handler returns.
+// (Boku2's frame pacer did iSignalSema and then cleared its callback slot; preempted in between, the main thread
+// saw the stale slot and blocked forever.)
+// Interrupt-context invocations wait while the running thread has interrupts disabled (DI clears Status.EIE;
+// the recompiled DI/EI only update cop0_status). Delivering them inside the game's DI...EI critical sections
+// corrupted its shared state once VBlank ran at real-time rate (Ben10 thread deaths with ra=0 / ra=0xa).
+static bool interruptDeliverable(const GuestInvocation &invocation, const R5900Context &context)
+{
+    switch (invocation.kind)
+    {
+    case GuestInvocationKind::Interrupt:
+    case GuestInvocationKind::Alarm:
+    case GuestInvocationKind::GsCallback:
+    case GuestInvocationKind::RpcCallback:
+        return (context.cop0_status & 0x10000u) != 0u;
+    default:
+        return true;
+    }
+}
+
+static bool insideHandler(const GuestThread *thread)
+{
+    if (!thread || thread->invocations.empty())
+        return false;
+    const GuestInvocationKind kind = thread->invocations.back().kind;
+    return kind == GuestInvocationKind::Interrupt || kind == GuestInvocationKind::Alarm;
+}
+
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <iostream>
 #include <stdexcept>
 
 namespace
@@ -112,6 +145,9 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_insideInterrupt = false;
     m_pendingEeTimerInterrupts = 0u;
     m_eeCycle = 0u;
+    m_hostEpoch = std::chrono::steady_clock::now();
+    m_hostSampleCycles = 0u;
+    m_globalCount = 0u;
     m_sliceEndCycle = kDefaultTimeSliceCycles;
     m_stopRequested.store(false, std::memory_order_release);
     m_checkpointPending.store(false, std::memory_order_release);
@@ -146,12 +182,65 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     main.status = EeThreadStatus::Ready;
     m_threads.emplace(main.id, std::move(main));
     m_readyQueues[0].push_back(kMainThreadId);
+    m_hostEpoch = std::chrono::steady_clock::now();
     scheduleEvent(m_eeCycle + kVBlankPeriodCycles,
-                  std::chrono::steady_clock::now() + kVBlankPeriod,
+                  m_hostEpoch + kVBlankPeriod,
                   EeEvent{EeEventType::VBlankStart, 0, 0});
     publishSnapshot();
 }
 
+// The scheduler's last dispatches with the stack and return registers they ran with (printed when a thread dies).
+struct DispatchRecord
+{
+    int thread;
+    uint32_t pc, sp, ra;
+};
+static DispatchRecord s_dispatchRing[48];
+static uint32_t s_dispatchNext = 0;
+
+// A guest thread leaving through a null or bad code pointer: its registers, the object in s0/a0 with its vtable
+// (+0xD0), the stack around sp and the last dispatched PCs. Printed every time (reportMissingFunction prints once).
+static void logGuestThreadDeath(const uint8_t *m_rdram, int id, const R5900Context &context)
+{
+    const auto word = [&](uint32_t address) -> uint32_t
+    { return (address & 3u) == 0u && (address & 0x1FFFFFFFu) < 0x2000000u - 4u ? Ps2FastRead32(m_rdram, address & 0x1FFFFFFFu) : 0xDEADu; };
+    std::cerr << "[ee:pc0] thread=" << id << std::hex << " pc=0x" << context.pc << std::dec << std::hex << " ra=0x" << getRegU32(&context, 31)
+              << " sp=0x" << getRegU32(&context, 29);
+    for (int r : {2, 3, 4, 5, 16, 17, 18, 19, 20, 21, 22, 23})
+        std::cerr << " r" << std::dec << r << std::hex << "=0x" << getRegU32(&context, r);
+    for (int r : {16, 4})
+    {
+        const uint32_t object = getRegU32(&context, r), vtbl = word(object + 0xD0u);
+        std::cerr << " | r" << std::dec << r << std::hex << "[0]=0x" << word(object) << " [d0]=0x" << vtbl
+                  << " vt[60]=0x" << word(vtbl + 0x60u) << " vt[64]=0x" << word(vtbl + 0x64u)
+                  << " vt[bc]=0x" << word(vtbl + 0xBCu);
+    }
+    // the stack around sp: a frame overwritten by data shows up here (ra=0 from a smashed save slot)
+    const uint32_t sp = getRegU32(&context, 29);
+    std::cerr << "\n[ee:pc0] stack sp-0x40..sp+0xc0:";
+    for (uint32_t off = 0; off < 0x100u; off += 4u)
+        std::cerr << ((off & 0x1Fu) == 0u ? "\n[ee:pc0]  " : " ") << std::hex << word(sp - 0x40u + off);
+    std::cerr << std::dec << "\n[ee:pc0] trail=" << ps2xDispatchTrail();
+    std::cerr << "\n[ee:pc0] dispatches (thread pc sp ra):";
+    for (uint32_t i = 0; i < 48u; ++i)
+    {
+        const DispatchRecord &d = s_dispatchRing[(s_dispatchNext + i) % 48u];
+        std::cerr << ((i % 6u) == 0u ? "\n[ee:pc0]  " : " | ") << d.thread << std::hex << " " << d.pc << " " << d.sp << " " << d.ra << std::dec;
+    }
+    std::cerr << std::endl;
+    // PS2X_PC0_RAMDUMP=path: save all 32 MB of guest RAM at the first death with a return address (offline heap inspection).
+    static bool ramDumped = false;
+    if (const char *path = std::getenv("PS2X_PC0_RAMDUMP"); path && *path && !ramDumped && getRegU32(&context, 31) != 0u)
+    {
+        ramDumped = true;
+        if (FILE *f = std::fopen(path, "wb"))
+        {
+            std::fwrite(m_rdram, 1, 0x2000000u, f);
+            std::fclose(f);
+            std::cerr << "[ee:pc0] ram saved to " << path << std::endl;
+        }
+    }
+}
 void EeScheduler::run()
 {
     assertExecutor();
@@ -227,6 +316,7 @@ void EeScheduler::run()
         }
 
         publishDebugContext(context);
+        context.cop0_count = m_globalCount;
 
         if (context.pc == 0u)
         {
@@ -246,6 +336,13 @@ void EeScheduler::run()
                 }
                 continue;
             }
+            // A guest thread reaching PC 0 normally means a null code pointer, not a
+            // clean ExitThread; report its call trail before it goes dormant.
+            if (running->id >= 0)
+                logGuestThreadDeath(m_rdram, running->id, context);
+            m_runtime.reportMissingFunction(m_rdram, &context, 0u, 0u,
+                                            PS2Runtime::GuestBranchKind::DirectJump,
+                                            "EE scheduler: thread reached PC 0");
             makeDormant(*running);
             m_currentThreadId = 0;
             copyMainContextToRuntime();
@@ -254,7 +351,8 @@ void EeScheduler::run()
             continue;
         }
 
-        if (!m_pendingInvocations.empty() && running->invocations.empty())
+        if (!m_pendingInvocations.empty() && running->invocations.empty() &&
+            interruptDeliverable(m_pendingInvocations.front(), context))
         {
             GuestInvocation invocation = std::move(m_pendingInvocations.front());
             m_pendingInvocations.pop_front();
@@ -274,6 +372,8 @@ void EeScheduler::run()
             }
             else
             {
+                if (running->id >= 0)
+                    logGuestThreadDeath(m_rdram, running->id, context);
                 m_runtime.reportMissingFunction(m_rdram,
                                                 &context,
                                                 context.pc,
@@ -285,6 +385,8 @@ void EeScheduler::run()
             }
             continue;
         }
+        s_dispatchRing[s_dispatchNext] = {running->id, context.pc, getRegU32(&context, 29), getRegU32(&context, 31)};
+        s_dispatchNext = (s_dispatchNext + 1u) % 48u;
         PS2Runtime::RecompiledFunction function = m_runtime.lookupFunction(context.pc);
 
         if (checkpointDue(kGuestDispatchCycles))
@@ -294,7 +396,7 @@ void EeScheduler::run()
 
         try
         {
-            m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
+            m_insideInterrupt = insideHandler(running);
             m_guestExecuting.store(true, std::memory_order_release);
             function(m_rdram, &context, &m_runtime);
             m_guestExecuting.store(false, std::memory_order_release);
@@ -314,7 +416,7 @@ void EeScheduler::run()
         }
 
         processPendingEvents();
-        if (m_rescheduleRequested && m_currentThreadId != 0)
+        if (m_rescheduleRequested && m_currentThreadId != 0 && !insideHandler(currentThread()))
         {
             GuestThread *preempted = currentThread();
             assert(preempted != nullptr);
@@ -376,6 +478,17 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
         return false;
     }
 
+    // The EE kernel has no time slicing: a thread keeps the CPU until it blocks, a higher-priority thread becomes
+    // ready, or the game rotates the ready queue itself (RotateThreadReadyQueue, often from an alarm). Rotating
+    // equal-priority threads here interleaved game threads that never interleave on the console and corrupted the
+    // structures they share (CoD's widget objects during video playback). PS2X_EE_TIMESLICE=1 restores it.
+    static const bool timeSlicing = [] { const char *v = std::getenv("PS2X_EE_TIMESLICE"); return v && *v == '1'; }();
+    if (!timeSlicing)
+    {
+        renewTimeSlice();
+        return false;
+    }
+
     const GuestThread *running = currentThread();
     if (running != nullptr && hasReadyAtOrAbovePriority(running->currentPriority))
     {
@@ -391,9 +504,71 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
 void EeScheduler::accountCycles(uint32_t cycles) noexcept
 {
     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
-    m_eeCycle += elapsed;
-    m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
-    m_runtime.advanceIopEeCycles(elapsed);
+    // CP0 Count is the game's clock (294.912 MHz). While run() executes it follows
+    // the host clock, so frame pacing is real time; the estimated dispatch cycles
+    // keep driving the scheduler, EE timers and the IOP as before. Outside run()
+    // (tests) Count advances once per EE cycle. Samples are taken every few
+    // thousand estimated cycles; cycles == 0 forces a sample.
+    uint64_t countCycles = elapsed;
+    if (m_running.load(std::memory_order_relaxed))
+    {
+        countCycles = 0u;
+        m_hostSampleCycles += elapsed;
+        if (cycles == 0u || m_hostSampleCycles >= kHostSampleCycles)
+        {
+            m_hostSampleCycles = 0u;
+            const auto now = std::chrono::steady_clock::now();
+            const uint64_t ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_hostEpoch).count());
+            countCycles = (ns / 1000000000ull) * kEeClockHz + ((ns % 1000000000ull) * kEeClockHz) / 1000000000ull;
+            // A stalled host slows the guest clock instead of skipping game time.
+            countCycles = std::min(countCycles, kMaxHostCatchUpCycles);
+            m_hostEpoch = now;
+        }
+    }
+    m_globalCount += static_cast<uint32_t>(countCycles);
+    const uint32_t count = m_globalCount;
+    for (auto &[id, thread] : m_threads)
+    {
+        thread.context.cop0_count = count;
+        for (auto &invocation : thread.invocations)
+            invocation.context.cop0_count = count;
+    }
+    for (auto &invocation : m_pendingInvocations)
+        invocation.context.cop0_count = count;
+    // While run() executes, the EE clock that drives VBlank/alarm/timer deadlines follows wall time: every
+    // dispatch it advances to max(estimate, cycles of wall time since run() started). The estimate alone (8 cycles
+    // per dispatch) ran far slower than real time (VBlank ~10 Hz in Boku2); adding host time per sample on top of
+    // it also counted the pacing waits, kept the clock a frame ahead and let long loops run one slice per VBlank.
+    // With the clock on wall time, deadlines come due by cycle when they come due by host time, so pacing barely
+    // sleeps. (The corruption it exposed in CoD/Ben10 was the yield-vs-return confusion fixed in
+    // PS2Runtime::dispatchGuestBranch.) PS2X_EE_ESTIMATED_CLOCK=1 restores the estimate-only clock.
+    uint64_t advance = elapsed;
+    static const bool estimatedClock = std::getenv("PS2X_EE_ESTIMATED_CLOCK") != nullptr;
+    if (m_running.load(std::memory_order_relaxed) && !estimatedClock)
+    {
+        struct WallClock
+        {
+            const EeScheduler *owner = nullptr;
+            std::chrono::steady_clock::time_point start{};
+            uint64_t base = 0;
+        };
+        static WallClock wallClock;
+        const auto now = std::chrono::steady_clock::now();
+        if (wallClock.owner != this)
+            wallClock = WallClock{this, now, m_eeCycle};
+        const uint64_t ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - wallClock.start).count());
+        const uint64_t wall = wallClock.base + (ns / 1000000000ull) * kEeClockHz +
+                              ((ns % 1000000000ull) * kEeClockHz) / 1000000000ull;
+        if (m_eeCycle + advance + kEeClockHz / 10u < wall)
+            wallClock = WallClock{this, now, m_eeCycle + advance}; // host stalled >100 ms: skip, don't replay it
+        else if (m_eeCycle + advance < wall)
+            advance = wall - m_eeCycle;
+    }
+    m_eeCycle += advance;
+    m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(advance);
+    m_runtime.advanceIopEeCycles(advance);
     if (m_pendingEeTimerInterrupts != 0u)
     {
         m_checkpointPending.store(true, std::memory_order_release);
@@ -502,6 +677,9 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
                                   : getRegU32(&caller, 29);
     SET_GPR_U32(&target->context, 29, stackTop);
     SET_GPR_U32(&target->context, 31, 0u);
+    std::cerr << "[ee:start-thread] id=" << id << std::hex << " entry=0x" << target->entry << " stack=0x" << target->stack
+              << " size=0x" << target->stackSize << " sp=0x" << stackTop << " caller-sp=0x" << getRegU32(&caller, 29)
+              << std::dec << " prio=" << target->currentPriority << std::endl;
     enqueueReady(*target);
     requestPreemptionIfHigher(*target, interruptSafe);
     publishSnapshot();
@@ -701,7 +879,8 @@ int EeScheduler::cancelWakeup(int id)
 int EeScheduler::changePriority(int id, int priority, bool interruptSafe, int &oldPriority)
 {
     assertExecutor();
-    if (priority < 1 || priority >= kPriorityCount)
+    // Priority 0 is the highest valid EE priority; game-side schedulers (Boku2) raise a task thread to 0 to run it.
+    if (priority < 0 || priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -1176,6 +1355,8 @@ uint32_t EeScheduler::invocationStackTop()
     {
         throw std::runtime_error("EE invocation stack space exhausted");
     }
+    std::cerr << "[ee:invocation-stack] thread=" << owner->id << " depth=" << depth << std::hex << " top=0x" << top
+              << " base=0x" << (top + 0x10u - kInvocationStackSize) << std::dec << std::endl;
     m_invocationStackTops.emplace(key, top);
     return top;
 }
@@ -1640,6 +1821,13 @@ void EeScheduler::makeRunning(GuestThread &item)
 
 void EeScheduler::makeDormant(GuestThread &item)
 {
+    if (item.id == kMainThreadId && m_running.load(std::memory_order_relaxed))
+    {
+        // The game's main thread ending is never expected during play: keep its trail.
+        m_runtime.reportMissingFunction(m_rdram, &item.context, item.context.pc, 0u,
+                                        PS2Runtime::GuestBranchKind::DirectJump,
+                                        "EE scheduler: main thread became dormant");
+    }
     removeReady(item);
     removeFromWaitObject(item);
     item.status = EeThreadStatus::Dormant;
@@ -1734,6 +1922,10 @@ void EeScheduler::applyPendingPreemption()
     }
     GuestThread *self = currentThread();
     assert(self != nullptr);
+    if (insideHandler(self))
+    {
+        return;
+    }
     enqueueReady(*self, !m_timeSliceExpired);
     m_currentThreadId = 0;
     m_rescheduleRequested = false;
@@ -2115,6 +2307,16 @@ void EeScheduler::copyMainContextToRuntime()
 
 void EeScheduler::publishDebugContext(const R5900Context &context)
 {
+    if (context.pc == 0x14b380u) {
+        static uint64_t samples = 0;
+        if ((++samples & (samples - 1u)) == 0u) {
+            std::cerr << "[ff-frame-wait] samples=" << samples
+                      << " count=" << context.cop0_count
+                      << " base=" << Ps2FastRead32(m_rdram, 0x4e8740u)
+                      << " elapsed=" << context.f[0]
+                      << " target=" << context.f[20] << std::endl;
+        }
+    }
     m_runtime.m_debugPc.store(context.pc, std::memory_order_relaxed);
     m_runtime.m_debugRa.store(getRegU32(&context, 31), std::memory_order_relaxed);
     m_runtime.m_debugSp.store(getRegU32(&context, 29), std::memory_order_relaxed);

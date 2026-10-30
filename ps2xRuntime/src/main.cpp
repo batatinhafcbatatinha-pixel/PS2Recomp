@@ -226,6 +226,16 @@ int main(int argc, char *argv[])
             return 1;
         }
 
+        // Optional raw disc image for sector reads (sceCdRead by LBN): argv[2] or PS2X_CD_IMAGE.
+        const char *cdImageArg = (argc >= 3 && argv[2] && argv[2][0] != '\0') ? argv[2] : std::getenv("PS2X_CD_IMAGE");
+        if (cdImageArg && cdImageArg[0] != '\0')
+        {
+            PS2Runtime::IoPaths ioPaths = PS2Runtime::getIoPaths();
+            ioPaths.cdImage = std::filesystem::path(cdImageArg);
+            PS2Runtime::setIoPaths(ioPaths);
+            std::cout << "Using CD image: " << cdImageArg << std::endl;
+        }
+
         runtime.run();
 
 #ifdef _DEBUG

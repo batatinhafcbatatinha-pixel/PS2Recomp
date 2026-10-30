@@ -1595,6 +1595,11 @@ namespace ps2_stubs
             {
                 return;
             }
+            {
+                static uint32_t allocLogs = 0;
+                if (allocLogs++ < 6u)
+                    std::cerr << "[mpeg:cbdata] 0x" << std::hex << cbDataAddr << std::dec << std::endl;
+            }
             if (!writeMpegCallbackData(rdram, cbDataAddr, event))
             {
                 runtime->guestFree(cbDataAddr);
@@ -1652,7 +1657,9 @@ namespace ps2_stubs
             dispatchStreamCallbacks(rdram, ctx, runtime, events);
         }
 
-        void writeBlankMpegFrame(uint8_t *rdram, uint32_t destAddr, uint32_t width, uint32_t height)
+        // Both writers stop at byteLimit: sceMpegGetPicture's third argument is the number of 16x16 RGB32 macroblocks
+        // (1 KiB each) the destination holds, and a picture with more macroblocks must not run past it.
+        void writeBlankMpegFrame(uint8_t *rdram, uint32_t destAddr, uint32_t width, uint32_t height, size_t byteLimit)
         {
             if (!rdram || destAddr == 0u)
             {
@@ -1668,6 +1675,8 @@ namespace ps2_stubs
                     static_cast<size_t>(mbx) * static_cast<size_t>(outHeight) * 16u * 4u;
                 for (uint32_t y = 0u; y < outHeight; ++y)
                 {
+                    if (stripOffset + (static_cast<size_t>(y) + 1u) * 16u * 4u > byteLimit)
+                        return;
                     uint8_t *dst = getMemPtr(
                         rdram,
                         destAddr + static_cast<uint32_t>(stripOffset + static_cast<size_t>(y) * 16u * 4u));
@@ -1686,7 +1695,7 @@ namespace ps2_stubs
             }
         }
 
-        void writeDecodedFrameToGuest(uint8_t *rdram, uint32_t destAddr, const MpegDecodedFrame &frame)
+        void writeDecodedFrameToGuest(uint8_t *rdram, uint32_t destAddr, const MpegDecodedFrame &frame, size_t byteLimit)
         {
             if (!rdram || destAddr == 0u || frame.rgba.empty() || frame.width <= 0 || frame.height <= 0)
             {
@@ -1705,6 +1714,8 @@ namespace ps2_stubs
                     static_cast<size_t>(mbx) * static_cast<size_t>(outHeight) * 16u * 4u;
                 for (uint32_t y = 0u; y < outHeight; ++y)
                 {
+                    if (stripOffset + (static_cast<size_t>(y) + 1u) * 16u * 4u > byteLimit)
+                        return;
                     uint8_t *dst = getMemPtr(
                         rdram,
                         destAddr + static_cast<uint32_t>(stripOffset + static_cast<size_t>(y) * 16u * 4u));
@@ -2197,6 +2208,8 @@ namespace ps2_stubs
 
         if (backpressured)
         {
+            if (std::getenv("PS2X_MPEG_TRACE") && traceIdx < 200u)
+                std::cerr << "[mpeg:demux-ring] #" << traceIdx << " BACKPRESSURE avail=" << availableBytes << std::endl;
             if (traceIdx < 32u)
             {
                 PS2_IF_AGRESSIVE_LOGS({
@@ -2235,6 +2248,12 @@ namespace ps2_stubs
             });
         }
 
+        static const bool traceDemux = std::getenv("PS2X_MPEG_TRACE") != nullptr;
+        if (traceDemux && traceIdx < 200u)
+            std::cerr << "[mpeg:demux-ring] #" << traceIdx << std::hex << " mpeg=0x" << mpegAddr << " data=0x" << dataAddr
+                      << " ring=0x" << ringBaseAddr << std::dec << " ringSize=" << ringSize << " avail=" << availableBytes
+                      << " consumed=" << consumed << " decoded=" << decodedCount << " callbacks=" << callbackEvents.size()
+                      << std::endl;
         dispatchStreamCallbacksUnlocked(rdram, ctx, runtime, callbackEvents);
         setReturnS32(ctx, static_cast<int32_t>(consumed));
     }
@@ -2307,6 +2326,9 @@ namespace ps2_stubs
                     });
                     ++g_mpeg_stub_state.getPictureWaitTraceCount;
                 }
+                static uint32_t tracedEmpty = 0;
+                if (std::getenv("PS2X_MPEG_TRACE") && tracedEmpty++ < 40u)
+                    std::cerr << "[mpeg:picture-empty] served=" << playback.picturesServed << std::endl;
                 lock.unlock();
                 runtime->eeScheduler().waitExternal(
                     EeWaitReason::Mpeg,
@@ -2344,6 +2366,11 @@ namespace ps2_stubs
                 if (currentTickQ32 < presentationTargetQ32)
                 {
                     const uint64_t eligibleTick = (presentationTargetQ32 + kPictureClockOne - 1u) >> 32u;
+                    static uint32_t tracedWaits = 0;
+                    if (std::getenv("PS2X_MPEG_TRACE") && tracedWaits++ < 40u)
+                        std::cerr << "[mpeg:picture-wait] tick=" << currentTick << " eligible=" << eligibleTick
+                                  << " pts=" << nextFrame.pts90k << " firstPts=" << playback.firstPresentedPts90k
+                                  << " served=" << playback.picturesServed << std::endl;
                     lock.unlock();
                     runtime->eeScheduler().waitVSync(
                         eligibleTick - 1u,
@@ -2406,13 +2433,36 @@ namespace ps2_stubs
             }
         }
 
+        const uint32_t mbCount = getRegU32(ctx, 6);
+        const size_t byteLimit = static_cast<size_t>(mbCount) * 16u * 16u * 4u;
+        {
+            static uint32_t clippedLogs = 0;
+            const size_t pictureBytes = static_cast<size_t>(align16(width)) * align16(height) * 4u;
+            if (pictureBytes > byteLimit && clippedLogs++ < 4u)
+                std::cerr << "[mpeg:getpicture] picture " << width << "x" << height << " (" << pictureBytes / 1024u
+                          << " macroblocks) into a buffer of " << mbCount << " at 0x" << std::hex << imageAddr << std::dec
+                          << ": clipped" << std::endl;
+        }
         if (haveFrame)
         {
-            writeDecodedFrameToGuest(rdram, imageAddr, frame);
+            writeDecodedFrameToGuest(rdram, imageAddr, frame, byteLimit);
+            static const bool tracePictures = std::getenv("PS2X_MPEG_TRACE") != nullptr;
+            static uint32_t tracedPictures = 0;
+            if (tracePictures && (tracedPictures++ < 4u || (tracedPictures % 30u) == 0u))
+            {
+                uint64_t sum = 0u;
+                const uint8_t *out = getMemPtr(rdram, imageAddr);
+                const size_t sample = std::min<size_t>(byteLimit, 64u * 1024u);
+                for (size_t i = 0; out && i < sample; ++i)
+                    sum += out[i];
+                std::cerr << "[mpeg:picture] #" << tracedPictures << " " << width << "x" << height << " mb=" << mbCount
+                          << " image=0x" << std::hex << imageAddr << std::dec << " avg=" << (sample ? sum / sample : 0u)
+                          << " queued=" << getPlaybackState(mpegAddr).decodedFrames.size() << std::endl;
+            }
         }
         else if (frameCount == 0u)
         {
-            writeBlankMpegFrame(rdram, imageAddr, width, height);
+            writeBlankMpegFrame(rdram, imageAddr, width, height, byteLimit);
         }
 
         setReturnS32(ctx, 0);
@@ -2458,9 +2508,13 @@ namespace ps2_stubs
         // Only the producer/demux EOF is authoritative. A sequence_end_code can
         // be observed while more PSS data is still buffered, and a decoder
         // failure before producer EOF may still recover on a later sequence.
+        // An MPEG program end code (0xB9, sets streamEnded in processPssBuffer) is authoritative too: Ben10 streams
+        // its movies with sceCdStStart and no end LBN, so the CD producer never reaches EOF and the player looped on
+        // the data after legal.pss forever.
         const bool producerEnded =
-            g_mpeg_stub_state.currentCdStreamEofSeen &&
-            playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration;
+            (g_mpeg_stub_state.currentCdStreamEofSeen &&
+             playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration) ||
+            playback.streamEnded;
         const bool ended = producerEnded &&
                            (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
         const uint64_t presentationEnd = playback.presentationEndTickQ32;

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "Common.h"
 #include "RPC.h"
 #include "../../ps2_iop_transport.h"
@@ -544,6 +545,28 @@ namespace ps2_syscalls
             request.endParameter = endParameter;
 
             iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
+            static unsigned ffRpcProbe = 0;
+            if (++ffRpcProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 64u))
+            {
+                std::cerr << "[ff-rpc] sid=0x" << std::hex << sid
+                          << " fn=0x" << rpcNum << " cb=0x" << endFunction
+                          << " send=0x" << sendBuf << " recv=0x" << receiveBuffer
+                          << std::dec << " sendSize=" << sendSize
+                          << " recvSize=" << receiveSize << " mode=" << mode
+                          << " handled=" << iopResult.handled
+                          << " result=0x" << std::hex << iopResult.resultAddress
+                          << " reply0=0x" << (receiveBuffer ? *reinterpret_cast<uint32_t *>(getMemPtr(rdram, receiveBuffer)) : 0u)
+                          << std::dec
+                          << std::endl;
+                if (receiveBuffer && receiveSize >= 64u)
+                {
+                    const auto *words = reinterpret_cast<const uint32_t *>(getMemPtr(rdram, receiveBuffer));
+                    std::cerr << "[ff-rpc-reply]" << std::hex;
+                    for (unsigned word = 0; word < 16; ++word)
+                        std::cerr << " " << words[word];
+                    std::cerr << std::dec << std::endl;
+                }
+            }
 
             if (iopResult.signalNowaitCompletion &&
                 (mode & kSifRpcModeNowait) != 0u)

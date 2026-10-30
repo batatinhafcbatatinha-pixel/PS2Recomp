@@ -1,5 +1,56 @@
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "ps2_runtime_macros.h"
+#include <cstring>
+#include <iostream>
+
+#if PS2X_ENABLE_CODWAW_SUPPLEMENTS
+namespace {
+    thread_local int32_t codWawMpegRelocation = 0;
+    thread_local uint32_t codWawMpegLoadedBase = 0;
+}
+int32_t codWawMpegDelta() { return codWawMpegRelocation; }
+uint32_t codWawMpegAddress(uint32_t address) { return address + codWawMpegRelocation; }
+void registerCodWawMpegCtor(PS2Runtime &runtime);
+#include "../../../../../codwaw-ff/project/supplemental-mpeg/bindings.inc"
+#include "../../../../../codwaw-ff/project/supplemental-mpeg-extra/bindings.inc"
+
+bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target)
+{
+    if (!rdram || target < 0x102620u || target > 0x1fe0000u) return false;
+    const uint32_t base = target - 0x2620u;
+    if (Ps2FastRead32(rdram, base) != 0x32524e53u ||
+        Ps2FastRead32(rdram, base + 8u) != 0xaeu ||
+        Ps2FastRead32(rdram, base + 16u) != 0x47u ||
+        Ps2FastRead32(rdram, base + 24u) != target ||
+        std::memcmp(rdram + base + 0xf310u, "PsIIlibmpeg 3100", 15u) != 0)
+        return false;
+    uint32_t shapeHash = 2166136261u;
+    for (uint32_t offset = 0x80u; offset < 0xf2c0u; offset += 4u) {
+        uint32_t word = Ps2FastRead32(rdram, base + offset);
+        const uint32_t opcode = word >> 26u;
+        if (opcode == 2u || opcode == 3u) word &= 0xfc000000u;
+        else if (opcode == 9u || opcode == 15u || opcode == 0x23u || opcode == 0x2bu || opcode == 0x39u)
+            word &= 0xffff0000u;
+        shapeHash = (shapeHash ^ word) * 16777619u;
+    }
+    if (shapeHash != 0x959d86eeu) {
+        std::cerr << "[mpeg:bind] rejected code shape=0x" << std::hex << shapeHash << std::dec << std::endl;
+        return false;
+    }
+    if (codWawMpegLoadedBase != 0u)
+        for (uint32_t offset = 0x80u; offset < 0xf2c0u; offset += 4u)
+            runtime.registerFunction(codWawMpegLoadedBase + offset, nullptr);
+    codWawMpegLoadedBase = base;
+    codWawMpegRelocation = static_cast<int32_t>(base - 0x9e7480u);
+    registerMpegSupplement(runtime);
+    registerMpegExtraSupplement(runtime);
+    registerCodWawMpegCtor(runtime);
+    std::cerr << "[mpeg:bind] base=0x" << std::hex << base << " init=0x" << target
+              << std::dec << " delta=" << codWawMpegRelocation << std::endl;
+    return runtime.hasFunction(target);
+}
+#endif
 #include "ps2_runtime_calls.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -610,7 +611,9 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     outPixels.resize(packedRowBytes * static_cast<size_t>(outHeight));
     if (outWidth != 0u && outHeight != 0u)
     {
-        const size_t sourceRowBytes = static_cast<size_t>(kHostFrameWidth) * 4u;
+        // Rows are 640 pixels apart, or the frame's own width for the render-target renderer's scaled frames
+        // (1024 at 2x); a fixed 640 stride sheared those rows into copies 64 PS2 pixels apart.
+        const size_t sourceRowBytes = static_cast<size_t>(std::max(outWidth, kHostFrameWidth)) * 4u;
         for (uint32_t y = 0; y < outHeight; ++y)
         {
             const size_t srcOffset = static_cast<size_t>(y) * sourceRowBytes;
@@ -725,7 +728,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
             if ((nloop * nreg) & 1)
                 offset += 8;
         }
-        else if (flg == GIF_FMT_IMAGE)
+        else if (flg == GIF_FMT_IMAGE || flg == GIF_FMT_DISABLED) // FLG 3 operates like IMAGE
         {
             uint32_t imageBytes = nloop * 16;
             if (offset + imageBytes > sizeBytes)
@@ -1524,6 +1527,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     recordRegisterDebugEventUnlocked(regAddr, value);
 }
 
+// Stretched-geometry diagnosis (PS2X_GS_BIGTRI): the runtime records the running VU1 program and its memories.
+std::atomic<uint32_t> g_gsDebugVu1Pc{0xFFFFFFFFu};
+std::atomic<uint32_t> g_gsDebugVu1Top{0u};
+const uint8_t *g_gsDebugVu1Data = nullptr;
+const uint8_t *g_gsDebugVu1Code = nullptr;
+extern uint16_t g_vu1PcRing[4096];
+extern uint32_t g_vu1PcRingNext;
+
 void GS::vertexKick(bool drawing)
 {
     ++m_vtxCount;
@@ -1571,6 +1582,62 @@ void GS::vertexKick(bool drawing)
 
     if (m_vtxCount < needed)
         return;
+
+    // PS2X_GS_BIGTRI=n: log the first n textured triangles whose bounding box covers most of the screen,
+    // with raw 12.4 XY, Z and Q per vertex (stretched-geometry diagnosis).
+    static const uint32_t bigTriLimit = [] { const char *v = std::getenv("PS2X_GS_BIGTRI"); return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u; }();
+    static std::atomic<uint32_t> bigTriLogged{0};
+    static std::atomic<uint32_t> bigTriDumps{0};
+    if (bigTriLimit && drawing && needed == 3 && m_prim.tme)
+    {
+        const GSVertex &a = m_vtxQueue[(m_vtxCount - 3) % kMaxVerts];
+        const GSVertex &b = m_vtxQueue[(m_vtxCount - 2) % kMaxVerts];
+        const GSVertex &c = m_vtxQueue[(m_vtxCount - 1) % kMaxVerts];
+        const float w = std::max({a.x, b.x, c.x}) - std::min({a.x, b.x, c.x});
+        const float h = std::max({a.y, b.y, c.y}) - std::min({a.y, b.y, c.y});
+        if (w > 480.0f && h > 320.0f && bigTriLogged.fetch_add(1, std::memory_order_relaxed) < bigTriLimit)
+        {
+            const GSContext &ctx = activeContext();
+            std::ostringstream line;
+            line << "[gs:bigtri] prim=" << static_cast<uint32_t>(m_prim.type) << " fst=" << static_cast<uint32_t>(m_prim.fst)
+                 << " tbp=0x" << std::hex << ctx.tex0.tbp0 << " psm=0x" << static_cast<uint32_t>(ctx.tex0.psm)
+                 << " fbp=0x" << ctx.frame.fbp << " vu1pc=0x" << g_gsDebugVu1Pc.load(std::memory_order_relaxed)
+                 << " top=0x" << g_gsDebugVu1Top.load(std::memory_order_relaxed) << std::dec
+                 << " ofs=(" << (ctx.xyoffset.ofx >> 4) << "," << (ctx.xyoffset.ofy >> 4) << ")";
+            // The first few triangles with a vertex behind the camera also save VU1 data/code memory (VU1 is mid-XGKICK here).
+            if ((a.q < 0.0f || b.q < 0.0f || c.q < 0.0f) && g_gsDebugVu1Data && g_gsDebugVu1Code)
+            {
+                const uint32_t dump = bigTriDumps.fetch_add(1, std::memory_order_relaxed);
+                if (dump < 4u)
+                {
+                    for (const char *kind : {"data", "code"})
+                    {
+                        const std::string path = "analysis/bigtri-vu1-" + std::to_string(dump) + "-" + kind + ".bin";
+                        if (FILE *f = std::fopen(path.c_str(), "wb"))
+                        {
+                            std::fwrite(kind[0] == 'd' ? g_gsDebugVu1Data : g_gsDebugVu1Code, 1, 16384, f);
+                            std::fclose(f);
+                        }
+                    }
+                    line << " dump=" << dump << " vu1trail=";
+                    // interpreted VU1 pcs (oldest first) as start-end runs of consecutive pairs
+                    uint32_t runStart = ~0u, prev = ~0u;
+                    for (uint32_t i = 0; i < 4096u; ++i)
+                    {
+                        const uint32_t pc = g_vu1PcRing[(g_vu1PcRingNext + i) & 4095u] * 8u;
+                        if (prev != ~0u && pc == prev + 8u) { prev = pc; continue; }
+                        if (runStart != ~0u) line << std::hex << runStart << "-" << prev << " ";
+                        runStart = prev = pc;
+                    }
+                    line << std::hex << runStart << "-" << prev << std::dec;
+                }
+            }
+            for (const GSVertex *v : {&a, &b, &c})
+                line << " v=(" << static_cast<uint32_t>(v->x * 16.0f) << "," << static_cast<uint32_t>(v->y * 16.0f)
+                     << " z=" << static_cast<uint64_t>(v->z) << " q=" << v->q << " st=" << v->s << "," << v->t << ")";
+            RUNTIME_LOG(line.str() << std::endl);
+        }
+    }
 
     if (drawing && m_backend)
     {

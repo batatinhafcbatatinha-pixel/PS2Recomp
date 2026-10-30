@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "ps2x/iop/iop_types.h"
 
 #include <cstddef>
@@ -66,6 +68,7 @@ namespace ps2x::iop::detail
             uint32_t callback = 0;
             uint32_t callbackBuffer = 0;
             uint32_t queue = 0;
+            int thread = 0; // registering thread: the handler runs as this thread
         };
 
         IopHost &m_host;
@@ -73,6 +76,11 @@ namespace ps2x::iop::detail
         IopKernel &m_kernel;
         std::unordered_map<uint32_t, RpcServer> m_servers;
         uint32_t m_nextDmaId = 1u;
+        struct DmaCallback { uint32_t function = 0u; uint32_t argument = 0u; uint32_t gp = 0u; };
+        std::optional<DmaCallback> m_dmaCallback; // sceSifSetDmaIntr completion handler, run as an interrupt
+    public:
+        [[nodiscard]] std::optional<DmaCallback> takeDmaCallback() noexcept { auto c = m_dmaCallback; m_dmaCallback.reset(); return c; }
+    private:
         bool m_sifInitialized = false;
     };
 }

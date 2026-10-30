@@ -699,10 +699,11 @@ namespace ps2_stubs
         float m0[16]{}, m1[16]{}, out[16]{};
         if (readVuMatrix4f(rdram, m0Addr, m0) && readVuMatrix4f(rdram, m1Addr, m1))
         {
-            // out = m0 * m1 (first source . second source), matching the
-            // file's mulVuMatrix(lhs,rhs)=lhs.rhs convention and the RotMatrix
-            // / ViewScreenMatrix siblings (first operand on the left).
-            mulVuMatrix(m0, m1, out);
+            // libvu0 sceVu0MulMatrix(out, a, b) loads a (a1) into vf4..vf7 and runs each row of b (a2) through it:
+            // out[i] = b[i].x*a[0] + b[i].y*a[1] + b[i].z*a[2] + b[i].w*a[3], i.e. out = b . a under this file's
+            // mulVuMatrix(lhs, rhs) = lhs . rhs (row i of lhs times rhs). Computing a . b reversed every composed
+            // matrix (CoD's projection x view came out as view x projection: stretched geometry, w = object z).
+            mulVuMatrix(m1, m0, out);
             (void)writeVuMatrix4f(rdram, dstAddr, out);
         }
         setReturnS32(ctx, 0);
@@ -930,16 +931,9 @@ namespace ps2_stubs
         const uint32_t dstAddr = getRegU32(ctx, 4);
         const uint32_t srcAddr = getRegU32(ctx, 5);
         float src[4]{}, out[4]{};
-        float scale = ctx ? ctx->f[12] : 0.0f;
-        if (scale == 0.0f)
-        {
-            uint32_t raw = getRegU32(ctx, 6);
-            std::memcpy(&scale, &raw, sizeof(scale));
-            if (scale == 0.0f)
-            {
-                scale = static_cast<float>(getRegU32(ctx, 6));
-            }
-        }
+        // libvu0 (0x426b28) takes the scale in f12 only (mov.s f20, f12; mfc1; qmtc2): a zero scale is a real zero,
+        // not a cue to read a2.
+        const float scale = ctx ? ctx->f[12] : 0.0f;
 
         if (readVuVec4f(rdram, srcAddr, src))
         {

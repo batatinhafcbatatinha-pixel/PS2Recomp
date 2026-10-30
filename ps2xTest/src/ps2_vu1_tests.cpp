@@ -309,6 +309,35 @@ void register_ps2_vu1_tests()
                      "ITOF0 should convert negative fixed-point source bits");
         });
 
+        tc.Run("MAX and MINI move raw integer bit patterns unchanged", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
+
+            // MAX.xyzw vf2, vf1, vf1 (a VU "move" of GIF XYZ words); MINI.xyzw vf3, vf1, vf4
+            writeVuInstructionPair(fx.code, 0u, 0u, makeVuUpper(0x2Bu, 0xFu, 1u, 1u, 2u));
+            writeVuInstructionPair(fx.code, 8u, 0u, makeVuUpper(0x2Fu, 0xFu, 4u, 1u, 3u));
+
+            VU1Interpreter vu1;
+            const uint32_t raw[4] = {0x00009DCEu, 0xFFFF20EAu, 0x00008000u, 0x7F800001u};
+            std::memcpy(vu1.state().vf[1], raw, sizeof(raw));
+            const float other[4] = {1.0f, -1.0f, 0.0f, 1.0f};
+            std::memcpy(vu1.state().vf[4], other, sizeof(other));
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
+                        fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
+                        0u, 0u, 0u, 8u);
+
+            uint32_t moved[4], smaller[4];
+            std::memcpy(moved, vu1.state().vf[2], sizeof(moved));
+            std::memcpy(smaller, vu1.state().vf[3], sizeof(smaller));
+            for (int c = 0; c < 4; ++c)
+                t.Equals(moved[c], raw[c], "MAX vf, vf, vf must keep denormal, negative-integer and exponent-255 bits");
+            t.Equals(smaller[0], 0x00009DCEu, "MINI picks the positive denormal over 1.0 without flushing it");
+            t.Equals(smaller[1], 0xFFFF20EAu, "MINI orders an exponent-255 negative pattern below -1.0");
+            t.Equals(smaller[2], 0x00000000u, "MINI picks +0 over the positive denormal ADC word");
+            t.Equals(smaller[3], 0x3F800000u, "MINI picks 1.0 over an exponent-255 positive pattern");
+        });
+
         tc.Run("MTIR decodes fsf as a component selector", [](TestCase &t)
         {
             Vu1Fixture fx;

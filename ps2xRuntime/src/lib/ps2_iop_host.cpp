@@ -482,6 +482,51 @@ bool PS2IopHostAdapter::hasGuestFunction(uint32_t address) const
     return m_runtime.hasFunction(address);
 }
 
+bool PS2IopHostAdapter::canBindEeRpc(uint32_t sid) const
+{
+    std::lock_guard<std::mutex> lock(g_rpc_mutex);
+    return g_rpc_servers.find(sid) != g_rpc_servers.end();
+}
+
+bool PS2IopHostAdapter::callEeRpc(uint32_t sid, uint32_t function, const void *data, uint32_t size,
+                                 uint32_t replySize, std::function<void(const void *, uint32_t)> complete)
+{
+    if (size > 0x10000u || replySize > 0x10000u || (size && !data)) return false;
+    uint8_t *rdram = m_runtime.memory().getRDRAM();
+    uint32_t entry = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_rpc_mutex);
+        const auto found = g_rpc_servers.find(sid);
+        if (found == g_rpc_servers.end()) return false;
+        const auto *server = reinterpret_cast<const t_SifRpcServerData *>(getMemPtr(rdram, found->second.sd_ptr));
+        if (!server) return false;
+        entry = server->func;
+    }
+    if (!m_runtime.hasFunction(entry)) return false;
+    const uint32_t packet = m_runtime.guestMalloc(std::max(16u, size), 16u);
+    if (!packet) return false;
+    if (size && !writeGuest(packet, data, size)) { m_runtime.guestFree(packet); return false; }
+    GuestInvocation invocation{};
+    invocation.kind = GuestInvocationKind::RpcCallback;
+    invocation.context = m_activeContext ? *m_activeContext : m_runtime.cpu();
+    invocation.context.pc = entry;
+    SET_GPR_U32(&invocation.context, 4, function);
+    SET_GPR_U32(&invocation.context, 5, packet);
+    SET_GPR_U32(&invocation.context, 6, size);
+    SET_GPR_U32(&invocation.context, 29, 0u);
+    SET_GPR_U32(&invocation.context, 31, 0u);
+    invocation.onComplete = [this, packet, replySize, complete](const R5900Context &result, R5900Context &)
+    {
+        std::vector<uint8_t> reply(replySize);
+        const uint32_t address = getRegU32(&result, 2);
+        const bool valid = replySize == 0u || (address && readGuest(address, reply.data(), replySize));
+        if (complete) complete(valid ? reply.data() : nullptr, valid ? replySize : 0u);
+        m_runtime.guestFree(packet);
+    };
+    m_runtime.eeScheduler().queueInvocation(std::move(invocation));
+    return true;
+}
+
 bool PS2IopHostAdapter::invokeGuestFunction(uint64_t callToken,
                                             uint32_t address,
                                             uint32_t a0,

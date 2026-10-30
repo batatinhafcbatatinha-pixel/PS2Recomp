@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "iop_rpc.h"
 
 #include "../core/iop_cpu.h"
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <vector>
+#include <iostream>
 
 namespace ps2x::iop::detail
 {
@@ -38,7 +40,8 @@ namespace ps2x::iop::detail
             m_sifInitialized = true;
             setV0(0u);
             return true;
-        case 7: // sceSifSetDma
+        case 7:  // sceSifSetDma
+        case 32: // sceSifSetDmaIntr(transfers, count, handler, argument): handler runs when the DMA completes
         {
             constexpr uint32_t kDescriptorSize = 16u;
             constexpr uint32_t kMaxDescriptors = 32u;
@@ -77,6 +80,10 @@ namespace ps2x::iop::detail
                     continue;
 
                 const uint32_t size = static_cast<uint32_t>(signedSize);
+                static unsigned dmaProbe = 0;
+                if (++dmaProbe <= 32u)
+                    std::cerr << "[ff-iop-dma] src=0x" << std::hex << source
+                              << " dst=0x" << destination << std::dec << " size=" << size << std::endl;
                 if (!m_memory.ownsRamRange(source, size))
                 {
                     setV0(0u);
@@ -104,6 +111,13 @@ namespace ps2x::iop::detail
             for (uint32_t i = 0u; i < pendingCount; ++i)
             {
                 const PendingTransfer &transfer = pending[i];
+                if ((transfer.destination & 0x1FFFFFFFu) >= 0x1F00000u)
+                {
+                    static unsigned stackDma = 0;
+                    if (++stackDma <= 64u)
+                        std::cerr << "[iop-dma:high] dst=0x" << std::hex << transfer.destination << " size=0x" << transfer.size
+                                  << " src=0x" << transfer.source << std::dec << std::endl;
+                }
                 if (!m_memory.readRam(transfer.source, scratch.data(), transfer.size) || !m_host.writeGuest(transfer.destination, scratch.data(), transfer.size))
                 {
                     setV0(0u);
@@ -111,6 +125,8 @@ namespace ps2x::iop::detail
                 }
             }
 
+            if (ordinal == 32u && cpu.gpr[6] != 0u)
+                m_dmaCallback = DmaCallback{cpu.gpr[6], cpu.gpr[7], cpu.gpr[28]};
             const uint32_t dmaId = m_nextDmaId++;
             if (m_nextDmaId == 0u || m_nextDmaId > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
             {
@@ -133,6 +149,14 @@ namespace ps2x::iop::detail
 
     bool IopRpcBridge::dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu)
     {
+        if (ordinal == 15 || ordinal == 16)
+        {
+            static unsigned reverseProbe = 0;
+            if (++reverseProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 16u))
+                std::cerr << "[ff-iop-rpc-out] ordinal=" << ordinal << " a0=0x" << std::hex
+                          << cpu.gpr[4] << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6]
+                          << std::dec << std::endl;
+        }
         const auto setV0 = [&](uint32_t value)
         {
             cpu.gpr[2] = value;
@@ -148,10 +172,38 @@ namespace ps2x::iop::detail
         case 10:
         case 11:
         case 14: // InitRpc
-        case 15:
-        case 16:
             setV0(0);
             return true;
+        case 15: // Bind an IOP client to a registered EE server.
+            m_memory.write32(cpu.gpr[4] + 36u, m_host.canBindEeRpc(cpu.gpr[5]) ? cpu.gpr[5] : 0u);
+            setV0(0u);
+            return true;
+        case 16: // IOP -> EE RPC; completion resumes the blocked IOP thread.
+        {
+            const uint32_t size = m_memory.read32(cpu.gpr[29] + 16u);
+            const uint32_t receiveSize = m_memory.read32(cpu.gpr[29] + 24u);
+            const uint32_t sid = m_memory.read32(cpu.gpr[4] + 36u);
+            static uint32_t reverseCallLogs = 0;
+            if (reverseCallLogs++ < (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+                std::cerr << "[ff-iop-rpc-call] sid=0x" << std::hex << sid
+                      << " src=0x" << cpu.gpr[7] << " recv=0x" << m_memory.read32(cpu.gpr[29] + 20u)
+                      << std::dec << " size=" << size << " rsize=" << receiveSize << std::endl;
+            const uint32_t receive = m_memory.read32(cpu.gpr[29] + 20u);
+            if (size > 0x10000u || receiveSize > 0x10000u || !m_memory.ownsRamRange(cpu.gpr[7], size) ||
+                (receiveSize && !m_memory.ownsRamRange(receive, receiveSize)))
+            { setV0(0xFFFFFFFFu); return true; }
+            const int waiter = m_kernel.beginExternalWait(cpu);
+            if (!waiter) { setV0(0xFFFFFFFFu); return true; }
+            const bool queued = m_host.callEeRpc(sid, cpu.gpr[5], m_memory.ram().data() + IopMemory::physicalAddress(cpu.gpr[7]), size,
+                receiveSize, [this, receive, receiveSize, waiter](const void *reply, uint32_t bytes)
+                {
+                    const bool valid = bytes == receiveSize && (!bytes || (reply && m_memory.writeRam(receive, reply, bytes)));
+                    m_kernel.completeExternalWait(waiter, valid ? 0u : 0xFFFFFFFFu);
+                });
+            if (!queued) m_kernel.completeExternalWait(waiter, 0xFFFFFFFFu);
+            setV0(queued ? 0u : 0xFFFFFFFFu);
+            return true;
+        }
         case 12: // sceSifSendCmd
         case 13: // isceSifSendCmd
         {
@@ -220,6 +272,7 @@ namespace ps2x::iop::detail
             server.callback = m_memory.read32(stackPointer + 16u);
             server.callbackBuffer = m_memory.read32(stackPointer + 20u);
             server.queue = m_memory.read32(stackPointer + 24u);
+            server.thread = m_kernel.currentThreadId();
             m_servers[server.sid] = server;
             if (server.serverData != 0u)
             {
@@ -292,6 +345,12 @@ namespace ps2x::iop::detail
             }
         }
 
+        struct IdentityGuard
+        {
+            IopKernel &kernel;
+            int previous;
+            ~IdentityGuard() { (void)kernel.setIdentityThread(previous); }
+        } identity{m_kernel, m_kernel.setIdentityThread(server.thread)};
         uint32_t returnPointer = executor.executeGuestFunction(server.function,
                                                                request.function,
                                                                server.buffer,
@@ -300,6 +359,13 @@ namespace ps2x::iop::detail
                                                                server.gp);
         if (returnPointer == 0u)
             returnPointer = server.buffer;
+        if ((request.receive.address & 0x1FFFFFFFu) >= 0x1F00000u && request.receive.size != 0u)
+        {
+            static unsigned stackReceive = 0;
+            if (++stackReceive <= 64u)
+                std::cerr << "[iop-rpc:high-recv] sid=0x" << std::hex << request.sid << " recv=0x" << request.receive.address
+                          << " size=0x" << request.receive.size << std::dec << std::endl;
+        }
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
         {
             const uint32_t physical = IopMemory::physicalAddress(returnPointer);

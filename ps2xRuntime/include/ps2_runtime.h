@@ -384,6 +384,9 @@ public:
     uint32_t guestHeapEnd() const;
     uint32_t guestHeapLimit() const;
     uint32_t reserveAsyncCallbackStack(uint32_t size, uint32_t alignment = 16u);
+    bool shrinkRuntimeArena(uint32_t limit);
+    // Keeps async callback stacks below a guest-owned stack region (e.g. main thread stack at top of RAM).
+    void reserveGuestStackRegion(uint32_t stackBase, uint32_t stackTop);
 
     void drainCompletedDmacHandlers(uint8_t *rdram);
 
@@ -515,6 +518,7 @@ private:
     bool m_guestHeapConfigured = false;
     uint32_t m_asyncCallbackStackFloor = 0x01F00000u;
     uint32_t m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    uint32_t m_runtimeArenaEnd = 0x01FE0000u;
 
     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
     std::atomic<bool> m_missingFunctionReported{false};

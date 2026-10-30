@@ -904,7 +904,8 @@ void register_ps2_runtime_kernel_tests()
             t.Equals(heapLimit, 0x00181010u, "EndOfHeap should report the upper limit of the configured heap");
 
             const uint32_t alignedAlloc = env.runtime.guestMalloc(0x20u, 64u);
-            t.IsTrue(alignedAlloc != 0u, "guestMalloc should allocate inside configured heap");
+            t.IsTrue(alignedAlloc != 0u, "guestMalloc should allocate");
+            t.IsTrue(alignedAlloc >= heapLimit, "guestMalloc should allocate outside the game heap (SetupHeap..EndOfHeap)");
             t.Equals(alignedAlloc & 0x3Fu, 0u, "guestMalloc should honor 64-byte alignment");
 
             env.runtime.guestFree(alignedAlloc);
@@ -919,7 +920,7 @@ void register_ps2_runtime_kernel_tests()
 
             env.runtime.guestFree(grown);
             const uint32_t reused = env.runtime.guestMalloc(0x80u, 16u);
-            t.Equals(reused, heapBase, "guestFree should make the head block reusable");
+            t.Equals(reused, alignedAlloc, "guestFree should make the head block of the runtime arena reusable");
         });
 
         tc.Run("memalign stubs allocate aligned guest memory", [](TestCase &t)

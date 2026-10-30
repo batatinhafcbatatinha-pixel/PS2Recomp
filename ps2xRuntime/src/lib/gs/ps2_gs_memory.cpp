@@ -1,4 +1,5 @@
 #include <array>
+#include <mutex>
 
 #include "runtime/gs/ps2_gs_memory.h"
 
@@ -203,21 +204,76 @@ namespace GSMem
 
     void InitLookupTables()
     {
-        // 32 bit
-        PixelStorageTraits<C32>::InitPageLookupTable(PageTableC32, BlockTableC32, ColumnTable32);
-        PixelStorageTraits<Z32>::InitPageLookupTable(PageTableZ32, BlockTableZ32, ColumnTable32);
+        // GOW-Port: tablas inmutables compartidas entre CPU y el hilo OpenGL.
+        static std::once_flag once;
+        std::call_once(once, [] {
+            // 32 bit
+            PixelStorageTraits<C32>::InitPageLookupTable(PageTableC32, BlockTableC32, ColumnTable32);
+            PixelStorageTraits<Z32>::InitPageLookupTable(PageTableZ32, BlockTableZ32, ColumnTable32);
 
-        // 16 bit
-        PixelStorageTraits<C16>::InitPageLookupTable(PageTableC16, BlockTableC16, ColumnTable16);
-        PixelStorageTraits<C16S>::InitPageLookupTable(PageTableC16S, BlockTableC16S, ColumnTable16);
-        PixelStorageTraits<Z16>::InitPageLookupTable(PageTableZ16, BlockTableZ16, ColumnTable16);
-        PixelStorageTraits<Z16S>::InitPageLookupTable(PageTableZ16S, BlockTableZ16S, ColumnTable16);
+            // 16 bit
+            PixelStorageTraits<C16>::InitPageLookupTable(PageTableC16, BlockTableC16, ColumnTable16);
+            PixelStorageTraits<C16S>::InitPageLookupTable(PageTableC16S, BlockTableC16S, ColumnTable16);
+            PixelStorageTraits<Z16>::InitPageLookupTable(PageTableZ16, BlockTableZ16, ColumnTable16);
+            PixelStorageTraits<Z16S>::InitPageLookupTable(PageTableZ16S, BlockTableZ16S, ColumnTable16);
 
-        // 8 bit
-        PixelStorageTraits<P8>::InitPageLookupTable(PageTableP8, BlockTableP8, ColumnTable8);
+            // 8 bit
+            PixelStorageTraits<P8>::InitPageLookupTable(PageTableP8, BlockTableP8, ColumnTable8);
 
-        // 4 bit
-        PixelStorageTraits<P4>::InitPageLookupTable(PageTableP4, BlockTableP4, ColumnTable4);
+            // 4 bit
+            PixelStorageTraits<P4>::InitPageLookupTable(PageTableP4, BlockTableP4, ColumnTable4);
+        });
+    }
+
+    // GOW-Port: adaptado de Taylor N. Albarnaz / LightVelox (GPL-3.0).
+    // Origen: PS2Recomp sotc-port, ac9efa070638ad3b3accd284de6f898d5ab271d1.
+    const u16* PageTableData(PixelStorageMode psm)
+    {
+        switch (psm)
+        {
+        case C32:
+        case C24:
+        case P8H:
+        case P4HL:
+        case P4HH:
+            return &PageTableC32[0][0][0];
+        case Z32:
+        case Z24:
+            return &PageTableZ32[0][0][0];
+        case C16:
+            return &PageTableC16[0][0][0];
+        case C16S:
+            return &PageTableC16S[0][0][0];
+        case Z16:
+            return &PageTableZ16[0][0][0];
+        case Z16S:
+            return &PageTableZ16S[0][0][0];
+        case P8:
+            return &PageTableP8[0][0][0];
+        case P4:
+            return &PageTableP4[0][0][0];
+        default:
+            return nullptr;
+        }
+    }
+
+    // Page lookup entry used by GSGpuBackend to address local memory exactly like
+    // these tables. Layouts: 0 C32, 1 Z32, 2 C16, 3 C16S, 4 Z16, 5 Z16S, 6 P8, 7 P4.
+    u32 PageTableEntry(u32 layout, u32 block, u32 y, u32 x)
+    {
+        InitLookupTables();
+        switch (layout)
+        {
+        case 0: return static_cast<u32>(PageTableC32[block][y][x]);
+        case 1: return static_cast<u32>(PageTableZ32[block][y][x]);
+        case 2: return static_cast<u32>(PageTableC16[block][y][x]);
+        case 3: return static_cast<u32>(PageTableC16S[block][y][x]);
+        case 4: return static_cast<u32>(PageTableZ16[block][y][x]);
+        case 5: return static_cast<u32>(PageTableZ16S[block][y][x]);
+        case 6: return static_cast<u32>(PageTableP8[block][y][x]);
+        case 7: return static_cast<u32>(PageTableP4[block][y][x]);
+        default: return 0u;
+        }
     }
 
     u32 ReadTexture(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw, u32 x, u32 y)
@@ -322,6 +378,92 @@ namespace GSMem
 
     void WriteNull(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value)
     {
+    }
+
+    namespace
+    {
+        template<PixelStorageMode psm, typename Table, typename Fetch>
+        void writeRunT(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, Fetch fetch)
+        {
+            using Packed = typename PixelStorageTraits<psm>::PackedT;
+            for (u32 i = 0; i < count; ++i)
+                PixelStorageTraits<psm>::Write(table, data, bp, bw, x + i, y, static_cast<Packed>(fetch(i)));
+        }
+    }
+
+    namespace
+    {
+        template<PixelStorageMode psm, typename Table>
+        void readIndexRunT(const Table& table, const u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, u8* out)
+        {
+            for (u32 i = 0; i < count; ++i)
+                out[i] = static_cast<u8>(PixelStorageTraits<psm>::Read(table, data, bp, bw, x + i, y));
+        }
+    }
+
+    void ReadIndexRun(const u8* data, u32 psm, u32 bp, u32 bw, u32 x, u32 y, u32 count, u8* out)
+    {
+        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
+        {
+        case P8: readIndexRunT<P8>(PageTableP8, data, bp, bw, x, y, count, out); break;
+        case P8H: readIndexRunT<P8H>(PageTableC32, data, bp, bw, x, y, count, out); break;
+        case P4: readIndexRunT<P4>(PageTableP4, data, bp, bw, x, y, count, out); break;
+        case P4HL: readIndexRunT<P4HL>(PageTableC32, data, bp, bw, x, y, count, out); break;
+        case P4HH: readIndexRunT<P4HH>(PageTableC32, data, bp, bw, x, y, count, out); break;
+        default: std::memset(out, 0, count); break;
+        }
+    }
+
+    namespace
+    {
+        template<PixelStorageMode psm, typename Table>
+        void readColorRunT(const Table& table, const u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, u32* out)
+        {
+            for (u32 i = 0; i < count; ++i)
+                out[i] = static_cast<u32>(PixelStorageTraits<psm>::Read(table, data, bp, bw, x + i, y));
+        }
+    }
+
+    bool ReadColorRun(const u8* data, u32 psm, u32 bp, u32 bw, u32 x, u32 y, u32 count, u32* out)
+    {
+        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
+        {
+        case C32: readColorRunT<C32>(PageTableC32, data, bp, bw, x, y, count, out); return true;
+        case Z32: readColorRunT<Z32>(PageTableZ32, data, bp, bw, x, y, count, out); return true;
+        case C24: readColorRunT<C24>(PageTableC32, data, bp, bw, x, y, count, out); return true;
+        case Z24: readColorRunT<Z24>(PageTableZ32, data, bp, bw, x, y, count, out); return true;
+        case C16: readColorRunT<C16>(PageTableC16, data, bp, bw, x, y, count, out); return true;
+        case C16S: readColorRunT<C16S>(PageTableC16S, data, bp, bw, x, y, count, out); return true;
+        case Z16: readColorRunT<Z16>(PageTableZ16, data, bp, bw, x, y, count, out); return true;
+        case Z16S: readColorRunT<Z16S>(PageTableZ16S, data, bp, bw, x, y, count, out); return true;
+        default: return false;
+        }
+    }
+
+    void WriteRun(u8* data, u32 psm, u32 bp, u32 bw, u32 x, u32 y, const u8* src, u32 srcPixel, u32 count)
+    {
+        auto f32 = [src, srcPixel](u32 i) { u32 v; std::memcpy(&v, src + (srcPixel + i) * 4u, 4u); return v; };
+        auto f24 = [src, srcPixel](u32 i) { const u8* p = src + (srcPixel + i) * 3u; return u32(p[0]) | (u32(p[1]) << 8) | (u32(p[2]) << 16); };
+        auto f16 = [src, srcPixel](u32 i) { u16 v; std::memcpy(&v, src + (srcPixel + i) * 2u, 2u); return u32(v); };
+        auto f8 = [src, srcPixel](u32 i) { return u32(src[srcPixel + i]); };
+        auto f4 = [src, srcPixel](u32 i) { const u32 n = srcPixel + i; return u32(src[n >> 1] >> ((n & 1u) * 4u)) & 0x0Fu; };
+        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
+        {
+        case C32: writeRunT<C32>(PageTableC32, data, bp, bw, x, y, count, f32); break;
+        case Z32: writeRunT<Z32>(PageTableZ32, data, bp, bw, x, y, count, f32); break;
+        case C24: writeRunT<C24>(PageTableC32, data, bp, bw, x, y, count, f24); break;
+        case Z24: writeRunT<Z24>(PageTableZ32, data, bp, bw, x, y, count, f24); break;
+        case C16: writeRunT<C16>(PageTableC16, data, bp, bw, x, y, count, f16); break;
+        case C16S: writeRunT<C16S>(PageTableC16S, data, bp, bw, x, y, count, f16); break;
+        case Z16: writeRunT<Z16>(PageTableZ16, data, bp, bw, x, y, count, f16); break;
+        case Z16S: writeRunT<Z16S>(PageTableZ16S, data, bp, bw, x, y, count, f16); break;
+        case P8: writeRunT<P8>(PageTableP8, data, bp, bw, x, y, count, f8); break;
+        case P8H: writeRunT<P8H>(PageTableC32, data, bp, bw, x, y, count, f8); break;
+        case P4: writeRunT<P4>(PageTableP4, data, bp, bw, x, y, count, f4); break;
+        case P4HL: writeRunT<P4HL>(PageTableC32, data, bp, bw, x, y, count, f4); break;
+        case P4HH: writeRunT<P4HH>(PageTableC32, data, bp, bw, x, y, count, f4); break;
+        default: break;
+        }
     }
 
     u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y)

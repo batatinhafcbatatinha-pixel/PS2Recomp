@@ -172,7 +172,7 @@ namespace ps2x::iop::detail
             return true;
         }
         case 20:
-            setV0(m_currentThread != nullptr ? m_currentThread->id : 0);
+            setV0(m_currentThread != nullptr ? m_currentThread->id : m_identityThreadId);
             return true;
         case 21:
             setV0(0x1000);
@@ -302,8 +302,8 @@ namespace ps2x::iop::detail
 
     bool IopKernel::referThreadStatus(int id, uint32_t outputAddress)
     {
-        if (id == 0 && m_currentThread != nullptr)
-            id = m_currentThread->id;
+        if (id == 0)
+            id = m_currentThread != nullptr ? m_currentThread->id : m_identityThreadId;
         const auto it = m_threads.find(id);
         if (it == m_threads.end() || outputAddress == 0u)
             return false;
@@ -658,6 +658,22 @@ namespace ps2x::iop::detail
             return;
         m_currentThread->state = IopThreadState::Sleep;
         cpu.yielded = true;
+    }
+
+    int IopKernel::beginExternalWait(IopCpuState &cpu)
+    {
+        if (!m_currentThread) return 0;
+        const int id = m_currentThread->id;
+        sleepCurrent(cpu);
+        return id;
+    }
+
+    void IopKernel::completeExternalWait(int threadId, uint32_t result)
+    {
+        const auto found = m_threads.find(threadId);
+        if (found == m_threads.end() || found->second.state != IopThreadState::Sleep) return;
+        found->second.cpu.gpr[2] = result;
+        found->second.state = IopThreadState::Ready;
     }
 
     void IopKernel::delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu)

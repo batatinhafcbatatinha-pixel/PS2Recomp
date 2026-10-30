@@ -80,6 +80,8 @@ namespace ps2_stubs
         {
             std::string currentDir = "/";
             bool formatted = true;
+            std::vector<SceMcTblGetDir> directoryEntries;
+            size_t directoryCursor = 0;
         };
 
         std::mutex g_mcStateMutex;
@@ -699,6 +701,7 @@ namespace ps2_stubs
         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
         const std::string rawPath = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
+        const uint32_t mode = getRegU32(ctx, 7);
         const int32_t maxEntries = static_cast<int32_t>(getRegU32(ctx, 8));
         const uint32_t tableAddr = getRegU32(ctx, 9);
 
@@ -709,7 +712,24 @@ namespace ps2_stubs
             if (isValidMcPortSlot(port, slot))
             {
                 McPortState &state = g_mcPorts[static_cast<size_t>(port)];
-                if (!state.formatted)
+                if (mode == 0u) {
+                    state.directoryEntries.clear();
+                    state.directoryCursor = 0;
+                }
+                if (mode == 1u && state.formatted)
+                {
+                    const size_t remaining = state.directoryEntries.size() - state.directoryCursor;
+                    const size_t count = std::min(remaining, maxEntries > 0 ? static_cast<size_t>(maxEntries) : 0u);
+                    result = static_cast<int32_t>(count);
+                    if (count && tableAddr) {
+                        if (uint8_t *dst = getMemPtr(rdram, tableAddr)) {
+                            std::memcpy(dst, state.directoryEntries.data() + state.directoryCursor,
+                                        count * sizeof(SceMcTblGetDir));
+                            state.directoryCursor += count;
+                        } else result = kMcResultDeniedPermit;
+                    }
+                }
+                else if (!state.formatted)
                 {
                     result = kMcResultNoFormat;
                 }
@@ -821,6 +841,8 @@ namespace ps2_stubs
                             entries.push_back(tableEntry);
                         }
 
+                        state.directoryEntries = entries;
+                        state.directoryCursor = 0;
                         const size_t entryCount =
                             std::min(entries.size(), maxEntries > 0 ? static_cast<size_t>(maxEntries) : 0u);
                         if (entryCount == 0u || tableAddr == 0u)
@@ -831,6 +853,7 @@ namespace ps2_stubs
                         {
                             std::memcpy(dst, entries.data(), entryCount * sizeof(SceMcTblGetDir));
                             result = static_cast<int32_t>(entryCount);
+                            state.directoryCursor = entryCount;
                         }
                         else
                         {
@@ -843,7 +866,7 @@ namespace ps2_stubs
             setMcCommandResultLocked(kMcCmdGetDir, result);
         }
         RUNTIME_LOG("[MC] GetDir port=" << port << " '" << rawPath
-                                        << "' maxent=" << maxEntries << " -> result=" << result);
+                                        << "' mode=" << mode << " maxent=" << maxEntries << " -> result=" << result);
         setReturnS32(ctx, 0);
     }
 

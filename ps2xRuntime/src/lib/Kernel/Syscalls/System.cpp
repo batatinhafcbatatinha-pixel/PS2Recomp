@@ -496,7 +496,8 @@ namespace ps2_syscalls
                 const uint32_t requestedSize = static_cast<uint32_t>(stackSizeSigned);
                 if (requestedSize < PS2_RAM_SIZE)
                 {
-                    sp = PS2_RAM_SIZE - requestedSize;
+                    // The stack occupies [RAM end - size, RAM end) and grows down from the end of RAM.
+                    sp = PS2_RAM_SIZE;
                 }
                 else
                 {
@@ -530,11 +531,21 @@ namespace ps2_syscalls
             initialStack = stack;
         }
 
+        if (stackSize != 0u)
+        {
+            const uint32_t stackBase = (stack == 0xFFFFFFFFu) ? (stackSize < PS2_RAM_SIZE ? PS2_RAM_SIZE - stackSize : 0u) : stack;
+            runtime->reserveGuestStackRegion(stackBase, stackBase + stackSize);
+        }
+        std::cerr << "[ee:setup-thread] stack=0x" << std::hex << stack << " size=0x" << stackSize << " sp=0x" << sp
+                  << std::dec << std::endl;
         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
         setReturnU32(ctx, sp);
     }
 
     // 0x3D SetupHeap: returns heap base/start pointer
+    // End of the game's heap (EndOfHeap); the runtime's arena starts at this address.
+    uint32_t g_gameHeapEnd = 0x01F00000u;
+
     void SetupHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t heapBaseRaw = getRegU32(ctx, 4); // $a0
@@ -557,39 +568,20 @@ namespace ps2_syscalls
             heapLimit = kDefaultGuestHeapEnd;
         }
 
-        if (runtime)
-        {
-            runtime->configureGuestHeap(heapBase, heapLimit);
-
-            PS2_IF_AGRESSIVE_LOGS({
-                std::cerr << "[SetupHeap]"
-                          << " base=0x" << std::hex << heapBaseRaw
-                          << " alignedBase=0x" << heapBase
-                          << " size=0x" << heapSize
-                          << " runtimeBase=0x" << runtime->guestHeapBase()
-                          << " runtimeEnd=0x" << runtime->guestHeapEnd()
-                          << std::dec << std::endl;
-            });
-
-            setReturnU32(ctx, runtime->guestHeapBase());
-            return;
-        }
-
+        // The range belongs to the game (its sbrk grows from heapBase up to EndOfHeap). The runtime's own allocations
+        // come from a separate arena above it, so this call no longer configures them.
+        (void)runtime;
+        g_gameHeapEnd = heapLimit;
+        std::cerr << "[SetupHeap] base=0x" << std::hex << heapBaseRaw << " end=0x" << heapLimit << std::dec << std::endl;
         setReturnU32(ctx, heapBase);
     }
 
-    // 0x3E EndOfHeap: commonly returns current heap end; keep it stable for now.
+    // 0x3E EndOfHeap: the end of the game's heap set by SetupHeap.
     void EndOfHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)rdram;
-
-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
-
-        const uint32_t ret = runtime
-                                 ? runtime->guestHeapLimit()
-                                 : kDefaultGuestHeapEnd;
-
-        setReturnU32(ctx, ret);
+        (void)runtime;
+        setReturnU32(ctx, g_gameHeapEnd);
     }
 
     void GetMemorySize(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

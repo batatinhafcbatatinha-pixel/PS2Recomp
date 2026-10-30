@@ -58,6 +58,8 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
 
         void sleepCurrent(IopCpuState &cpu);
+        int beginExternalWait(IopCpuState &cpu);
+        void completeExternalWait(int threadId, uint32_t result);
         void delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu);
 
         [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle);
@@ -67,6 +69,12 @@ namespace ps2x::iop::detail
         void terminateThreadsInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] size_t threadCount() const noexcept { return m_threads.size(); }
+
+        // RPC server functions run through the bridge outside the scheduler, but on hardware they run inside the
+        // thread that called sceSifRegisterRpc/sceSifRpcLoop. While no thread is current, GetThreadId and
+        // ReferThreadStatus(0) report this identity (e.g. Ben10's IOMGR reads its context from the thread option).
+        [[nodiscard]] int currentThreadId() const noexcept { return m_currentThread ? m_currentThread->id : 0; }
+        int setIdentityThread(int id) noexcept { const int previous = m_identityThreadId; m_identityThreadId = id; return previous; }
 
     private:
         struct Semaphore
@@ -99,5 +107,6 @@ namespace ps2x::iop::detail
         uint32_t m_nextSemaphoreId = 1;
         uint32_t m_nextEventFlagId = 1;
         IopThread *m_currentThread = nullptr;
+        int m_identityThreadId = 0;
     };
 }
