@@ -357,7 +357,16 @@ namespace
     thread_local bool t_vifProducer = false;
     thread_local uint32_t t_vifFbrst = 0u;
     constexpr uint64_t kMaxQueuedVifJobs = 1024u;
-    size_t g_path3Consumed = 0u; // bytes of m_path3MaskedFifo's first buffer already released by MSKPATH3 gates
+    // The queued PATH3 fragments joined, for walking GIF tags (games open tens of gates per frame over one list), and how
+    // far gates have released it. The fragments stay in m_path3MaskedFifo: an unmask without gates sends them as they came.
+    std::vector<uint8_t> g_path3Stream;
+    size_t g_path3Joined = 0u, g_path3Consumed = 0u;
+    void resetPath3Stream()
+    {
+        g_path3Stream.clear();
+        g_path3Joined = 0u;
+        g_path3Consumed = 0u;
+    }
 }
 
 bool PS2Memory::onVifWorker() { return t_onVifWorker; }
@@ -512,7 +521,7 @@ bool PS2Memory::initialize(size_t ramSize)
     m_codeRegions.clear();
     m_path3Masked = false;
     m_path3MaskedFifo.clear();
-    g_path3Consumed = 0u;
+    resetPath3Stream();
     m_vif1PendingPath2ImageQwc = 0u;
     m_vif1PendingPath2DirectHl = false;
     m_vif1Carry.clear();
@@ -1517,7 +1526,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             if (channelBase == 0x1000A000u && m_path3Masked)
             {
                 m_path3MaskedFifo.clear();
-                g_path3Consumed = 0u;
+                resetPath3Stream();
             }
 
             const uint32_t madr = m_ioRegisters[channelBase + 0x10];
@@ -2231,18 +2240,9 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately, bool firstPacketO
         // but takes effect only after all its payload (including IMAGE) arrives.
         // The list stays in one buffer and the read position moves: games open
         // tens of gates per frame over a list of many megabytes in total.
-        if (m_path3MaskedFifo.size() > 1u)
-        {
-            std::vector<uint8_t> &first = m_path3MaskedFifo.front();
-            size_t total = first.size();
-            for (size_t i = 1; i < m_path3MaskedFifo.size(); ++i)
-                total += m_path3MaskedFifo[i].size();
-            first.reserve(total);
-            for (size_t i = 1; i < m_path3MaskedFifo.size(); ++i)
-                first.insert(first.end(), m_path3MaskedFifo[i].begin(), m_path3MaskedFifo[i].end());
-            m_path3MaskedFifo.resize(1u);
-        }
-        const std::vector<uint8_t> &stream = m_path3MaskedFifo.front();
+        for (; g_path3Joined < m_path3MaskedFifo.size(); ++g_path3Joined)
+            g_path3Stream.insert(g_path3Stream.end(), m_path3MaskedFifo[g_path3Joined].begin(), m_path3MaskedFifo[g_path3Joined].end());
+        const std::vector<uint8_t> &stream = g_path3Stream;
         const size_t start = g_path3Consumed;
         size_t offset = start;
         while (stream.size() - offset >= 16u)
@@ -2263,7 +2263,7 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately, bool firstPacketO
                 if (offset >= stream.size())
                 {
                     m_path3MaskedFifo.clear();
-                    g_path3Consumed = 0u;
+                    resetPath3Stream();
                 }
                 else
                 {
@@ -2279,10 +2279,14 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately, bool firstPacketO
 
     if (g_path3Consumed != 0u)
     {
-        std::vector<uint8_t> &first = m_path3MaskedFifo.front();
-        first.erase(first.begin(), first.begin() + static_cast<std::ptrdiff_t>(g_path3Consumed));
-        g_path3Consumed = 0u;
+        // gates released the start of the list: what is left goes as one block
+        for (; g_path3Joined < m_path3MaskedFifo.size(); ++g_path3Joined)
+            g_path3Stream.insert(g_path3Stream.end(), m_path3MaskedFifo[g_path3Joined].begin(), m_path3MaskedFifo[g_path3Joined].end());
+        if (g_path3Stream.size() - g_path3Consumed >= 16u)
+            emit(g_path3Stream.data() + g_path3Consumed, static_cast<uint32_t>(g_path3Stream.size() - g_path3Consumed));
+        m_path3MaskedFifo.clear();
     }
+    resetPath3Stream();
     for (const auto &packet : m_path3MaskedFifo)
     {
         if (packet.size() >= 16u)
