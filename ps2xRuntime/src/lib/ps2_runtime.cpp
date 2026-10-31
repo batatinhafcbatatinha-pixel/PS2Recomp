@@ -34,6 +34,7 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
+#include "GameHostThread.h"
 #include "Kernel/Stubs/Audio.h"
 #include "Kernel/Stubs/GS.h"
 #include "Kernel/Stubs/MPEG.h"
@@ -2986,7 +2987,7 @@ void PS2Runtime::run()
     }
 #endif
 
-    std::thread gameThread([&]()
+    GameHostThread gameThread([&]()
                            {
         ThreadNaming::SetCurrentThreadName("GameThread");
         ps2ProfilerRegisterCurrentThread("game");
