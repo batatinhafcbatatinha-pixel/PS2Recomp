@@ -397,6 +397,17 @@ function(ps2x_stage_ffmpeg_runtime_dlls target_name)
     )
 endfunction()
 
+# Keep textual engines/shaders in the build graph even when a compiler's
+# localized include-output parser cannot discover their .inl dependencies.
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu/ps2_vu1_core.cpp"
+    APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu/ps2_vu1_native.inl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu/ps2_vu1_step.inl")
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/gs/gs_gpu_backend.cpp"
+    APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/gs/gs_gpu_shaders.inl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/gs/gs_gpu_scanout.inl")
+
 add_library(ps2_runtime STATIC
     src/lib/game_overrides.cpp
     src/lib/gs/ps2_gif_arbiter.cpp

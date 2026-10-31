@@ -488,7 +488,7 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
             const bool wasMasked = m_path3Masked;
             m_path3Masked = (imm & 0x8000u) != 0u;
             if (wasMasked && !m_path3Masked)
-                flushMaskedPath3Packets();
+                flushMaskedPath3Packets(true, true);
             continue;
         }
         else if (opcode == VIF_MARK)
@@ -499,6 +499,8 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
         }
         else if (opcode == VIF_FLUSHE || opcode == VIF_FLUSH || opcode == VIF_FLUSHA)
         {
+            if (opcode == VIF_FLUSHA)
+                flushMaskedPath3Packets();
             continue;
         }
         else if (opcode == VIF_MSCAL || opcode == VIF_MSCALF)
@@ -929,4 +931,6 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
     if (pos < sizeBytes && m_vif1PendingPath2ImageQwc == 0u)
         carry(pos); // a VIFcode cut by the transfer boundary
 
+    // No following remask in this scheduling slice: allow PATH3 to run freely.
+    flushMaskedPath3Packets();
 }

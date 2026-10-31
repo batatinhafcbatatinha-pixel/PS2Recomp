@@ -15,6 +15,7 @@ add_library(ps2_gs_cache_backend_under_test STATIC
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/gs_cpu_backend.cpp"
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/gs_frontend.cpp"
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/ps2_gs_memory.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/gs_diagnostic_stubs.cpp"
 )
 target_include_directories(ps2_gs_cache_backend_under_test PUBLIC "${PS2_GS_RUNTIME_DIR}/include")
 target_compile_features(ps2_gs_cache_backend_under_test PUBLIC cxx_std_20)
@@ -51,6 +52,9 @@ add_gs_cache_suite(ps2_gs_clut_cache_tests gs_clut_cache_tests.cpp clut
     retained_palette clut_uses_page_cache cbp0_conditional cbp1_conditional
     reserved_cld nonindexed_cld tex2_reload shared_contexts
     csa_ct32 csa_ct16 csa_ct16s texa_without_reload palette_before_filtering high_planes)
+
+add_gs_cache_suite(ps2_gs_gouraud_tests gs_gouraud_tests.cpp gouraud
+    constant_alpha_equal constant_alpha_gequal neutral_modulation low_alpha_still_fails)
 
 if(PS2_GS_CACHE_BUILD_MEMORY_TESTS)
     add_gs_cache_suite(ps2_gs_memory_cache_tests gs_memory_cache_tests.cpp memory

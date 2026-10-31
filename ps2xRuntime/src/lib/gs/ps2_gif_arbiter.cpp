@@ -1,6 +1,11 @@
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+
+bool Ps2GifOrderTraceEnabled();
+void Ps2TraceGifOrder(const char *stage, unsigned path, const uint8_t *data, uint32_t size,
+                      const void *owner, size_t pendingGif, size_t pendingVif, const char *extra);
 
 GifArbiter::GifArbiter(ProcessPacketFn processFn)
     : m_processFn(std::move(processFn))
@@ -29,6 +34,10 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
     pkt.data.resize(sizeBytes);
     std::memcpy(pkt.data.data(), data, sizeBytes);
+    char detail[128];
+    std::snprintf(detail, sizeof(detail), "{\"queue_index\":%zu,\"direct_hl\":%s,\"image\":%s}",
+        m_queue.size(), pkt.path2DirectHl ? "true" : "false", pkt.path3Image ? "true" : "false");
+    Ps2TraceGifOrder("arbiter-enqueue", static_cast<unsigned>(pathId), data, sizeBytes, this, 0u, 0u, detail);
     m_queue.push_back(std::move(pkt));
 }
 
@@ -37,6 +46,14 @@ void GifArbiter::drain()
     if (!m_processFn)
         return;
 
+    if (Ps2GifOrderTraceEnabled())
+    for (size_t i = 0; i < m_queue.size(); ++i)
+    {
+        const auto &pkt = m_queue[i];
+        char detail[96]; std::snprintf(detail, sizeof(detail), "{\"index\":%zu,\"queue_size\":%zu}", i, m_queue.size());
+        Ps2TraceGifOrder("arbiter-before-sort", static_cast<unsigned>(pkt.pathId), pkt.data.data(),
+            static_cast<uint32_t>(pkt.data.size()), this, 0u, 0u, detail);
+    }
     std::stable_sort(m_queue.begin(), m_queue.end(),
                      [](const GifArbiterPacket &a, const GifArbiterPacket &b)
                      {
@@ -56,6 +73,9 @@ void GifArbiter::drain()
         auto &pkt = m_queue[i];
         if (!pkt.data.empty())
         {
+            char detail[96]; std::snprintf(detail, sizeof(detail), "{\"index\":%zu,\"queue_size\":%zu}", i, m_queue.size());
+            Ps2TraceGifOrder("arbiter-dispatch", static_cast<unsigned>(pkt.pathId), pkt.data.data(),
+                static_cast<uint32_t>(pkt.data.size()), this, 0u, 0u, detail);
             m_processFn(pkt.data.data(), static_cast<uint32_t>(pkt.data.size()));
         }
     }

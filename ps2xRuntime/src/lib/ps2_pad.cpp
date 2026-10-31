@@ -1,5 +1,6 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include "host_pc_menu.h"
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
@@ -57,6 +58,9 @@ static bool readHostPadState(int port, uint8_t *data, size_t size)
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
 
+    // The PC settings menu owns the keyboard and pads while it is open (and until its keys are released).
+    if (host_menu::open || host_menu::suppressPad)
+        return true;
     if (useGamepad)
     {
         if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_UP))

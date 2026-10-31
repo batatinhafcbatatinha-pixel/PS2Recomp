@@ -243,9 +243,11 @@ namespace
         uint32_t minV, maxV, ta0, ta1;
         uint32_t aem, fogColor, texW, texH;
         int32_t ofx, ofy;
-        uint32_t pad0, pad1;
+        uint32_t tex1Lo, tex1Hi;
+        uint32_t mip1Lo, mip1Hi, mip2Lo, mip2Hi;
+        uint32_t pad0, pad1, pad2, pad3;
     };
-    static_assert(sizeof(GpuState) == 40 * 4, "GpuState must match the GLSL layout");
+    static_assert(sizeof(GpuState) == 48 * 4, "GpuState must match the GLSL layout");
 
     constexpr uint32_t kFlagIip = 1u, kFlagTme = 2u, kFlagFge = 4u, kFlagAbe = 8u, kFlagFst = 16u, kFlagPabe = 32u, kFlagLinear = 64u;
     constexpr uint32_t kVramSize = 4u * 1024u * 1024u;
@@ -306,6 +308,12 @@ namespace
         s.texH = std::max<uint32_t>(st.textureHeight, 1u);
         s.ofx = ctx.xyoffset.ofx >> 4;
         s.ofy = ctx.xyoffset.ofy >> 4;
+        s.tex1Lo = static_cast<uint32_t>(ctx.tex1);
+        s.tex1Hi = static_cast<uint32_t>(ctx.tex1 >> 32u);
+        s.mip1Lo = static_cast<uint32_t>(ctx.miptbp1);
+        s.mip1Hi = static_cast<uint32_t>(ctx.miptbp1 >> 32u);
+        s.mip2Lo = static_cast<uint32_t>(ctx.miptbp2);
+        s.mip2Hi = static_cast<uint32_t>(ctx.miptbp2 >> 32u);
         return s;
     }
 
@@ -373,7 +381,14 @@ struct GSGpuBackend::Impl
 
     std::mutex queueMutex;
     std::condition_variable queueCv;
-    std::deque<std::function<void()>> queue;
+    struct Job
+    {
+        uint64_t id = 0;
+        std::function<void()> work;
+        std::string label;
+        std::string metadata;
+    };
+    std::deque<Job> queue;
     bool stopping = false;
     bool requireHardware = false;
 
@@ -420,7 +435,7 @@ struct GSGpuBackend::Impl
     // (counted as queue-full in [gs:sync]) instead of growing the queue without limit.
     static constexpr size_t kMaxQueuedJobs = 2048u;
     std::condition_variable queueSpaceCv;
-    void enqueue(std::function<void()> job)
+    void enqueue(std::function<void()> job, const char *label = "job", std::string metadata = "{}")
     {
         {
             std::unique_lock<std::mutex> lock(queueMutex);
@@ -429,7 +444,9 @@ struct GSGpuBackend::Impl
                 GsSyncStats::Scope scope("queue-full");
                 queueSpaceCv.wait(lock, [this]() { return stopping || queue.size() < kMaxQueuedJobs / 2u; });
             }
-            queue.push_back(std::move(job));
+            // Assigned under the queue lock: IDs follow execution order for each Impl.
+            static std::atomic<uint64_t> nextJobId{0};
+            queue.push_back(Job{++nextJobId, std::move(job), label, std::move(metadata)});
         }
         queueCv.notify_one();
     }
@@ -439,13 +456,27 @@ struct GSGpuBackend::Impl
     {
         if (prims.empty())
             return;
-        enqueue([this, p = std::move(prims), s = std::move(states)]() { drawBatch(p, s); });
+        std::string metadata = "{}";
+        if (std::getenv("PS2X_GS_CAPTURE_DIR"))
+        {
+            metadata = "{\"primitive_count\":" + std::to_string(prims.size()) + ",\"states\":[";
+            for (size_t i = 0; i < states.size(); ++i)
+            {
+                const GpuState &s = states[i];
+                if (i) metadata += ",";
+                metadata += "{\"tbp0\":" + std::to_string(s.tbp0) + ",\"tbw\":" + std::to_string(s.tbw) +
+                    ",\"tpsm\":" + std::to_string(s.tpsm) + ",\"fbp\":" + std::to_string(s.fbp) +
+                    ",\"zbp\":" + std::to_string(s.zbp) + ",\"flags\":" + std::to_string(s.flags) + "}";
+            }
+            metadata += "]}";
+        }
+        enqueue([this, p = std::move(prims), s = std::move(states)]() { drawBatch(p, s); }, "draw", std::move(metadata));
         prims.clear();
         states.clear();
     }
 
     // Caller holds producerMutex; runs job on the GS thread after all prior work.
-    void runSyncLocked(const char *reason, std::function<void()> job)
+    void runSyncLocked(const char *reason, std::function<void()> job, std::string metadata = "{}")
     {
         GsSyncStats::Scope scope(reason);
         flushPrimsLocked();
@@ -454,7 +485,7 @@ struct GSGpuBackend::Impl
         enqueue([&]() {
             job();
             done.set_value();
-        });
+        }, reason, std::move(metadata));
         finished.wait();
     }
 
@@ -473,7 +504,61 @@ struct GSGpuBackend::Impl
             flushPrimsLocked();
     }
 
+    // Diagnostic metadata is opt-in; the original parameter order is preserved.
+    static std::string journalParams(const uint32_t *params, size_t count, uint32_t inputBytes = 0)
+    {
+        if (!std::getenv("PS2X_GS_CAPTURE_DIR")) return "{}";
+        std::string result = "{\"input_bytes\":" + std::to_string(inputBytes) + ",\"params\":[";
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (i) result += ",";
+            result += std::to_string(params[i]);
+        }
+        return result + "]}";
+    }
+
     // ---- GS thread ----
+    // These readbacks run only on the context owner, after the first armed draw.
+    // FNV-1a covers exactly the two investigated 64KiB banks, never mutating VRAM.
+    FILE *journalFile = nullptr;
+    unsigned journalJobs = 0;
+    const std::chrono::steady_clock::time_point journalStart = std::chrono::steady_clock::now();
+    bool journalEnabled() const
+    {
+        return captureUploads && journalJobs < 2000u && std::getenv("PS2X_GS_CAPTURE_DIR");
+    }
+
+    void journalJob(const Job &job, const char *phase)
+    {
+        if (!journalFile)
+        {
+            char name[96];
+            std::snprintf(name, sizeof(name), "/jobs-%p.jsonl", static_cast<void *>(this));
+            const std::string path = std::string(std::getenv("PS2X_GS_CAPTURE_DIR")) + name;
+            journalFile = std::fopen(path.c_str(), "w");
+            if (!journalFile) return;
+        }
+        std::array<uint8_t, 65536> bytes{};
+        uint64_t hashes[2]{};
+        gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+        for (unsigned bank = 0; bank < 2; ++bank)
+        {
+            gl.GetNamedBufferSubData(vramBuffer, bank == 0 ? 0x2a0000 : 0x2cc000, bytes.size(), bytes.data());
+            uint64_t hash = 14695981039346656037ull;
+            for (uint8_t byte : bytes) { hash ^= byte; hash *= 1099511628211ull; }
+            hashes[bank] = hash;
+        }
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - journalStart).count();
+        std::fprintf(journalFile,
+            "{\"job\":%llu,\"phase\":\"%s\",\"label\":\"%s\",\"impl\":\"%p\",\"vram_buffer\":%u,"
+            "\"elapsed\":%.9f,\"bank_2a00_fnv1a64\":\"%016llx\",\"bank_2cc0_fnv1a64\":\"%016llx\","
+            "\"captured_uploads\":%u,\"metadata\":%s}\n",
+            static_cast<unsigned long long>(job.id), phase, job.label.c_str(), static_cast<void *>(this), vramBuffer,
+            elapsed, static_cast<unsigned long long>(hashes[0]), static_cast<unsigned long long>(hashes[1]),
+            capturedUploads, job.metadata.c_str());
+        std::fflush(journalFile);
+    }
+
 
     void workerMain(std::promise<bool> &ready)
     {
@@ -487,7 +572,7 @@ struct GSGpuBackend::Impl
         }
         for (;;)
         {
-            std::function<void()> job;
+            Job job;
             {
                 std::unique_lock<std::mutex> lock(queueMutex);
                 queueCv.wait(lock, [this]() { return stopping || !queue.empty(); });
@@ -498,8 +583,18 @@ struct GSGpuBackend::Impl
                 if (queue.size() == kMaxQueuedJobs / 2u - 1u)
                     queueSpaceCv.notify_all();
             }
-            job();
+            const bool tracedBefore = journalEnabled();
+            if (tracedBefore) { ++journalJobs; journalJob(job, "before"); }
+            job.work();
+            // The first qualifying draw arms capture inside its job, so its
+            // first record has phase=armed-after (no claimed pre-job snapshot).
+            if (tracedBefore || journalEnabled())
+            {
+                if (!tracedBefore) ++journalJobs;
+                journalJob(job, tracedBefore ? "after" : "armed-after");
+            }
         }
+        if (journalFile) { std::fclose(journalFile); journalFile = nullptr; }
         gl.Finish();
         if (scanoutTexture) gl.DeleteTextures(1, &scanoutTexture);
         glfwMakeContextCurrent(nullptr);
@@ -659,8 +754,50 @@ struct GSGpuBackend::Impl
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, clutBuffer);
     }
 
+    bool captureUploads = false;
+    unsigned capturedUploads = 0;
     void drawBatch(const std::vector<GpuPrim> &p, const std::vector<GpuState> &s)
     {
+        // Opt-in, bounded texture investigation capture, on the owning GL thread.
+        // Read before rasterization so decoded texels can be separated from scanout.
+        static const char *captureDir = std::getenv("PS2X_GS_CAPTURE_DIR");
+        static const double captureAt = std::getenv("PS2X_GS_CAPTURE_AT") ? std::atof(std::getenv("PS2X_GS_CAPTURE_AT")) : 85.0;
+        static const auto captureStart = std::chrono::steady_clock::now();
+        static unsigned captureCount = 0;
+        const double captureTime = captureDir ? std::chrono::duration<double>(std::chrono::steady_clock::now() - captureStart).count() : 0.0;
+        if (captureDir && captureCount < 80u && captureTime >= captureAt && !s.empty() && !p.empty() &&
+            (s[0].flags & kFlagTme) && !(s[0].flags & kFlagFst) && p[0].type == 2u &&
+            std::abs(p[0].q[0]) > 1.0e-8f && std::abs(p[0].q[0]) < 0.5f)
+        {
+            captureUploads = true;
+            const std::string prefix = std::string(captureDir) + "/gs-" + std::to_string(captureCount++);
+            auto save = [&](const char *suffix, const void *data, size_t size) {
+                if (FILE *file = std::fopen((prefix + suffix).c_str(), "wb")) {
+                    std::fwrite(data, 1, size, file); std::fclose(file);
+                }
+            };
+            std::vector<uint8_t> memory(kVramSize);
+            gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+            gl.GetNamedBufferSubData(vramBuffer, 0, memory.size(), memory.data());
+            save("-vram.bin", memory.data(), memory.size());
+            std::array<uint32_t, 512> palette{};
+            gl.GetNamedBufferSubData(clutBuffer, 0, sizeof(palette), palette.data());
+            save("-clut.bin", palette.data(), sizeof(palette));
+            save("-prims.bin", p.data(), p.size() * sizeof(GpuPrim));
+            save("-states.bin", s.data(), s.size() * sizeof(GpuState));
+            if (captureCount == 1u) {
+                if (FILE *layout = std::fopen((std::string(captureDir) + "/layout.json").c_str(), "w")) {
+                    std::fprintf(layout, "{\"primitive_bytes\":%zu,\"state_bytes\":%zu}\n", sizeof(GpuPrim), sizeof(GpuState));
+                    std::fclose(layout);
+                }
+                memory.resize(1441792u * sizeof(uint16_t));
+                gl.GetNamedBufferSubData(tableBuffer, 0, memory.size(), memory.data());
+                save("-tables.bin", memory.data(), memory.size());
+            }
+            if (FILE *file = std::fopen((prefix + "-time.txt").c_str(), "w")) {
+                std::fprintf(file, "%.6f\n", captureTime); std::fclose(file);
+            }
+        }
         gl.NamedBufferData(primBuffer, static_cast<GLsizeiptr>(p.size() * sizeof(GpuPrim)), p.data(), GL_STREAM_DRAW);
         gl.NamedBufferData(stateBuffer, static_cast<GLsizeiptr>(s.size() * sizeof(GpuState)), s.data(), GL_STREAM_DRAW);
         gl.UseProgram(drawProgram);
@@ -743,9 +880,30 @@ struct GSGpuBackend::Impl
 
     void uploadPixels(std::vector<uint8_t> bytes, const uint32_t params[8])
     {
+        const char *captureDir = captureUploads && capturedUploads < 16u ? std::getenv("PS2X_GS_CAPTURE_DIR") : nullptr;
+        std::string prefix;
+        std::vector<uint8_t> capturedVram;
+        auto saveCapture = [&](const char *suffix, const void *data, size_t size) {
+            if (FILE *file = std::fopen((prefix + suffix).c_str(), "wb")) {
+                std::fwrite(data, 1, size, file); std::fclose(file);
+            }
+        };
+        if (captureDir) {
+            prefix = std::string(captureDir) + "/upload-" + std::to_string(capturedUploads++);
+            saveCapture("-input.bin", bytes.data(), bytes.size());
+            saveCapture("-params.bin", params, 8 * sizeof(uint32_t));
+            capturedVram.resize(kVramSize);
+            gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+            gl.GetNamedBufferSubData(vramBuffer, 0, capturedVram.size(), capturedVram.data());
+            saveCapture("-before.bin", capturedVram.data(), capturedVram.size());
+        }
         bytes.resize((bytes.size() + 3u) & ~size_t(3u), 0u);
         gl.NamedBufferData(stagingBuffer, static_cast<GLsizeiptr>(std::max<size_t>(bytes.size(), 4u)), bytes.data(), GL_STREAM_DRAW);
         dispatch(uploadProgram, params, 8 * sizeof(uint32_t), params[1], 64u);
+        if (captureDir) {
+            gl.GetNamedBufferSubData(vramBuffer, 0, capturedVram.size(), capturedVram.data());
+            saveCapture("-after.bin", capturedVram.data(), capturedVram.size());
+        }
     }
 
     void copyLocal(const uint32_t params[15])
@@ -845,7 +1003,7 @@ void GSGpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
     if (vram)
         impl.cpu.Initialize(vram, vramSize);
     // The external allocation is the hand-off format: make it the GPU contents.
-    impl.runSyncLocked("init", [&impl]() { impl.uploadShadow(); });
+    impl.runSyncLocked("init", [&impl]() { impl.uploadShadow(); }, "{\"action\":\"uploadShadow\"}");
     impl.transfer = {};
     impl.transfer.direction = 3u;
     impl.transferState = {};
@@ -870,7 +1028,7 @@ void GSGpuBackend::Reset()
     impl.enqueue([&impl, zeros]() {
         impl.gl.NamedBufferSubData(impl.clutBuffer, 0, sizeof(zeros), zeros);
         impl.gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
-    });
+    }, "reset");
 }
 
 void GSGpuBackend::Submit(const GSPrimitiveBatch &batch)
@@ -1056,7 +1214,7 @@ void GSGpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     impl.enqueue([&impl, copy]() {
         impl.gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, impl.clutBuffer);
         impl.dispatch(impl.clutProgram, copy.data(), sizeof(uint32_t) * copy.size(), 256u, 256u);
-    });
+    }, "clut", Impl::journalParams(copy.data(), copy.size()));
 }
 
 void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
@@ -1083,7 +1241,7 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
                                                command.trxpos.ssax, command.trxpos.ssay,
                                                command.bitbltbuf.dpsm, command.bitbltbuf.dbp, std::max<uint32_t>(command.bitbltbuf.dbw, 1u),
                                                command.trxpos.dsax, command.trxpos.dsay};
-            impl.enqueue([&impl, params]() { impl.copyLocal(params.data()); });
+            impl.enqueue([&impl, params]() { impl.copyLocal(params.data()); }, "copy", Impl::journalParams(params.data(), params.size()));
         }
         impl.transferState.copiedPixels = total;
         impl.transferState.direction = 3u;
@@ -1137,7 +1295,7 @@ void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
     impl.flushPrimsLocked();
     impl.enqueue([&impl, copy, bytes = std::vector<uint8_t>(data, data + usedBytes)]() mutable {
         impl.uploadPixels(std::move(bytes), copy.data());
-    });
+    }, "upload", Impl::journalParams(copy.data(), copy.size(), usedBytes));
 
     ts.copiedPixels = std::min<uint32_t>(ts.totalPixels, start + pixels);
     if (ts.copiedPixels >= ts.totalPixels)
@@ -1261,6 +1419,7 @@ void GSGpuBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t 
 {
     Impl &impl = *m_impl;
     std::lock_guard<std::mutex> lock(impl.producerMutex);
+    const uint32_t journalWrite[6] = {psm, base, bw, x, y, value};
     impl.runSyncLocked("write-vram", [&]() {
         impl.readbackShadow();
         {
@@ -1268,7 +1427,7 @@ void GSGpuBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t 
             impl.cpu.WriteVram(psm, base, bw, x, y, value);
         }
         impl.uploadShadow();
-    });
+    }, Impl::journalParams(journalWrite, 6));
 }
 
 void GSGpuBackend::SnapshotVram(std::vector<uint8_t> &out) const

@@ -4,6 +4,7 @@
 #include "runtime/gs/ps2_gs_psmct32.h"
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_vu1.h"
+#include "runtime/ps2_vu1_native.h"
 
 #include <cmath>
 #include <cstdint>
@@ -687,6 +688,63 @@ void register_ps2_vu1_tests()
             t.Equals(vu1.state().q, 5.0f, "WAITQ should expose SQRT after its seven-cycle latency");
         });
 
+        tc.Run("Native fallback preserves old Q until FDIV completes", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
+            constexpr uint32_t nop = 0x8000033Cu;
+            writeVuInstructionPair(fx.code, 0u, makeVuDiv(1u, 2u, 0u, 0u), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 8u, nop, kVuUpperNop);
+            writeVuInstructionPair(fx.code, 16u, nop, makeVuUpper(0x1Cu, 0x8u, 0u, 3u, 4u)); // MULq.x vf4, vf3, Q
+            writeVuInstructionPair(fx.code, 24u, makeVuLowerSpecial(0x3Bu, 0u), kVuUpperNop | (1u << 30));
+            writeVuInstructionPair(fx.code, 32u, nop, kVuUpperNop);
+
+            // Register timing-free implementations like generated blocks. Neither
+            // may run: the first writes Q; the suffix enters with Q still pending.
+            // Each would compute 8 * Qnew = 4 instead of 8 * Qold = 16.
+            uint32_t words[10];
+            std::memcpy(words, fx.code, sizeof(words));
+            vu1nRegisterBlock(vu1n::blockKey(0u, words, 10u), +[](VU1NativeCtx &n) {
+                n.s->q = 0.5f;
+                n.s->vf[4][0] = n.s->vf[3][0] * n.s->q;
+                n.s->vi[15] = 1;
+                return kVu1nEnded | 40u;
+            }, 5u, nullptr);
+            vu1nRegisterBlock(vu1n::blockKey(8u, words + 2, 8u), +[](VU1NativeCtx &n) {
+                n.s->vf[4][0] = n.s->vf[3][0] * n.s->q;
+                n.s->vi[15] = 2;
+                return kVu1nEnded | 40u;
+            }, 4u, nullptr);
+
+            VU1Interpreter vu1;
+            vu1.state().q = 2.0f;
+            vu1.state().vf[1][0] = 1.0f;
+            vu1.state().vf[2][0] = 2.0f;
+            vu1.state().vf[3][0] = 8.0f;
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
+                        0u, 0u, 0u, 32u);
+            t.Equals(vu1.state().vf[4][0], 16.0f,
+                     "MULq before FDIV completion must consume the previous Q; vf4.x=" +
+                         std::to_string(vu1.state().vf[4][0]));
+            t.Equals(vu1.state().q, 0.5f, "WAITQ should expose the completed division");
+            t.Equals(vu1.state().vi[15], 0,
+                     "Q writer and pending-Q suffix must both use exact execution; callback=" +
+                         std::to_string(vu1.state().vi[15]) + " (1=writer, 2=pending suffix)");
+
+            // Prove this test has not merely disabled native execution globally.
+            writeVuInstructionPair(fx.code, 0x100u, nop, kVuUpperNop | (1u << 30));
+            writeVuInstructionPair(fx.code, 0x108u, nop, kVuUpperNop);
+            std::memcpy(words, fx.code + 0x100u, 16u);
+            vu1nRegisterBlock(vu1n::blockKey(0x100u, words, 4u), +[](VU1NativeCtx &n) {
+                n.s->vi[15] = 3;
+                return kVu1nEnded | 0x110u;
+            }, 2u, nullptr);
+            VU1Interpreter control;
+            control.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
+                            0x100u, 0u, 0u, 32u);
+            t.Equals(control.state().vi[15], 3, "Q-free blocks should still execute natively");
+        });
+
         tc.Run("FDIV resource serializes back-to-back scalar operations", [](TestCase &t)
         {
             Vu1Fixture fx;
@@ -838,9 +896,11 @@ void register_ps2_vu1_tests()
             };
             constexpr EfuCase cases[] = {
                 {0x70u, 11u}, {0x71u, 18u}, {0x72u, 18u}, {0x73u, 24u},
-                {0x74u, 54u}, {0x75u, 54u}, {0x76u, 12u}, {0x77u, 18u},
-                {0x78u, 12u}, {0x79u, 29u}, {0x7Au, 12u}, {0x7Cu, 54u},
-                {0x7Du, 44u}};
+                {0x74u, 54u}, {0x75u, 54u}, {0x76u, 12u},
+                {0x78u, 12u}, {0x79u, 18u}, {0x7Au, 12u}, {0x7Cu, 29u},
+                {0x7Du, 54u}, {0x7Eu, 44u}};
+            // PCSX2 VUops.cpp LowerOP tables and VUREGS_PFS declarations:
+            // 0x77 is reserved; 0x79=ERSQRT, 0x7c=ESIN, 0x7d=EATAN, 0x7e=EEXP.
 
             for (const EfuCase &efu : cases)
             {
@@ -852,22 +912,31 @@ void register_ps2_vu1_tests()
                 writeVuInstructionPair(
                     fx.code, 8u,
                     makeVuLowerSpecial(0x7Bu, 0u),
-                    kVuUpperNop);
+                    kVuUpperNop | (1u << 30));
+                writeVuInstructionPair(fx.code, 16u, 0x8000033Cu, kVuUpperNop);
 
                 VU1Interpreter vu1;
+                constexpr float initialP = -1234.0f;
+                vu1.state().p = initialP;
                 vu1.state().vf[1][0] = 0.25f;
                 vu1.state().vf[1][1] = 0.5f;
                 vu1.state().vf[1][2] = 0.75f;
                 vu1.state().vf[1][3] = 1.0f;
                 vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
                             fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
-                            0u, 0u, 0u, efu.latency + 1u);
+                            0u, 0u, 0u, efu.latency - 1u);
+                const std::string which = " (special=" + std::to_string(efu.opcode) + ")";
+                t.Equals(vu1.state().p, initialP, "P must remain unchanged before the EFU result is ready" + which);
+                t.Equals(vu1.state().pc, 8u, "WAITP must remain stalled before EFU completion" + which);
+                vu1.resume(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
+                           0u, 0u, 128u);
 
                 t.Equals(vu1.state().cycles,
-                         static_cast<uint64_t>(efu.latency + 1u),
-                         "WAITP should count every EFU stall as an elapsed VU cycle");
+                         static_cast<uint64_t>(efu.latency + 2u),
+                         "WAITP and its E-bit delay slot must finish at the architectural latency" + which);
                 t.IsTrue(std::isfinite(vu1.state().p),
-                         "architected EFU opcode should commit a finite P result");
+                         "architected EFU opcode should commit a finite P result" + which);
+                t.IsTrue(vu1.state().p != initialP, "EFU must actually replace P after WAITP" + which);
             }
         });
 
@@ -1082,13 +1151,13 @@ void register_ps2_vu1_tests()
                      "the flag-driven branch should arrive at its target");
         });
 
-        tc.Run("JR shares the one-instruction VI branch visibility rule", [](TestCase &t)
+        tc.Run("JR consumes current VI rather than conditional-branch backup", [](TestCase &t)
         {
             Vu1Fixture fx;
             t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
 
             writeVuInstructionPair(
-                fx.code, 0u, makeVuIaddiu(1u, 0u, 2),
+                fx.code, 0u, makeVuIaddiu(1u, 0u, 4),
                 kVuUpperNop);
             writeVuInstructionPair(
                 fx.code, 8u, makeVuJr(1u),
@@ -1102,21 +1171,26 @@ void register_ps2_vu1_tests()
             writeVuInstructionPair(
                 fx.code, 32u, makeVuIaddiu(4u, 0u, 4),
                 kVuUpperNop);
+            writeVuInstructionPair(
+                fx.code, 48u, makeVuIaddiu(5u, 0u, 5),
+                kVuUpperNop);
 
             VU1Interpreter vu1;
-            vu1.state().vi[1] = 4;
+            vu1.state().vi[1] = 6;
             vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
                         fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
                         0u, 0u, 0u, 4u);
 
-            t.Equals(vu1.state().vi[1], 2,
+            t.Equals(vu1.state().vi[1], 4,
                      "the pending IALU write should still commit normally");
             t.Equals(vu1.state().vi[2], 2,
                      "JR should execute exactly one delay-slot pair");
             t.Equals(vu1.state().vi[3], 0,
                      "JR should skip the sequential instruction after its delay slot");
             t.Equals(vu1.state().vi[4], 4,
-                     "JR immediately after a VI write should branch using the previous VI value");
+                     "JR must use current VI=4 to reach byte address 32");
+            t.Equals(vu1.state().vi[5], 0,
+                     "JR must not use old VI=6 to reach byte address 48");
         });
 
         tc.Run("MPG upload invalidates cached VU1 decode before MSCAL", [](TestCase &t)

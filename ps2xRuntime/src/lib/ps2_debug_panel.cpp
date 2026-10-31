@@ -2206,7 +2206,8 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         return;
     }
 
-    if (IsKeyPressed(KEY_F1))
+    // Shift+F1: F1 alone opens the PC settings menu.
+    if (IsKeyPressed(KEY_F1) && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)))
     {
         toggleVisible();
     }

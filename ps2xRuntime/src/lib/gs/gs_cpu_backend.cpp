@@ -1,4 +1,5 @@
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_mipmap.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/gs/ps2_gs_psmct32.h"
@@ -1102,6 +1103,26 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
 
 uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
 {
+    const GSMip::Selection mip = GSMip::Select(state.context.tex1, q, state.prim.fst);
+    if (mip.enabled)
+    {
+        auto sampleLevel = [&](unsigned level) {
+            GSDrawState selected = state;
+            selected.context.tex0 = GSMip::LevelTexture(state.context.tex0, state.context.miptbp1, state.context.miptbp2, level);
+            // Reuse the existing sampler and loaded CLUT at this level without
+            // selecting another mip or changing the original draw state.
+            selected.context.tex1 &= ~(7ull << 2u);
+            selected.context.clamp = GSMip::ScaleClamp(state.context.clamp, level);
+            selected.textureWidth = std::max<unsigned>(1u, state.textureWidth >> level);
+            selected.textureHeight = std::max<unsigned>(1u, state.textureHeight >> level);
+            selected.linearFilter = mip.linear;
+            return SampleTexture(selected, s, t, q, static_cast<uint16_t>(u >> level), static_cast<uint16_t>(v >> level));
+        };
+        const uint32_t first = sampleLevel(mip.level0);
+        return mip.level0 == mip.level1 || mip.blend == 0.0f ? first :
+            GSMip::Blend(first, sampleLevel(mip.level1), mip.blend);
+    }
+
     const auto &ctx = state.context;
     const auto &tex = ctx.tex0;
 
@@ -1299,7 +1320,14 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
                 }
                 else
                 {
-                    texel = SampleTexture(state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
+                    if (GSMip::Select(ctx.tex1, v1.q).enabled)
+                    {
+                        const float sampleQ = fabsQ(v1.q);
+                        texel = SampleTexture(state, texUf * sampleQ / static_cast<float>(texW),
+                            texVf * sampleQ / static_cast<float>(texH), sampleQ, 0u, 0u);
+                    }
+                    else
+                        texel = SampleTexture(state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
                 }
 
                 uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
@@ -1375,10 +1403,17 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             uint8_t r, g, b, a;
             if (state.prim.iip)
             {
-                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
-                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
-                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
-                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
+                // A constant channel has no gradient. Floating point weights can
+                // sum just below one, turning alpha128 into127 and changing
+                // ATEST/depth writes despite all three vertices agreeing.
+                const auto interpolate = [&](uint8_t c0, uint8_t c1, uint8_t c2) {
+                    return c0 == c1 && c1 == c2 ? c0 :
+                        clampU8(static_cast<int>(c0 * w0 + c1 * w1 + c2 * w2));
+                };
+                r = interpolate(v0.r, v1.r, v2.r);
+                g = interpolate(v0.g, v1.g, v2.g);
+                b = interpolate(v0.b, v1.b, v2.b);
+                a = interpolate(v0.a, v1.a, v2.a);
             }
             else
             {

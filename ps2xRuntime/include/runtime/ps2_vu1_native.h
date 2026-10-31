@@ -1,8 +1,8 @@
 // GOW-Port: native VU1 backend. Basic blocks of the game's VU1 microcode are translated ahead of time (tools/vu1/vu1n_gen.py)
-// into straight-line SSE functions that use immediate, timing-free semantics: the VU interlocks on every hazard, so the
-// *values* a program computes never depend on cycle timing; only the MAC/CLIP flag registers have a visible latency, and
-// the generator keeps their order. The exact engine (VU1Interpreter) stays as fallback for blocks that were not translated
-// and as the oracle for GOW_VU1N_VERIFY.
+// into straight-line SSE functions with immediate value semantics. MAC/CLIP visibility is tracked separately. Q is not
+// interlocked on an ordinary MULq: blocks that write Q, and execution while Q is pending, stay on the exact path until
+// the native backend can preserve its delayed visibility. The exact engine also handles untranslated blocks and is
+// the oracle for GOW_VU1N_VERIFY.
 #ifndef PS2_VU1_NATIVE_H
 #define PS2_VU1_NATIVE_H
 

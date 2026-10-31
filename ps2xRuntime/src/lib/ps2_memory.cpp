@@ -4,11 +4,97 @@
 #include "ps2_log.h"
 #include <atomic>
 #include <cstring>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
 #include <string>
 #include <vector>
+
+bool Ps2GifOrderTraceEnabled()
+{
+    static const char *path = std::getenv("PS2X_GIF_ORDER_TRACE");
+    return path && *path;
+}
+
+// Shared with ps2_gif_arbiter.cpp so submission and dispatch use one ordered
+// diagnostic stream. No guest state, packet bytes or scheduling are changed.
+void Ps2TraceGifOrder(const char *stage, unsigned path, const uint8_t *data, uint32_t size,
+                      const void *owner, size_t pendingGif, size_t pendingVif, const char *extra)
+{
+    static const char *tracePath = std::getenv("PS2X_GIF_ORDER_TRACE");
+    if (!tracePath || !*tracePath) return;
+    static const auto start = std::chrono::steady_clock::now();
+    static const double captureAt = std::getenv("PS2X_GIF_ORDER_AT") ? std::atof(std::getenv("PS2X_GIF_ORDER_AT")) : 90.0;
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (elapsed < captureAt) return;
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    static uint64_t count = 0;
+    if (count >= 16000u) return;
+    static FILE *file = std::fopen(tracePath, "w");
+    if (!file) return;
+    const uint64_t id = ++count;
+    uint64_t hash = 14695981039346656037ull;
+    for (uint32_t i = 0; data && i < size; ++i) { hash ^= data[i]; hash *= 1099511628211ull; }
+    auto word = [&](uint32_t offset) { uint64_t value = 0; std::memcpy(&value, data + offset, 8); return value; };
+    const uint64_t headerLo = data && size >= 16u ? word(0) : 0u;
+    const uint64_t headerHi = data && size >= 16u ? word(8) : 0u;
+    uint64_t tex0[2]{};
+    unsigned tex0Writes = 0;
+    // Scan only complete GIF packets. Native image payload is raw pixels.
+    if (data && std::strcmp(stage, "native-image") != 0)
+    {
+        uint64_t offset = 0;
+        auto reg = [&](unsigned address, uint64_t value) {
+            if (address == GS_REG_TEX0_1 || address == GS_REG_TEX0_2) {
+                tex0[address == GS_REG_TEX0_2] = value; ++tex0Writes;
+            }
+        };
+        while (offset + 16u <= size)
+        {
+            const uint64_t lo = word(static_cast<uint32_t>(offset)), hi = word(static_cast<uint32_t>(offset + 8u));
+            offset += 16u;
+            const unsigned loops = static_cast<unsigned>(lo & 0x7fffu), format = static_cast<unsigned>((lo >> 58u) & 3u);
+            unsigned nreg = static_cast<unsigned>(lo >> 60u); if (!nreg) nreg = 16u;
+            if (format >= 2u) { offset += static_cast<uint64_t>(loops) * 16u; continue; }
+            const unsigned stride = format == 0u ? 16u : 8u;
+            const uint64_t elements = static_cast<uint64_t>(loops) * nreg;
+            if (elements * stride > size - offset) break;
+            for (uint64_t i = 0; i < elements; ++i, offset += stride)
+            {
+                const unsigned address = static_cast<unsigned>((hi >> ((i % nreg) * 4u)) & 15u);
+                const uint64_t value = word(static_cast<uint32_t>(offset));
+                if (format == 0u && address == 14u)
+                    reg(static_cast<unsigned>(word(static_cast<uint32_t>(offset + 8u)) & 255u), value);
+                else reg(address, value);
+            }
+            if (format == 1u && (elements & 1u)) offset += 8u;
+        }
+    }
+    std::fprintf(file,
+        "{\"id\":%llu,\"elapsed\":%.9f,\"stage\":\"%s\",\"path\":%u,\"owner\":\"%p\","
+        "\"size\":%u,\"fnv1a64\":\"%016llx\",\"header_lo\":\"%016llx\",\"header_hi\":\"%016llx\","
+        "\"tex0_writes\":%u,\"tex0_1\":\"%016llx\",\"tex0_2\":\"%016llx\",\"pending_gif\":%zu,\"pending_vif\":%zu,\"extra\":%s}\n",
+        static_cast<unsigned long long>(id), elapsed, stage, path, owner, size, static_cast<unsigned long long>(hash),
+        static_cast<unsigned long long>(headerLo), static_cast<unsigned long long>(headerHi), tex0Writes,
+        static_cast<unsigned long long>(tex0[0]), static_cast<unsigned long long>(tex0[1]), pendingGif, pendingVif, extra);
+    std::fflush(file);
+    static const char *dumpDir = std::getenv("PS2X_GIF_ORDER_DUMP_DIR");
+    static unsigned dumps = 0;
+    static const unsigned maxDumps = std::getenv("PS2X_GIF_ORDER_MAX_DUMPS") ? static_cast<unsigned>(std::atoi(std::getenv("PS2X_GIF_ORDER_MAX_DUMPS"))) : 256u;
+    if (dumpDir && data && size && dumps < maxDumps &&
+        (std::strcmp(stage, "submit") == 0 || std::strcmp(stage, "native-image") == 0 || std::strcmp(stage, "native-packed-accepted") == 0))
+    {
+        ++dumps;
+        char name[96]; std::snprintf(name, sizeof(name), "/packet-%llu-%s.bin", static_cast<unsigned long long>(id), stage);
+        if (FILE *packet = std::fopen((std::string(dumpDir) + name).c_str(), "wb")) {
+            std::fwrite(data, 1, size, packet); std::fclose(packet);
+        }
+    }
+}
 
 namespace
 {
@@ -1304,6 +1390,23 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             }
 
             const uint32_t channelBase = address & 0xFFFFFF00;
+            if (Ps2GifOrderTraceEnabled() && (channelBase == 0x1000A000u || channelBase == 0x10009000u))
+            {
+                auto peek = [&](uint32_t reg) { const auto it = m_ioRegisters.find(reg); return it == m_ioRegisters.end() ? 0u : it->second; };
+                char detail[160];
+                std::snprintf(detail, sizeof(detail), "{\"channel\":%u,\"chcr\":%u,\"madr\":%u,\"qwc\":%u,\"tadr\":%u}",
+                    channelBase, value, peek(channelBase + 0x10), peek(channelBase + 0x20), peek(channelBase + 0x30));
+                Ps2TraceGifOrder("dma-start", channelBase == 0x1000A000u ? 3u : 2u, nullptr, 0u, this,
+                    m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), detail);
+            }
+            // A real GIF channel cannot start a new list while the old one is held
+            // by MSKPATH3, so a kick means the guest abandoned the unsent remainder.
+            // Ben 10 builds one list for every material but opens gates only for the
+            // ones it draws; keeping the rest would feed last frame's materials to
+            // this frame's gates.
+            if (channelBase == 0x1000A000u && m_path3Masked)
+                m_path3MaskedFifo.clear();
+
             const uint32_t madr = m_ioRegisters[channelBase + 0x10];
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
@@ -1664,6 +1767,9 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
 
 void PS2Memory::processPendingTransfers()
 {
+    if (!m_pendingGifTransfers.empty() || !m_pendingVif0Transfers.empty() || !m_pendingVif1Transfers.empty())
+        Ps2TraceGifOrder("pending-begin", 0u, nullptr, 0u, this,
+            m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), "{}");
     const bool hadGif = !m_pendingGifTransfers.empty();
     uint32_t observedGifQwc = 0u;
     for (const auto &transfer : m_pendingGifTransfers)
@@ -1921,7 +2027,7 @@ std::vector<uint32_t> PS2Memory::consumeCompletedDmacCauses()
     return causes;
 }
 
-void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
+void PS2Memory::flushMaskedPath3Packets(bool drainImmediately, bool firstPacketOnly)
 {
     if (m_path3Masked || m_path3MaskedFifo.empty())
         return;
@@ -1933,6 +2039,43 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
         else if (m_gifPacketCallback)
             m_gifPacketCallback(packetData, packetSize);
     };
+
+    if (firstPacketOnly)
+    {
+        // Opening the VIF PATH3 gate starts a packet, not the entire DMA list.
+        // A subsequent MSKPATH3 closes it at EOP. Keep later materials resident
+        // in the queue until the next gate opening or an unmasked FLUSHA.
+        // Join submission fragments before walking tags: EOP belongs to the tag
+        // but takes effect only after all its payload (including IMAGE) arrives.
+        std::vector<uint8_t> stream;
+        for (const auto &part : m_path3MaskedFifo)
+            stream.insert(stream.end(), part.begin(), part.end());
+        size_t offset = 0;
+        while (stream.size() - offset >= 16u)
+        {
+            uint64_t tag = 0;
+            std::memcpy(&tag, stream.data() + offset, sizeof(tag));
+            const uint64_t loops = tag & 0x7fffu;
+            const unsigned format = static_cast<unsigned>((tag >> 58u) & 3u);
+            const uint64_t nreg = (tag >> 60u) ? (tag >> 60u) : 16u;
+            const uint64_t payload = format >= 2u ? loops * 16u :
+                format == 0u ? loops * nreg * 16u : ((loops * nreg + 1u) / 2u) * 16u;
+            if (payload > stream.size() - offset - 16u)
+                return; // retain the incomplete packet until more data arrives
+            offset += 16u + static_cast<size_t>(payload);
+            if (tag & (1ull << 15u))
+            {
+                emit(stream.data(), static_cast<uint32_t>(offset));
+                m_path3MaskedFifo.clear();
+                if (offset < stream.size())
+                    m_path3MaskedFifo.emplace_back(stream.begin() + offset, stream.end());
+                if (m_gifArbiter && drainImmediately)
+                    m_gifArbiter->drain();
+                return;
+            }
+        }
+        return;
+    }
 
     for (const auto &packet : m_path3MaskedFifo)
     {
@@ -1950,6 +2093,11 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
     if (!data || sizeBytes < 16)
         return;
 
+    char detail[160];
+    std::snprintf(detail, sizeof(detail), "{\"drain\":%s,\"direct_hl\":%s,\"masked\":%s}",
+        drainImmediately ? "true" : "false", path2DirectHl ? "true" : "false", m_path3Masked ? "true" : "false");
+    Ps2TraceGifOrder("submit", static_cast<unsigned>(pathId), data, sizeBytes, this,
+        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), detail);
     if (pathId == GifPathId::Path3)
     {
         if (m_path3Masked)
@@ -2174,6 +2322,12 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
     m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
     m_seenGifCopy = true;
     m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
+    char traceDetail[320];
+    std::snprintf(traceDetail, sizeof(traceDetail), "{\"tadr\":%u,\"chcr\":%u,\"bitbltbuf\":\"%016llx\",\"trxpos\":\"%016llx\",\"trxreg\":\"%016llx\",\"trxdir\":\"%016llx\"}",
+        tadr, chcr, static_cast<unsigned long long>(setupRegs[0]), static_cast<unsigned long long>(setupRegs[1]),
+        static_cast<unsigned long long>(setupRegs[2]), static_cast<unsigned long long>(setupRegs[3]));
+    Ps2TraceGifOrder("native-image", 3u, imageData, imageBytes, this,
+        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), traceDetail);
     gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
 
     m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;
@@ -2249,8 +2403,12 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
     const uint8_t *payload = nullptr;
     if (!resolveContiguous(tadr + 16u, payloadBytes, payload))
         return false;
+    Ps2TraceGifOrder("native-packed-attempt", 3u, payload, payloadBytes, this,
+        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), "{}");
     if (!gs.processNativePackedGIFPacket(payload, payloadBytes))
         return false;
+    Ps2TraceGifOrder("native-packed-accepted", 3u, payload, payloadBytes, this,
+        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), "{}");
 
     m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
     m_seenGifCopy = true;
