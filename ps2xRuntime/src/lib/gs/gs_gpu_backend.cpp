@@ -336,10 +336,13 @@ namespace
     }
 }
 
-// On-demand primitive capture: create analysis/gs-trace.trigger to log the next 3000
-// submitted primitives to analysis/gs-trace.txt (same format as the CPU backend).
+// On-demand primitive capture: with PS2X_GS_TRACE set, create analysis/gs-trace.trigger to log the
+// next 3000 submitted primitives to analysis/gs-trace.txt (same format as the CPU backend).
 static void traceSubmit(const GSPrimitiveBatch &batch)
 {
+    static const bool allowed = std::getenv("PS2X_GS_TRACE") != nullptr;
+    if (!allowed)
+        return;
     static uint32_t countdown = 0, remaining = 0;
     static FILE *file = nullptr;
     if (remaining == 0u && countdown++ % 4096u == 0u && std::filesystem::exists("analysis/gs-trace.trigger"))
@@ -457,7 +460,8 @@ struct GSGpuBackend::Impl
         if (prims.empty())
             return;
         std::string metadata = "{}";
-        if (std::getenv("PS2X_GS_CAPTURE_DIR"))
+        static const bool capturing = std::getenv("PS2X_GS_CAPTURE_DIR") != nullptr;
+        if (capturing)
         {
             metadata = "{\"primitive_count\":" + std::to_string(prims.size()) + ",\"states\":[";
             for (size_t i = 0; i < states.size(); ++i)
@@ -507,7 +511,8 @@ struct GSGpuBackend::Impl
     // Diagnostic metadata is opt-in; the original parameter order is preserved.
     static std::string journalParams(const uint32_t *params, size_t count, uint32_t inputBytes = 0)
     {
-        if (!std::getenv("PS2X_GS_CAPTURE_DIR")) return "{}";
+        static const bool capturing = std::getenv("PS2X_GS_CAPTURE_DIR") != nullptr;
+        if (!capturing) return {};
         std::string result = "{\"input_bytes\":" + std::to_string(inputBytes) + ",\"params\":[";
         for (size_t i = 0; i < count; ++i)
         {

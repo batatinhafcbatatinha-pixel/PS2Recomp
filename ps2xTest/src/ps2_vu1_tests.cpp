@@ -688,7 +688,7 @@ void register_ps2_vu1_tests()
             t.Equals(vu1.state().q, 5.0f, "WAITQ should expose SQRT after its seven-cycle latency");
         });
 
-        tc.Run("Native fallback preserves old Q until FDIV completes", [](TestCase &t)
+        tc.Run("Native blocks read the old Q until FDIV completes", [](TestCase &t)
         {
             Vu1Fixture fx;
             t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
@@ -699,22 +699,16 @@ void register_ps2_vu1_tests()
             writeVuInstructionPair(fx.code, 24u, makeVuLowerSpecial(0x3Bu, 0u), kVuUpperNop | (1u << 30));
             writeVuInstructionPair(fx.code, 32u, nop, kVuUpperNop);
 
-            // Register timing-free implementations like generated blocks. Neither
-            // may run: the first writes Q; the suffix enters with Q still pending.
-            // Each would compute 8 * Qnew = 4 instead of 8 * Qold = 16.
+            // Written like a generated block: the division stays pending and MULq, issued
+            // before it completes, asks for the Q visible at its own cycle (8 * Qold = 16).
             uint32_t words[10];
             std::memcpy(words, fx.code, sizeof(words));
             vu1nRegisterBlock(vu1n::blockKey(0u, words, 10u), +[](VU1NativeCtx &n) {
-                n.s->q = 0.5f;
-                n.s->vf[4][0] = n.s->vf[3][0] * n.s->q;
+                VU1NativeAccess::divOp(n, n.cyc[0], 1, 0, 2, 0);
+                n.s->vf[4][0] = n.s->vf[3][0] * VU1NativeAccess::qAt(n, n.cyc[2]);
                 n.s->vi[15] = 1;
                 return kVu1nEnded | 40u;
-            }, 5u, nullptr);
-            vu1nRegisterBlock(vu1n::blockKey(8u, words + 2, 8u), +[](VU1NativeCtx &n) {
-                n.s->vf[4][0] = n.s->vf[3][0] * n.s->q;
-                n.s->vi[15] = 2;
-                return kVu1nEnded | 40u;
-            }, 4u, nullptr);
+            }, 5u | 0x10000u, nullptr);
 
             VU1Interpreter vu1;
             vu1.state().q = 2.0f;
@@ -727,9 +721,7 @@ void register_ps2_vu1_tests()
                      "MULq before FDIV completion must consume the previous Q; vf4.x=" +
                          std::to_string(vu1.state().vf[4][0]));
             t.Equals(vu1.state().q, 0.5f, "WAITQ should expose the completed division");
-            t.Equals(vu1.state().vi[15], 0,
-                     "Q writer and pending-Q suffix must both use exact execution; callback=" +
-                         std::to_string(vu1.state().vi[15]) + " (1=writer, 2=pending suffix)");
+            t.Equals(vu1.state().vi[15], 1, "the native block should have run");
 
             // Prove this test has not merely disabled native execution globally.
             writeVuInstructionPair(fx.code, 0x100u, nop, kVuUpperNop | (1u << 30));

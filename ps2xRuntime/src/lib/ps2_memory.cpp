@@ -2093,11 +2093,14 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
     if (!data || sizeBytes < 16)
         return;
 
-    char detail[160];
-    std::snprintf(detail, sizeof(detail), "{\"drain\":%s,\"direct_hl\":%s,\"masked\":%s}",
-        drainImmediately ? "true" : "false", path2DirectHl ? "true" : "false", m_path3Masked ? "true" : "false");
-    Ps2TraceGifOrder("submit", static_cast<unsigned>(pathId), data, sizeBytes, this,
-        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), detail);
+    if (Ps2GifOrderTraceEnabled())
+    {
+        char detail[160];
+        std::snprintf(detail, sizeof(detail), "{\"drain\":%s,\"direct_hl\":%s,\"masked\":%s}",
+            drainImmediately ? "true" : "false", path2DirectHl ? "true" : "false", m_path3Masked ? "true" : "false");
+        Ps2TraceGifOrder("submit", static_cast<unsigned>(pathId), data, sizeBytes, this,
+            m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), detail);
+    }
     if (pathId == GifPathId::Path3)
     {
         if (m_path3Masked)
@@ -2322,12 +2325,15 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
     m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
     m_seenGifCopy = true;
     m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
-    char traceDetail[320];
-    std::snprintf(traceDetail, sizeof(traceDetail), "{\"tadr\":%u,\"chcr\":%u,\"bitbltbuf\":\"%016llx\",\"trxpos\":\"%016llx\",\"trxreg\":\"%016llx\",\"trxdir\":\"%016llx\"}",
-        tadr, chcr, static_cast<unsigned long long>(setupRegs[0]), static_cast<unsigned long long>(setupRegs[1]),
-        static_cast<unsigned long long>(setupRegs[2]), static_cast<unsigned long long>(setupRegs[3]));
-    Ps2TraceGifOrder("native-image", 3u, imageData, imageBytes, this,
-        m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), traceDetail);
+    if (Ps2GifOrderTraceEnabled())
+    {
+        char traceDetail[320];
+        std::snprintf(traceDetail, sizeof(traceDetail), "{\"tadr\":%u,\"chcr\":%u,\"bitbltbuf\":\"%016llx\",\"trxpos\":\"%016llx\",\"trxreg\":\"%016llx\",\"trxdir\":\"%016llx\"}",
+            tadr, chcr, static_cast<unsigned long long>(setupRegs[0]), static_cast<unsigned long long>(setupRegs[1]),
+            static_cast<unsigned long long>(setupRegs[2]), static_cast<unsigned long long>(setupRegs[3]));
+        Ps2TraceGifOrder("native-image", 3u, imageData, imageBytes, this,
+            m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), traceDetail);
+    }
     gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
 
     m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;

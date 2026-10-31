@@ -28,6 +28,8 @@ namespace {
         HANDLE handle;
         const char *name;
         std::unordered_map<uint64_t, uint32_t> hits;
+        std::unordered_map<uint64_t, uint32_t> callers; // samples outside the image, by the first two image frames above them
+        std::unordered_map<uint64_t, uint32_t> dllIps;  // exact addresses of those samples (module-relative in the report)
         uint64_t total = 0;
     };
     std::mutex g_mutex;
@@ -53,11 +55,58 @@ namespace {
                 GetModuleFileNameW(reinterpret_cast<HMODULE>(entry.first & ~(1ull << 63)), path, MAX_PATH);
                 std::fprintf(file, "module %llx %ls\n", static_cast<unsigned long long>(entry.first), path);
             }
-            for (size_t i = 0; i < sorted.size() && i < 4000u; ++i)
+            for (size_t i = 0; i < sorted.size(); ++i)
                 std::fprintf(file, "%llx %u\n", static_cast<unsigned long long>(sorted[i].first), sorted[i].second);
+            for (const auto &entry : thread.dllIps)
+            {
+                HMODULE module = nullptr;
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(entry.first), &module))
+                {
+                    wchar_t path[MAX_PATH]{};
+                    GetModuleFileNameW(module, path, MAX_PATH);
+                    std::fprintf(file, "dllip %llx %u %ls\n", static_cast<unsigned long long>(entry.first - reinterpret_cast<uintptr_t>(module)),
+                                 entry.second, path);
+                }
+            }
+            for (const auto &entry : thread.callers)
+                std::fprintf(file, "caller %llx %u\n", static_cast<unsigned long long>(entry.first), entry.second);
         }
         std::fclose(file);
         (void)base;
+    }
+
+    // Offsets of the first two frames inside the image above a sample taken in a DLL or the kernel stubs, packed in one
+    // key (0: none found).
+    uint64_t firstImageFrames(CONTEXT context, uintptr_t base)
+    {
+        uint64_t key = 0u;
+        for (int depth = 0; depth < 32; ++depth)
+        {
+            DWORD64 imageBase = 0;
+            RUNTIME_FUNCTION *function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+            if (function)
+            {
+                void *handlerData = nullptr;
+                DWORD64 frame = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &frame, nullptr);
+            }
+            else
+            {
+                context.Rip = *reinterpret_cast<DWORD64 *>(context.Rsp);
+                context.Rsp += 8u;
+            }
+            const uintptr_t ip = static_cast<uintptr_t>(context.Rip);
+            if (ip == 0u)
+                return key;
+            if (ip >= base && ip - base < 0x40000000u)
+            {
+                if (key != 0u)
+                    return key | (static_cast<uint64_t>(ip - base) << 32);
+                key = ip - base;
+            }
+        }
+        return key;
     }
 
     void samplerLoop()
@@ -75,12 +124,15 @@ namespace {
                     if (SuspendThread(thread.handle) == static_cast<DWORD>(-1))
                         continue;
                     CONTEXT context{};
-                    context.ContextFlags = CONTEXT_CONTROL;
-                    if (GetThreadContext(thread.handle, &context))
+                    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+                    uint64_t offset = 0u, frames = 0u;
+                    uintptr_t ip = 0u;
+                    const bool sampled = GetThreadContext(thread.handle, &context) != 0;
+                    if (sampled)
                     {
-                        const uintptr_t ip = static_cast<uintptr_t>(context.Rip);
+                        ip = static_cast<uintptr_t>(context.Rip);
                         // Offsets outside the image (system DLLs) are grouped as 0.
-                        uint64_t offset = ip >= base && ip - base < 0x40000000u ? ip - base : 0u;
+                        offset = ip >= base && ip - base < 0x40000000u ? ip - base : 0u;
                         if (offset == 0u)
                         {
                             // Outside the image: tag by module (high bit + module base) so the
@@ -89,11 +141,21 @@ namespace {
                             if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                                    reinterpret_cast<LPCWSTR>(ip), &module))
                                 offset = (1ull << 63) | reinterpret_cast<uintptr_t>(module);
+                            frames = firstImageFrames(context, base);
                         }
-                        ++thread.hits[offset];
-                        ++thread.total;
                     }
                     ResumeThread(thread.handle);
+                    // Never allocate while the thread is suspended: it may hold the heap lock.
+                    if (sampled)
+                    {
+                        ++thread.hits[offset];
+                        ++thread.total;
+                        if (offset >> 63)
+                        {
+                            ++thread.callers[frames];
+                            ++thread.dllIps[ip];
+                        }
+                    }
                 }
             }
             if (std::chrono::steady_clock::now() - lastReport > std::chrono::seconds(10))
@@ -105,6 +167,33 @@ namespace {
     }
 #endif
 }
+
+#ifdef _WIN32
+namespace {
+    // One line for an unhandled crash, in image offsets (resolve with the linker map).
+    LONG WINAPI crashReport(EXCEPTION_POINTERS *info)
+    {
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        const CONTEXT &c = *info->ContextRecord;
+        std::fprintf(stderr, "[crash] code=%08lx rip=%llx (image+%llx) access=%llx rsp=%llx stack:",
+                     info->ExceptionRecord->ExceptionCode, static_cast<unsigned long long>(c.Rip),
+                     static_cast<unsigned long long>(c.Rip - base),
+                     static_cast<unsigned long long>(info->ExceptionRecord->NumberParameters > 1 ? info->ExceptionRecord->ExceptionInformation[1] : 0u),
+                     static_cast<unsigned long long>(c.Rsp));
+        const uintptr_t *sp = reinterpret_cast<const uintptr_t *>(c.Rsp);
+        for (int i = 0, shown = 0; i < 256 && shown < 12; ++i)
+            if (sp[i] >= base && sp[i] - base < 0x40000000u)
+            {
+                std::fprintf(stderr, " %llx", static_cast<unsigned long long>(sp[i] - base));
+                ++shown;
+            }
+        std::fputc(10, stderr);
+        std::fflush(stderr);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const LPTOP_LEVEL_EXCEPTION_FILTER g_crashFilter = SetUnhandledExceptionFilter(crashReport);
+}
+#endif
 
 void ps2ProfilerRegisterCurrentThread(const char *name)
 {
@@ -118,7 +207,7 @@ void ps2ProfilerRegisterCurrentThread(const char *name)
         return;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_threads.push_back(SampledThread{handle, name, {}, 0});
+        g_threads.push_back(SampledThread{handle, name, {}, {}, {}, 0});
     }
     if (!g_started.exchange(true))
         std::thread(samplerLoop).detach();

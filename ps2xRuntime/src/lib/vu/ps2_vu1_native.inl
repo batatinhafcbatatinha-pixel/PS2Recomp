@@ -123,6 +123,18 @@ void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, ui
     VU1NativeAccess::importFlags(vu); // the callout's flag writes join the native blocks' ones
 }
 
+void VU1NativeAccess::callEfu(VU1NativeCtx &n, uint32_t rel, uint32_t pc, uint32_t lower, uint32_t upper)
+{
+    VU1Interpreter &vu = *n.vu;
+    auto &c = *static_cast<VU1Interpreter::StepContext *>(n.context);
+    (void)pAt(n, rel);
+    const uint64_t keep = vu.m_cycle;
+    vu.m_cycle = n.start + rel; // the result is queued for its real ready cycle
+    vu.m_state.pc = pc;
+    vu.execLower(lower, c.vuData, c.dataSize, *c.gs, c.memory, upper);
+    vu.m_cycle = keep;
+}
+
 void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
 {
     VU1Interpreter &vu = *n.vu;
@@ -132,9 +144,17 @@ void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
     VU1NativeAccess::importFlags(vu); // the callout's flag writes join the native blocks' ones
 }
 
-void VU1NativeAccess::xgkick(VU1NativeCtx &n, uint32_t qwordAddress)
+void VU1NativeAccess::xgkick(VU1NativeCtx &n, uint32_t rel, uint32_t qwordAddress)
 {
     VU1Interpreter &vu = *n.vu;
+    // PATH1 moves two cycles per qword: a following XGKICK stalls until then, and the stall decides what a division in
+    // flight has reached by the next MULq (CoD's first vertex of every batch).
+    struct KickBusy
+    {
+        VU1Interpreter &vu;
+        uint64_t issue;
+        ~KickBusy() { vu.m_native->kickReady = issue + (vu.m_xgkick.totalBytes / 16u) * 2u; }
+    } kickBusy{vu, n.start + rel};
     if (vu.m_unit != VU1Interpreter::Unit::VU1 || !vu.m_activeVuData || vu.m_activeVuDataSize < 16u)
         return;
     vu.m_xgkick.reset();
@@ -290,13 +310,17 @@ void VU1NativeAccess::exportFlags(VU1Interpreter &vu)
 }
 
 // Values of results in flight are written at once (a reader would stall until they are ready anyway, so it sees the
-// same value), but their timing state stays: the flag queue, and FDIV/EFU marked busy until their ready cycle.
+// same value), but their timing state stays: the flag queue. Q and P are the exception: their readers do not interlock, so
+// divisions and EFU results in flight stay in their entries (readers: VU1NativeAccess::qAt / pAt).
 void VU1NativeAccess::commitValuesKeepTiming(VU1Interpreter &vu)
 {
     const uint32_t flagHead = vu.m_flagHead, flagCount = vu.m_flagCount;
     const VU1Interpreter::ScalarPipelineEntry fdiv = vu.m_fdiv;
     const auto efu = vu.m_efu;
     vu.m_flagCount = 0u;
+    vu.m_fdiv.valid = false;
+    for (VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
+        e.valid = false;
     vu.commitEverythingNow();
     vu.m_flagHead = flagHead;
     vu.m_flagCount = flagCount;
@@ -319,7 +343,7 @@ void VU1NativeAccess::prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::Nat
     bt.dec.clear();
     bt.scalarPairs.clear();
     bool read[NS::kLanes] = {}, written[NS::kLanes] = {};
-    bool scalarWritten[3] = {};
+    bool scalarWritten[4] = {};
     uint32_t &maxLat = vu.m_native->maxLat;
     const auto onRead = [&](uint32_t lane, uint8_t at) {
         if (read[lane] || written[lane])
@@ -365,6 +389,8 @@ void VU1NativeAccess::prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::Nat
             onScalarRead(1, at);
         if (d.lowerUsage.waitP)
             onScalarRead(2, at);
+        if (d.lowerUsage.pipeline == VU1Interpreter::PipelineXgkick)
+            onScalarRead(3, at);
         // writes, in markPairWrites' order (lower VF, upper VF, VI, ACC)
         const auto vfWrite = [&](const VU1Interpreter::InstructionUsage &u, bool lower) {
             const VU1Interpreter::VfAccess w = u.vfWrite;
@@ -519,11 +545,11 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
         }
     if (bt.scalarRead)
     {
-        uint64_t ready[3] = {vu.m_fdiv.valid ? vu.m_fdiv.readyCycle : 0u, vu.m_efuResourceReady, 0u};
+        uint64_t ready[4] = {vu.m_fdiv.valid ? vu.m_fdiv.readyCycle : 0u, vu.m_efuResourceReady, 0u, ns.kickReady};
         for (const VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
             if (e.valid)
                 ready[2] = std::max(ready[2], e.readyCycle);
-        for (uint32_t k = 0; k < 3u; ++k)
+        for (uint32_t k = 0; k < 4u; ++k)
             if ((bt.scalarRead & (1u << k)) && ready[k] > start + bt.scalarAt[k])
                 ns.sig.push_back(static_cast<uint16_t>(((200u + k) << 8) | std::min<uint64_t>(ready[k] - start - bt.scalarAt[k], 255u)));
     }
@@ -548,7 +574,9 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     for (size_t i = 0; i < bt.dec.size(); ++i)
     {
         const VU1Interpreter::DecodedInstructionPair &d = bt.dec[i];
-        const uint64_t ready = vu.calculatePairReadyCycle(d);
+        uint64_t ready = vu.calculatePairReadyCycle(d);
+        if (d.lowerUsage.pipeline == VU1Interpreter::PipelineXgkick)
+            ready = std::max(ready, ns.kickReady);
         if (ready > vu.m_cycle)
             vu.m_cycle = ready;
         cyc[i] = static_cast<uint8_t>(std::min<uint64_t>(vu.m_cycle - keepCycle, 255u));
@@ -584,36 +612,7 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     return remember(slot.cyc.data(), slot.id);
 }
 
-// After a native block: it joins the history (its results that outlive it are found there when needed); FDIV/EFU stay
-// busy until their ready cycle.
-// An FDIV / EFU operation a native block started at `issue`: busy until its ready cycle.
-void VU1NativeAccess::scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv)
-{
-    if (fdiv)
-    {
-        vu.m_fdiv.valid = true;
-        vu.m_fdiv.readyCycle = issue + latency;
-        vu.m_fdiv.value = vu.m_state.q;
-        vu.m_fdiv.statusDi = vu.m_state.status & 0x30u;
-        vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, vu.m_fdiv.readyCycle);
-        return;
-    }
-    // EFU instructions run through callLower, which queued their result at the block's start cycle: move the newest
-    // entry to the pair's real issue cycle
-    VU1Interpreter::ScalarPipelineEntry *newest = nullptr;
-    for (VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
-        if (e.valid && (!newest || e.readyCycle >= newest->readyCycle))
-            newest = &e;
-    if (newest)
-    {
-        newest->readyCycle = issue + latency;
-        vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, newest->readyCycle);
-    }
-    vu.m_efuResourceReady = issue + (latency > 0u ? latency - 1u : 0u);
-}
-
-// After a native block: it joins the history (its results that outlive it are found there when needed); FDIV/EFU stay
-// busy until their ready cycle.
+// After a native block: it joins the history (its results that outlive it are found there when needed).
 VU1N_INLINE void VU1NativeAccess::finishBlockTiming(VU1Interpreter &vu, const VU1Interpreter::NativeState::Slot &sl, const uint8_t *cyc,
                                                      uint32_t cycId, uint64_t start)
 {
@@ -630,20 +629,6 @@ VU1N_INLINE void VU1NativeAccess::finishBlockTiming(VU1Interpreter &vu, const VU
     ns.histNext = (ns.histNext + 1u) % NS::kHist;
     ++ns.histCount;
     vu.m_cycle = end;
-    if (sl.scalarCount == 0u)
-        return;
-    if (sl.scalarCount != NS::kScalarMany)
-    {
-        for (uint32_t k = 0; k < sl.scalarCount; ++k)
-            scalarStart(vu, start + cyc[sl.scalar[k].pair], sl.scalar[k].latency, sl.scalar[k].fdiv);
-        return;
-    }
-    const NS::BlockTiming &bt = *sl.bt;
-    for (const uint8_t i : bt.scalarPairs)
-    {
-        const VU1Interpreter::DecodedInstructionPair &d = bt.dec[i];
-        scalarStart(vu, start + cyc[i], d.lowerUsage.latency, d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv);
-    }
 }
 
 // The micro memory has a new generation (VIF MPG, EE writes): slots whose extent scan read a changed pair are set up again
@@ -709,25 +694,13 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
                 if (bt.dec.empty())
                     prepareBlockTiming(vu, bt, code, pc, count, it->second.cyc.data());
                 bt.readsEntryFlags = it->second.readsEntryFlags;
-                // Native scalar helpers publish Q immediately, but MULq may read the
-                // previous Q until FDIV completes. Keep Q writers on the exact path;
-                // EFU/P operations retain their existing native handling.
-                const bool writesQ = std::any_of(bt.dec.begin(), bt.dec.end(), [](const auto &d) {
-                    return d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv && !d.lowerUsage.waitQ;
-                });
-                sl.fn = writesQ ? nullptr : it->second.fn;
+                sl.fn = it->second.fn;
                 sl.idle = it->second.cyc.data();
                 sl.idleEnd = static_cast<uint16_t>(sl.idle[count - 1u] + 1u);
                 sl.bt = &bt;
                 sl.readsEntryFlags = bt.readsEntryFlags;
                 sl.memoable = bt.scalarRead == 0u;
                 sl.tail = it->second.tail;
-                if (bt.scalarPairs.size() > std::size(sl.scalar))
-                    sl.scalarCount = VU1Interpreter::NativeState::kScalarMany;
-                else
-                    for (const uint8_t i : bt.scalarPairs)
-                        sl.scalar[sl.scalarCount++] = {i, static_cast<uint8_t>(bt.dec[i].lowerUsage.latency),
-                                                       bt.dec[i].lowerUsage.pipeline == VU1Interpreter::PipelineFdiv};
             }
             else if (ns.diag)
                 ++ns.missPcs[pc];
@@ -755,10 +728,6 @@ bool VU1Interpreter::runNative(StepContext &context)
         m_native = new NativeState();
     NativeState &ns = *m_native;
     if (!ns.enabled)
-        return false;
-    // Do not let native entry commit an in-flight Q before its ready cycle.
-    // The caller steps exact pairs until the FDIV pipeline has retired.
-    if (m_fdiv.valid)
         return false;
     if (m_state.branchPending || m_state.ebit || m_state.haltAfterDelaySlot || m_stopRequested)
         return false;
@@ -840,9 +809,12 @@ bool VU1Interpreter::runNative(StepContext &context)
         const uint64_t start = m_cycle;
         // Values never depend on timing, only flag reads do. A block that reads flags written before it gets its exact
         // issue cycles from the pipeline state at entry (the stalls decide which of those flags it sees); the others use
-        // their idle-pipeline table and only hand their results and flags in flight on.
+        // their idle-pipeline table and only hand their results and flags in flight on. A division in flight needs the
+        // real cycle count until it retires (EFU too): their readers do not interlock, so stalls decide what they see.
         uint32_t cycId = 0u;
-        const uint8_t *cyc = sl.readsEntryFlags ? VU1NativeAccess::blockTiming(*this, sl, cycId) : sl.idle;
+        const uint8_t *cyc = sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid
+                                 ? VU1NativeAccess::blockTiming(*this, sl, cycId)
+                                 : sl.idle;
         ctx.cyc = cyc;
         ctx.start = start;
         if (sl.tail)
@@ -890,7 +862,7 @@ bool VU1Interpreter::runNative(StepContext &context)
             for (const auto &kv : ns.missHits)
                 top.emplace_back(kv.second, kv.first);
             std::sort(top.rbegin(), top.rend());
-            for (size_t i = 0; i < top.size() && i < 40u; ++i)
+            for (size_t i = 0; i < top.size() && i < 400u; ++i)
                 std::fprintf(stderr, "[vu1n-miss] pc=%x hits=%u\n", top[i].second, top[i].first);
             ns.missHits.clear();
         }
