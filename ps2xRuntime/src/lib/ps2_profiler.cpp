@@ -192,6 +192,50 @@ namespace {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     const LPTOP_LEVEL_EXCEPTION_FILTER g_crashFilter = SetUnhandledExceptionFilter(crashReport);
+    // PS2X_EH_STATS=1: every 5 s, C++ exceptions thrown and their commonest origins (image offsets of the first frames).
+    std::atomic<uint32_t> g_ehCount{0};
+    std::unordered_map<uint64_t, uint32_t> g_ehOrigins;
+    std::mutex g_ehMutex;
+    LONG CALLBACK ehStats(EXCEPTION_POINTERS *info)
+    {
+        if (info->ExceptionRecord->ExceptionCode != 0xE06D7363u)
+            return EXCEPTION_CONTINUE_SEARCH;
+        ++g_ehCount;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        void *frames[32]{};
+        const USHORT n = RtlCaptureStackBackTrace(1, 32, frames, nullptr);
+        uint64_t key = 0u;
+        for (USHORT i = 0, found = 0; i < n && found < 2u; ++i)
+        {
+            const uintptr_t ip = reinterpret_cast<uintptr_t>(frames[i]);
+            if (ip >= base && ip - base < 0x40000000u)
+                key |= static_cast<uint64_t>(ip - base) << (found++ * 32u);
+        }
+        std::lock_guard<std::mutex> lock(g_ehMutex);
+        ++g_ehOrigins[key];
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last > std::chrono::seconds(5))
+        {
+            last = now;
+            std::fprintf(stderr, "[eh] count=%u", g_ehCount.exchange(0));
+            for (int shown = 0; shown < 6 && !g_ehOrigins.empty(); ++shown)
+            {
+                auto top = g_ehOrigins.begin();
+                for (auto it = g_ehOrigins.begin(); it != g_ehOrigins.end(); ++it)
+                    if (it->second > top->second)
+                        top = it;
+                std::fprintf(stderr, " %llx<-%llx=%u", static_cast<unsigned long long>(top->first & 0xFFFFFFFFu),
+                             static_cast<unsigned long long>(top->first >> 32), top->second);
+                g_ehOrigins.erase(top);
+            }
+            g_ehOrigins.clear();
+            std::fputc(10, stderr);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const bool g_ehStatsOn = std::getenv("PS2X_EH_STATS") && AddVectoredExceptionHandler(1, ehStats);
+
 }
 #endif
 

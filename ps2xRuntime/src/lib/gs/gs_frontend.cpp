@@ -11,6 +11,10 @@
 #include <iostream>
 #include <sstream>
 
+// Per-register and per-vertex path: never logged, whatever the build-wide setting.
+#undef PS2_IF_AGRESSIVE_LOGS
+#define PS2_IF_AGRESSIVE_LOGS(code) ((void)0)
+
 namespace
 {
     static constexpr uint32_t kHostFrameWidth = 640u;
