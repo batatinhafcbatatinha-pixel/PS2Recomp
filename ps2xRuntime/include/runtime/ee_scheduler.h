@@ -265,6 +265,7 @@ public:
     static constexpr int kPriorityCount = 128;
     static constexpr uint64_t kEeClockHz = 294912000ull;
     static constexpr uint64_t kHostSampleCycles = 4096ull;
+    static constexpr uint64_t kAccountBatchCycles = 512ull; // estimated cycles charged per clock / timer / IOP update
     static constexpr uint64_t kMaxHostCatchUpCycles = kEeClockHz / 60ull;
     static constexpr uint32_t kGeneratedCheckpointCycles = 32u;
     static constexpr uint32_t kGuestDispatchCycles = 8u;
@@ -361,6 +362,7 @@ public:
 
     [[nodiscard]] EeKernelSnapshot snapshot() const;
     void publishSnapshot();
+    void publishSnapshotNow();
 
 private:
     struct ScheduledEvent
@@ -458,6 +460,9 @@ private:
     // Native timeline: guest EE cycles follow host steady_clock while run() executes.
     std::chrono::steady_clock::time_point m_hostEpoch{};
     uint64_t m_hostSampleCycles = 0;
+    uint64_t m_batchedCycles = 0;
+    std::chrono::steady_clock::time_point m_clockSample{}; // host instant m_eeCycle was last updated
+    [[nodiscard]] std::chrono::steady_clock::time_point clockInstant() const;
     // CP0 Count is one counter for the whole EE: every guest context mirrors it, so a
     // thread created later never reads a different epoch than the one that stored a base.
     uint32_t m_globalCount = 0;

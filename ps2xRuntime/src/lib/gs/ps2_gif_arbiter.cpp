@@ -34,10 +34,13 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
     pkt.data.resize(sizeBytes);
     std::memcpy(pkt.data.data(), data, sizeBytes);
-    char detail[128];
-    std::snprintf(detail, sizeof(detail), "{\"queue_index\":%zu,\"direct_hl\":%s,\"image\":%s}",
-        m_queue.size(), pkt.path2DirectHl ? "true" : "false", pkt.path3Image ? "true" : "false");
-    Ps2TraceGifOrder("arbiter-enqueue", static_cast<unsigned>(pathId), data, sizeBytes, this, 0u, 0u, detail);
+    if (Ps2GifOrderTraceEnabled())
+    {
+        char detail[128];
+        std::snprintf(detail, sizeof(detail), "{\"queue_index\":%zu,\"direct_hl\":%s,\"image\":%s}",
+            m_queue.size(), pkt.path2DirectHl ? "true" : "false", pkt.path3Image ? "true" : "false");
+        Ps2TraceGifOrder("arbiter-enqueue", static_cast<unsigned>(pathId), data, sizeBytes, this, 0u, 0u, detail);
+    }
     m_queue.push_back(std::move(pkt));
 }
 

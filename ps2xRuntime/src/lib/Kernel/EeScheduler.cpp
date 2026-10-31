@@ -307,7 +307,7 @@ void EeScheduler::run()
         if (m_debugPublishCountdown == 0u)
         {
             copyMainContextToRuntime();
-            publishSnapshot();
+            publishSnapshotNow();
             m_debugPublishCountdown = kDebugPublishDispatchInterval - 1u;
         }
         else
@@ -503,21 +503,33 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
 
 void EeScheduler::accountCycles(uint32_t cycles) noexcept
 {
-    const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
+    // This runs on every guest dispatch, tens of millions of times per second. While run() executes, the charges
+    // are collected and applied in batches: clock read, EE timers and IOP cost nothing between batches, and a batch
+    // is a few microseconds of guest time (cycles == 0 forces one).
+    m_batchedCycles += std::max<uint64_t>(1u, cycles);
+    const bool running = m_running.load(std::memory_order_relaxed);
+    if (running && cycles != 0u && m_batchedCycles < kAccountBatchCycles)
+        return;
+    const uint64_t elapsed = m_batchedCycles;
+    m_batchedCycles = 0u;
+
+    static const bool estimatedClock = std::getenv("PS2X_EE_ESTIMATED_CLOCK") != nullptr;
+    const auto now = running ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    m_clockSample = now;
+
     // CP0 Count is the game's clock (294.912 MHz). While run() executes it follows
     // the host clock, so frame pacing is real time; the estimated dispatch cycles
     // keep driving the scheduler, EE timers and the IOP as before. Outside run()
     // (tests) Count advances once per EE cycle. Samples are taken every few
     // thousand estimated cycles; cycles == 0 forces a sample.
     uint64_t countCycles = elapsed;
-    if (m_running.load(std::memory_order_relaxed))
+    if (running)
     {
         countCycles = 0u;
         m_hostSampleCycles += elapsed;
         if (cycles == 0u || m_hostSampleCycles >= kHostSampleCycles)
         {
             m_hostSampleCycles = 0u;
-            const auto now = std::chrono::steady_clock::now();
             const uint64_t ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_hostEpoch).count());
             countCycles = (ns / 1000000000ull) * kEeClockHz + ((ns % 1000000000ull) * kEeClockHz) / 1000000000ull;
@@ -526,26 +538,28 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
             m_hostEpoch = now;
         }
     }
-    m_globalCount += static_cast<uint32_t>(countCycles);
-    const uint32_t count = m_globalCount;
-    for (auto &[id, thread] : m_threads)
+    if (countCycles != 0u)
     {
-        thread.context.cop0_count = count;
-        for (auto &invocation : thread.invocations)
+        m_globalCount += static_cast<uint32_t>(countCycles);
+        const uint32_t count = m_globalCount;
+        for (auto &[id, thread] : m_threads)
+        {
+            thread.context.cop0_count = count;
+            for (auto &invocation : thread.invocations)
+                invocation.context.cop0_count = count;
+        }
+        for (auto &invocation : m_pendingInvocations)
             invocation.context.cop0_count = count;
     }
-    for (auto &invocation : m_pendingInvocations)
-        invocation.context.cop0_count = count;
     // While run() executes, the EE clock that drives VBlank/alarm/timer deadlines follows wall time: every
-    // dispatch it advances to max(estimate, cycles of wall time since run() started). The estimate alone (8 cycles
+    // batch it advances to max(estimate, cycles of wall time since run() started). The estimate alone (8 cycles
     // per dispatch) ran far slower than real time (VBlank ~10 Hz in Boku2); adding host time per sample on top of
     // it also counted the pacing waits, kept the clock a frame ahead and let long loops run one slice per VBlank.
     // With the clock on wall time, deadlines come due by cycle when they come due by host time, so pacing barely
     // sleeps. (The corruption it exposed in CoD/Ben10 was the yield-vs-return confusion fixed in
     // PS2Runtime::dispatchGuestBranch.) PS2X_EE_ESTIMATED_CLOCK=1 restores the estimate-only clock.
     uint64_t advance = elapsed;
-    static const bool estimatedClock = std::getenv("PS2X_EE_ESTIMATED_CLOCK") != nullptr;
-    if (m_running.load(std::memory_order_relaxed) && !estimatedClock)
+    if (running && !estimatedClock)
     {
         struct WallClock
         {
@@ -554,7 +568,6 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
             uint64_t base = 0;
         };
         static WallClock wallClock;
-        const auto now = std::chrono::steady_clock::now();
         if (wallClock.owner != this)
             wallClock = WallClock{this, now, m_eeCycle};
         const uint64_t ns = static_cast<uint64_t>(
@@ -1254,8 +1267,11 @@ int EeScheduler::setAlarm(uint16_t ticks,
     }
     m_alarms.emplace(id, EeAlarm{id, ticks, handler, argument, gp, sp});
     const uint64_t tickCount = ticks == 0u ? 1u : static_cast<uint64_t>(ticks);
+    // Both deadlines start from the same instant. m_eeCycle dates from the last accounting batch: counting the host
+    // deadline from "now" left the alarm due by cycle but not by host time after the next batch, and the pacing wait in
+    // processDueDeadlines holds every guest thread (Boku2's frame pacer re-arms short alarms: boot froze at 0 fps).
     scheduleEvent(m_eeCycle + tickCount * kAlarmTickCycles,
-                  std::chrono::steady_clock::now() + std::chrono::microseconds(tickCount * kAlarmTickMicroseconds),
+                  clockInstant() + std::chrono::microseconds(tickCount * kAlarmTickMicroseconds),
                   EeEvent{EeEventType::Alarm, static_cast<uint32_t>(id), 0});
     return id;
 }
@@ -1665,6 +1681,14 @@ EeKernelSnapshot EeScheduler::snapshot() const
 
 void EeScheduler::publishSnapshot()
 {
+    // Only the debug panel reads snapshots. Kernel calls publish after every change, which copied and sorted all threads,
+    // semaphores and event flags per call; while run() executes the periodic publish in its loop is enough.
+    if (!m_running.load(std::memory_order_relaxed))
+        publishSnapshotNow();
+}
+
+void EeScheduler::publishSnapshotNow()
+{
     EeKernelSnapshot next{};
     next.sequence = ++m_snapshotSequence;
     next.eeCycle = m_eeCycle;
@@ -1935,6 +1959,15 @@ void EeScheduler::applyPendingPreemption()
 void EeScheduler::processPendingEvents()
 {
     assertExecutor();
+    // Runs after every dispatcher slice. Events and timer interrupts raise m_checkpointPending, so with that clear and no
+    // deadline due there is nothing to look at (the slow path below takes the event lock three times).
+    const uint64_t nextDeadline = m_nextDeadlineCycle.load(std::memory_order_acquire);
+    if (!m_checkpointPending.load(std::memory_order_acquire) && m_pendingEeTimerInterrupts == 0u &&
+        (nextDeadline == 0u || m_eeCycle < nextDeadline))
+    {
+        applyPendingPreemption();
+        return;
+    }
     processDueDeadlines();
     const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;
     m_pendingEeTimerInterrupts = 0u;
@@ -2220,7 +2253,7 @@ void EeScheduler::waitForEvent()
     }
     if (hasTimerDeadline)
     {
-        const auto timerHostDeadline = std::chrono::steady_clock::now() + eeCyclesToHostDuration(timerCycles);
+        const auto timerHostDeadline = clockInstant() + eeCyclesToHostDuration(timerCycles);
         if (timerHostDeadline < hostDeadline)
         {
             deadlineCycle = m_eeCycle + timerCycles;
@@ -2242,8 +2275,16 @@ void EeScheduler::waitForEvent()
             accountCycles(step);
             remaining -= step;
         }
+        accountCycles(0u); // the deadline must be reached now, not at the next batch
         m_checkpointPending.store(true, std::memory_order_release);
     }
+}
+
+std::chrono::steady_clock::time_point EeScheduler::clockInstant() const
+{
+    return m_running.load(std::memory_order_relaxed) && m_clockSample != std::chrono::steady_clock::time_point{}
+               ? m_clockSample
+               : std::chrono::steady_clock::now();
 }
 
 void EeScheduler::scheduleEvent(uint64_t deadlineCycle,
@@ -2307,16 +2348,6 @@ void EeScheduler::copyMainContextToRuntime()
 
 void EeScheduler::publishDebugContext(const R5900Context &context)
 {
-    if (context.pc == 0x14b380u) {
-        static uint64_t samples = 0;
-        if ((++samples & (samples - 1u)) == 0u) {
-            std::cerr << "[ff-frame-wait] samples=" << samples
-                      << " count=" << context.cop0_count
-                      << " base=" << Ps2FastRead32(m_rdram, 0x4e8740u)
-                      << " elapsed=" << context.f[0]
-                      << " target=" << context.f[20] << std::endl;
-        }
-    }
     m_runtime.m_debugPc.store(context.pc, std::memory_order_relaxed);
     m_runtime.m_debugRa.store(getRegU32(&context, 31), std::memory_order_relaxed);
     m_runtime.m_debugSp.store(getRegU32(&context, 29), std::memory_order_relaxed);

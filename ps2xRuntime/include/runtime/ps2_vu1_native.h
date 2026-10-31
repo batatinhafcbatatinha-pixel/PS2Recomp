@@ -1,8 +1,9 @@
 // GOW-Port: native VU1 backend. Basic blocks of the game's VU1 microcode are translated ahead of time (tools/vu1/vu1n_gen.py)
 // into straight-line SSE functions with immediate value semantics. MAC/CLIP visibility is tracked separately. Q is not
-// interlocked on an ordinary MULq: blocks that write Q, and execution while Q is pending, stay on the exact path until
-// the native backend can preserve its delayed visibility. The exact engine also handles untranslated blocks and is
-// the oracle for GOW_VU1N_VERIFY.
+// interlocked on an ordinary MULq, so FDIV results stay in the exact engine's pipeline entry and every reader asks for the
+// value visible at its issue cycle (VU1NativeAccess::qAt; EFU results and P likewise, pAt). The exact engine also handles
+// untranslated blocks and is the
+// oracle for GOW_VU1N_VERIFY.
 #ifndef PS2_VU1_NATIVE_H
 #define PS2_VU1_NATIVE_H
 
@@ -121,8 +122,8 @@ struct VU1Interpreter::NativeState
         uint64_t writeMask[3] = {};  // lanes the block writes
         uint8_t readAt[kLanes] = {}; // idle-schedule issue cycle of the first such read
         uint8_t lastPair[kLanes] = {}, lastLat[kLanes] = {}; // last write of each written lane: pair and latency
-        uint8_t scalarRead = 0;      // bit 0 FDIV, 1 EFU unit, 2 WAITP read before the block starts one
-        uint8_t scalarAt[3] = {};
+        uint8_t scalarRead = 0;      // bit 0 FDIV, 1 EFU unit, 2 WAITP read before the block starts one, 3 XGKICK
+        uint8_t scalarAt[4] = {};
         std::vector<uint8_t> scalarPairs; // pairs that start an FDIV / EFU operation
         const uint8_t *idle = nullptr;
         bool readsEntryFlags = false; // reads flags written before it: exact entry timing (others use `idle`)
@@ -144,8 +145,6 @@ struct VU1Interpreter::NativeState
         bool known = false;
         bool readsEntryFlags = false;
         bool memoable = false;   // its entry timing does not depend on FDIV/EFU state
-        uint8_t scalarCount = 0; // FDIV / EFU operations it starts (kScalarMany: more than fit in `scalar`)
-        struct Scalar { uint8_t pair, latency; bool fdiv; } scalar[2] = {};
         // Entry timing by predecessor (blocks that read entry flags): when the block before ran for maxLat cycles or more
         // and nothing from the exact engine is still in flight, that block and its timing table alone decide the entry
         // state; the timing found for it is reused.
@@ -154,7 +153,6 @@ struct VU1Interpreter::NativeState
         uint32_t memoPredId = 0, memoId = 0;
     };
     static_assert(sizeof(Slot) == 128);
-    static constexpr uint8_t kScalarMany = 0xFF;
     Slot slots[2048];
     // Native blocks run since native entry (or the last sync), newest last; histCount counts them all (the ring keeps the
     // last kHist). A write is ready less than maxLat cycles after its block ended, so only blocks that ended less than
@@ -166,6 +164,7 @@ struct VU1Interpreter::NativeState
     uint32_t histNext = 0, histCount = 0;
     uint32_t maxLat = 0;
     uint32_t nextCycId = 1;
+    uint64_t kickReady = 0; // a native XGKICK copies its packet at once, but the next one still stalls until this cycle
     // Every lane of the exact engine's readiness arrays is ready by arraysReadyBy (the arrays are cleared at every program
     // start; recomputed at native entry when the exact engine ran since the last native exit at exitCycle).
     uint64_t arraysReadyBy = 0, exitCycle = ~0ull;
@@ -206,7 +205,6 @@ struct VU1NativeAccess
     static void prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::BlockTiming &bt, const uint8_t *code,
                                    uint32_t pc, uint32_t count, const uint8_t *idle);
     static const uint8_t *blockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId);
-    static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
     static void codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code); // micro memory (16 KB) rewritten
     static uint64_t &laneWord(VU1Interpreter &vu, uint32_t lane);
@@ -217,7 +215,20 @@ struct VU1NativeAccess
                                   uint64_t start);
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
-    static void xgkick(VU1NativeCtx &n, uint32_t qwordAddress);
+    static void xgkick(VU1NativeCtx &n, uint32_t rel, uint32_t qwordAddress);
+    // FDIV unit: Q as a reader issued at rel sees it (commits a finished division), and the three operations. Blocks with
+    // any of these get exact issue cycles (vu1n_gen.py sets bit 16 of pairs).
+    static float qAt(VU1NativeCtx &n, uint32_t rel);
+    // Low STATUS bits as a reader issued at rel sees them: ZSUO of the visible MAC writer, D/I of the FDIV unit.
+    static uint32_t qStatus(VU1NativeCtx &n, uint32_t rel);
+    static uint32_t statusFrom(uint32_t mac, uint32_t qStatus);
+    static void qStart(VU1NativeCtx &n, uint32_t rel, float value, uint32_t latency, uint32_t statusDi);
+    static void divOp(VU1NativeCtx &n, uint32_t rel, int fs, int fsf, int ft, int ftf);
+    static void sqrtOp(VU1NativeCtx &n, uint32_t rel, int ft, int ftf);
+    static void rsqrtOp(VU1NativeCtx &n, uint32_t rel, int fs, int fsf, int ft, int ftf);
+    // EFU unit, same model: P as read at rel, and an EFU operation issued at rel.
+    static float pAt(VU1NativeCtx &n, uint32_t rel);
+    static void callEfu(VU1NativeCtx &n, uint32_t rel, uint32_t pc, uint32_t lower, uint32_t upper);
     // GOW_VU1N_RECORD / GOW_VU1N_REPLAY (bit-exact A/B of generator changes, see ps2_vu1_native.inl)
     static void recordReplay(VU1Interpreter &vu, void *context, uint32_t maxCycles);
     static uint64_t silentNativeHash(VU1Interpreter &vu, void *context);
@@ -549,29 +560,6 @@ namespace vu1n
         std::memcpy(&x, &b, 4);
         return x;
     }
-    VU1N_INLINE void divOp(VU1State &s, int fs, int fsf, int ft, int ftf)
-    {
-        const float num = qnorm(s.vf[fs][fsf]), den = qnorm(s.vf[ft][ftf]);
-        float r;
-        if (den == 0.0f)
-            r = (std::signbit(num) != std::signbit(den)) ? -FLT_MAX : FLT_MAX;
-        else
-            r = num / den;
-        s.q = qfinish(r);
-    }
-    VU1N_INLINE void sqrtOp(VU1State &s, int ft, int ftf) { s.q = qfinish(std::sqrt(std::fabs(qnorm(s.vf[ft][ftf])))); }
-    VU1N_INLINE void rsqrtOp(VU1State &s, int fs, int fsf, int ft, int ftf)
-    {
-        const float num = qnorm(s.vf[fs][fsf]);
-        const float den = std::sqrt(std::fabs(qnorm(s.vf[ft][ftf])));
-        float r;
-        if (den != 0.0f)
-            r = num / den;
-        else
-            r = std::signbit(num) ? -FLT_MAX : FLT_MAX;
-        s.q = qfinish(r);
-    }
-
     // --- register-file-in-locals variants (generated blocks keep VF/VI/ACC/Q/I in C++ locals; same semantics as above) ---
     inline uint32_t qa(uint32_t mask, int32_t qw) { return (static_cast<uint32_t>(qw) * 16u) & mask; }
     inline __m128 ldm(const uint8_t *mem, uint32_t addr) { return _mm_loadu_ps(reinterpret_cast<const float *>(mem + addr)); }
@@ -638,28 +626,73 @@ namespace vu1n
         if (v[2] < -w) f |= 0x20u;
         return ((prev << 6) | f) & 0xFFFFFFu;
     }
-    inline float divv(float fsRaw, float ftRaw)
+}
+
+// --- FDIV unit -------------------------------------------------------------------------------------------------------
+VU1N_INLINE float VU1NativeAccess::qAt(VU1NativeCtx &n, uint32_t rel)
+{
+    VU1Interpreter &vu = *n.vu;
+    if (vu.m_fdiv.valid && vu.m_fdiv.readyCycle <= n.start + rel) // same commit as commitReadyPipelines
     {
-        const float num = qnorm(fsRaw), den = qnorm(ftRaw);
-        float r;
-        if (den == 0.0f)
-            r = (std::signbit(num) != std::signbit(den)) ? -FLT_MAX : FLT_MAX;
-        else
-            r = num / den;
-        return qfinish(r);
+        vu.m_state.q = vu.m_fdiv.value;
+        const uint32_t di = vu.m_fdiv.statusDi & 0x30u;
+        vu.m_state.status = (vu.m_state.status & 0xFCFu) | di | (di << 6);
+        vu.m_fdiv.valid = false;
     }
-    inline float sqrtv(float ftRaw) { return qfinish(std::sqrt(std::fabs(qnorm(ftRaw)))); }
-    inline float rsqrtv(float fsRaw, float ftRaw)
-    {
-        const float num = qnorm(fsRaw);
-        const float den = std::sqrt(std::fabs(qnorm(ftRaw)));
-        float r;
-        if (den != 0.0f)
-            r = num / den;
-        else
-            r = std::signbit(num) ? -FLT_MAX : FLT_MAX;
-        return qfinish(r);
-    }
+    return vu.m_state.q;
+}
+VU1N_INLINE uint32_t VU1NativeAccess::qStatus(VU1NativeCtx &n, uint32_t rel)
+{
+    (void)qAt(n, rel);
+    return n.vu->m_state.status & 0x30u;
+}
+VU1N_INLINE uint32_t VU1NativeAccess::statusFrom(uint32_t mac, uint32_t qStatus)
+{
+    return qStatus | ((mac & 0x000Fu) ? 1u : 0u) | ((mac & 0x00F0u) ? 2u : 0u) | ((mac & 0x0F00u) ? 4u : 0u) |
+           ((mac & 0xF000u) ? 8u : 0u);
+}
+VU1N_INLINE float VU1NativeAccess::pAt(VU1NativeCtx &n, uint32_t rel)
+{
+    VU1Interpreter &vu = *n.vu;
+    for (VU1Interpreter::ScalarPipelineEntry &entry : vu.m_efu) // same commit as commitReadyPipelines
+        if (entry.valid && entry.readyCycle <= n.start + rel)
+        {
+            vu.m_state.p = entry.value;
+            entry.valid = false;
+        }
+    return vu.m_state.p;
+}
+VU1N_INLINE void VU1NativeAccess::qStart(VU1NativeCtx &n, uint32_t rel, float value, uint32_t latency, uint32_t statusDi)
+{
+    VU1Interpreter &vu = *n.vu;
+    (void)qAt(n, rel); // the pair stalled until an older division finished
+    vu.m_fdiv.valid = true;
+    vu.m_fdiv.readyCycle = n.start + rel + latency;
+    vu.m_fdiv.value = vu1n::qfinish(value);
+    vu.m_fdiv.statusDi = statusDi;
+    vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, vu.m_fdiv.readyCycle);
+}
+VU1N_INLINE void VU1NativeAccess::divOp(VU1NativeCtx &n, uint32_t rel, int fs, int fsf, int ft, int ftf)
+{
+    const float num = vu1n::qnorm(n.s->vf[fs][fsf]), den = vu1n::qnorm(n.s->vf[ft][ftf]);
+    if (den != 0.0f)
+        qStart(n, rel, num / den, 7u, 0u);
+    else
+        qStart(n, rel, (std::signbit(num) != std::signbit(den)) ? -FLT_MAX : FLT_MAX, 7u, num == 0.0f ? 0x10u : 0x20u);
+}
+VU1N_INLINE void VU1NativeAccess::sqrtOp(VU1NativeCtx &n, uint32_t rel, int ft, int ftf)
+{
+    const float val = vu1n::qnorm(n.s->vf[ft][ftf]);
+    qStart(n, rel, std::sqrt(std::fabs(val)), 7u, val < 0.0f ? 0x10u : 0u);
+}
+VU1N_INLINE void VU1NativeAccess::rsqrtOp(VU1NativeCtx &n, uint32_t rel, int fs, int fsf, int ft, int ftf)
+{
+    const float num = vu1n::qnorm(n.s->vf[fs][fsf]), radicand = vu1n::qnorm(n.s->vf[ft][ftf]);
+    const float den = std::sqrt(std::fabs(radicand));
+    if (den != 0.0f)
+        qStart(n, rel, num / den, 13u, radicand < 0.0f ? 0x10u : 0u);
+    else
+        qStart(n, rel, std::signbit(num) ? -FLT_MAX : FLT_MAX, 13u, num == 0.0f ? 0x10u : 0x20u);
 }
 
 #if defined(_MSC_VER)
