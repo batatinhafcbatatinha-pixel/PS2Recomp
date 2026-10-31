@@ -1,0 +1,51 @@
+name: macos
+
+# Builds the tools, runtime and tests with Apple's real SDK. No game code is involved: generated
+# sources only ever exist on the machine of whoever owns the disc.
+
+on:
+  push:
+    branches: [macos]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            flags: ""
+          - os: macos-15-intel
+            arch: x86_64
+            flags: "-msse4.1"
+
+    name: macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: brew install ninja pkg-config ffmpeg
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_CODWAW_SUPPLEMENTS=OFF \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }}" -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build --config Release -- -k 0 2>&1 | tee build.log
+
+      - name: Tests
+        run: ./build/ps2xTest/ps2x_tests
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log-${{ matrix.arch }}
+          path: build.log
