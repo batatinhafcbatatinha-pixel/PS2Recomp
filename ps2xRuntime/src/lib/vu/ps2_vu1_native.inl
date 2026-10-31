@@ -709,7 +709,13 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
                 if (bt.dec.empty())
                     prepareBlockTiming(vu, bt, code, pc, count, it->second.cyc.data());
                 bt.readsEntryFlags = it->second.readsEntryFlags;
-                sl.fn = it->second.fn;
+                // Native scalar helpers publish Q immediately, but MULq may read the
+                // previous Q until FDIV completes. Keep Q writers on the exact path;
+                // EFU/P operations retain their existing native handling.
+                const bool writesQ = std::any_of(bt.dec.begin(), bt.dec.end(), [](const auto &d) {
+                    return d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv && !d.lowerUsage.waitQ;
+                });
+                sl.fn = writesQ ? nullptr : it->second.fn;
                 sl.idle = it->second.cyc.data();
                 sl.idleEnd = static_cast<uint16_t>(sl.idle[count - 1u] + 1u);
                 sl.bt = &bt;
@@ -749,6 +755,10 @@ bool VU1Interpreter::runNative(StepContext &context)
         m_native = new NativeState();
     NativeState &ns = *m_native;
     if (!ns.enabled)
+        return false;
+    // Do not let native entry commit an in-flight Q before its ready cycle.
+    // The caller steps exact pairs until the FDIV pipeline has retired.
+    if (m_fdiv.valid)
         return false;
     if (m_state.branchPending || m_state.ebit || m_state.haltAfterDelaySlot || m_stopRequested)
         return false;

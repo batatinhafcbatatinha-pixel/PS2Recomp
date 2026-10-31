@@ -159,6 +159,117 @@ void register_ps2_memory_tests()
 {
     MiniTest::Case("PS2Memory", [](TestCase &tc)
     {
+        // Each material is a real host-to-local upload followed by IMAGE/EOP.
+        // MSCAL reads the destination texel through the real GIF/GS frontend:
+        // draining the entire pending chain at unmask exposes material 2 too early.
+        const auto path3MaterialWindows = [](TestCase &t, bool splitBuffers, bool flushAll, bool newListAfterFirstWindow = false)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            GS gs;
+            gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
+            mem.setGifPacketCallback([&](const uint8_t *data, uint32_t size)
+            {
+                gs.processGIFPacket(data, size);
+            });
+            constexpr uint32_t kMaterial1 = 0x804080A1u;
+            constexpr uint32_t kMaterial2 = 0x8020C0B2u;
+            constexpr uint32_t kTextureBase = 0x100u;
+            std::vector<uint8_t> chain;
+            for (const uint32_t material : {kMaterial1, kMaterial2})
+            {
+                appendU64(chain, makeGifTag(4u, GIF_FMT_PACKED, 1u, false));
+                appendU64(chain, 0x0Eull);
+                for (const auto &ad : std::vector<std::pair<uint64_t, uint64_t>>{
+                         {makeBitbltbuf(kTextureBase, 1u, 0u), GS_REG_BITBLTBUF},
+                         {0ull, GS_REG_TRXPOS},
+                         {1ull | (1ull << 32u), GS_REG_TRXREG},
+                         {0ull, GS_REG_TRXDIR}})
+                {
+                    appendU64(chain, ad.first);
+                    appendU64(chain, ad.second);
+                }
+                appendU64(chain, makeGifTag(1u, GIF_FMT_IMAGE, 0u, true));
+                appendU64(chain, 0ull);
+                appendU32(chain, material);
+                // A payload word has bit15 set; it must not be treated as EOP.
+                appendU32(chain, 0x00008000u);
+                appendU64(chain, 0xFFFFFFFFFFFFFFFFull);
+            }
+            const uint32_t mask = makeVifCmd(0x06u, 0u, 0x8000u);
+            mem.processVIF1Data(reinterpret_cast<const uint8_t *>(&mask), sizeof(mask));
+            if (splitBuffers)
+            {
+                // First submit contains only a GIFtag; second ends immediately
+                // after the IMAGE tag, so its payload arrives in the third buffer.
+                mem.submitGifPacket(GifPathId::Path3, chain.data(), 16u);
+                mem.submitGifPacket(GifPathId::Path3, chain.data() + 16u, 80u);
+                mem.submitGifPacket(GifPathId::Path3, chain.data() + 96u,
+                                    static_cast<uint32_t>(chain.size() - 96u));
+            }
+            else
+                mem.submitGifPacket(GifPathId::Path3, chain.data(), static_cast<uint32_t>(chain.size()));
+            t.Equals(gs.ReadVram(0u, kTextureBase, 1u, 0u, 0u), 0u,
+                     "masked material chain must not alter the active texture");
+
+            std::vector<uint32_t> observed;
+            mem.setVu1MscalCallback([&](uint32_t, uint32_t, uint32_t)
+            {
+                observed.push_back(gs.ReadVram(0u, kTextureBase, 1u, 0u, 0u));
+            });
+            std::vector<uint8_t> vif;
+            const auto appendWindow = [&](bool all)
+            {
+                appendU32(vif, makeVifCmd(0x06u, 0u, 0u)); // unmask
+                appendU32(vif, 0u);
+                appendU32(vif, 0u);
+                appendU32(vif, makeVifCmd(all ? 0x13u : 0x06u, 0u, all ? 0u : 0x8000u));
+                appendU32(vif, makeVifCmd(0x14u, 0u, 0u)); // MSCAL observes this material
+            };
+            appendWindow(flushAll);
+            if (newListAfterFirstWindow)
+            {
+                mem.processVIF1Data(vif.data(), static_cast<uint32_t>(vif.size()));
+                vif.clear();
+                // Next frame kicks the GIF channel while material 2 is still held.
+                mem.writeIORegister(0x1000A000u, 0x101u);
+                appendWindow(false);
+                mem.processVIF1Data(vif.data(), static_cast<uint32_t>(vif.size()));
+                t.Equals(observed.size(), static_cast<size_t>(2u), "both windows must reach MSCAL");
+                if (observed.size() > 1u)
+                    t.Equals(observed[1], kMaterial1,
+                             "a new GIF list must abandon the old list's unsent material");
+                return;
+            }
+            if (!flushAll)
+                appendWindow(false);
+            mem.processVIF1Data(vif.data(), static_cast<uint32_t>(vif.size()));
+            t.Equals(observed.size(), static_cast<size_t>(flushAll ? 1u : 2u),
+                     "each material window must reach its MSCAL callback");
+            if (!observed.empty())
+                t.Equals(observed[0], flushAll ? kMaterial2 : kMaterial1,
+                         flushAll ? "unmasked FLUSHA must drain every EOP/material" :
+                                    "first remask must stop at first EOP and preserve material 1 for geometry");
+            if (!flushAll && observed.size() > 1u)
+                t.Equals(observed[1], kMaterial2, "second window must resume pending chain at material 2");
+            t.Equals(mem.isPath3Masked(), !flushAll, "the VIF stream's final PATH3 mask must be preserved");
+        };
+        tc.Run("PATH3 remask preserves each EOP material for MSCAL", [path3MaterialWindows](TestCase &t)
+        {
+            path3MaterialWindows(t, false, false);
+        });
+        tc.Run("PATH3 remask tracks GIF payload across submission buffers", [path3MaterialWindows](TestCase &t)
+        {
+            path3MaterialWindows(t, true, false);
+        });
+        tc.Run("PATH3 unmasked FLUSHA drains all queued EOP materials", [path3MaterialWindows](TestCase &t)
+        {
+            path3MaterialWindows(t, true, true);
+        });
+        tc.Run("new GIF list abandons materials held behind PATH3 mask", [path3MaterialWindows](TestCase &t)
+        {
+            path3MaterialWindows(t, false, false, true);
+        });
         tc.Run("uncached aliases map to same RDRAM bytes", [](TestCase &t)
         {
             PS2Memory mem;

@@ -1,4 +1,5 @@
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_mipmap.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/gs/ps2_gs_psmct32.h"
@@ -1102,6 +1103,26 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
 
 uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
 {
+    const GSMip::Selection mip = GSMip::Select(state.context.tex1, q, state.prim.fst);
+    if (mip.enabled)
+    {
+        auto sampleLevel = [&](unsigned level) {
+            GSDrawState selected = state;
+            selected.context.tex0 = GSMip::LevelTexture(state.context.tex0, state.context.miptbp1, state.context.miptbp2, level);
+            // Reuse the existing sampler and loaded CLUT at this level without
+            // selecting another mip or changing the original draw state.
+            selected.context.tex1 &= ~(7ull << 2u);
+            selected.context.clamp = GSMip::ScaleClamp(state.context.clamp, level);
+            selected.textureWidth = std::max<unsigned>(1u, state.textureWidth >> level);
+            selected.textureHeight = std::max<unsigned>(1u, state.textureHeight >> level);
+            selected.linearFilter = mip.linear;
+            return SampleTexture(selected, s, t, q, static_cast<uint16_t>(u >> level), static_cast<uint16_t>(v >> level));
+        };
+        const uint32_t first = sampleLevel(mip.level0);
+        return mip.level0 == mip.level1 || mip.blend == 0.0f ? first :
+            GSMip::Blend(first, sampleLevel(mip.level1), mip.blend);
+    }
+
     const auto &ctx = state.context;
     const auto &tex = ctx.tex0;
 
@@ -1299,7 +1320,14 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
                 }
                 else
                 {
-                    texel = SampleTexture(state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
+                    if (GSMip::Select(ctx.tex1, v1.q).enabled)
+                    {
+                        const float sampleQ = fabsQ(v1.q);
+                        texel = SampleTexture(state, texUf * sampleQ / static_cast<float>(texW),
+                            texVf * sampleQ / static_cast<float>(texH), sampleQ, 0u, 0u);
+                    }
+                    else
+                        texel = SampleTexture(state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
                 }
 
                 uint8_t tr = static_cast<uint8_t>(texel & 0xFF);

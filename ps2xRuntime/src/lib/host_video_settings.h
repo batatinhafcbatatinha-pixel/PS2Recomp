@@ -11,6 +11,8 @@ namespace host_video {
     enum class Mode { Windowed, Fullscreen, Borderless };
     inline Mode mode = Mode::Windowed;
     inline bool stretch = false;
+    inline double fps = 0.0;          // game frames per second over the last second
+    inline std::string windowTitle;   // game name for the title bar
     inline const char *name(Mode value) {
         return value == Mode::Fullscreen ? "fullscreen" : value == Mode::Borderless ? "borderless" : "windowed";
     }
@@ -70,9 +72,9 @@ namespace host_video {
         ++presents;
         const double now = GetTime();
         if (now - windowStart >= 1.0) {
-            const double fps = frames / (now - windowStart);
-            char title[96];
-            std::snprintf(title, sizeof(title), "Call of Duty: World at War - Final Fronts | %.1f fps", fps);
+            fps = frames / (now - windowStart);
+            char title[160];
+            std::snprintf(title, sizeof(title), "%s | %.1f fps", windowTitle.c_str(), fps);
             SetWindowTitle(title);
             static uint32_t logs = 0;
             const double span = (now - windowStart) * 1e7; // percent of one core
@@ -98,8 +100,8 @@ namespace host_video {
         static bool show = false;
         if (IsKeyPressed(KEY_F8)) show = !show;
         if (!show) return;
-        DrawRectangle(16, 16, 690, 94, Fade(BLACK, 0.85f));
-        DrawText("F7: 4:3/Stretch   F9: Window   F10: Borderless   F11: Fullscreen", 28, 28, 18, WHITE);
+        DrawRectangle(16, 16, 850, 94, Fade(BLACK, 0.85f));
+        DrawText("F1: PC Settings   F7: 4:3/Stretch   F9: Window   F10: Borderless   F11: Fullscreen", 28, 28, 18, WHITE);
         DrawText("Gamepad: A/B/X/Y = Cross/Circle/Square/Triangle; Start = Menu", 28, 55, 18, WHITE);
         DrawText("Keyboard: Enter Start, X Select, C Back, arrows Move. F8: hide help", 28, 82, 18, WHITE);
     }

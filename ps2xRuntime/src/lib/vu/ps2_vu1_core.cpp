@@ -2021,7 +2021,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         m_native = new NativeState();
     if (m_unit == Unit::VU1 && m_native && m_native->enabled && vuData && codeSize == PS2_VU1_CODE_SIZE)
         VU1NativeAccess::recordReplay(*this, &context, maxCycles);
-    if (m_unit == Unit::VU1 && m_native && m_native->enabled && m_native->verifyLeft != 0u && vuData && codeSize == PS2_VU1_CODE_SIZE)
+    // Allow bounded verification to start at gameplay instead of exhausting its
+    // sample budget on the boot/menu programs.
+    static const double verifyAt = std::getenv("GOW_VU1N_VERIFY_AT") ? std::atof(std::getenv("GOW_VU1N_VERIFY_AT")) : 0.0;
+    static const auto verifyStart = std::chrono::steady_clock::now();
+    const bool verifyReady = verifyAt <= 0.0 || std::chrono::duration<double>(std::chrono::steady_clock::now() - verifyStart).count() >= verifyAt;
+    if (m_unit == Unit::VU1 && m_native && m_native->enabled && m_native->verifyLeft != 0u && verifyReady && vuData && codeSize == PS2_VU1_CODE_SIZE)
     {
         --m_native->verifyLeft;
         const uint32_t startPc = m_state.pc;
@@ -2166,9 +2171,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         if (!why.empty())
         {
             ++bad;
-            if (reports++ < 40u || (why.find("0000ffff") != std::string::npos && bisected < 6u))
+            const bool bisectMismatch = why.find("0000ffff") != std::string::npos || std::getenv("GOW_VU1N_BISECT_ANY");
+            if (reports++ < 40u || (bisectMismatch && bisected < 6u))
                 std::fprintf(stderr, "[vu1n-verify] run %u (bad %u) startPc=%x MISMATCH:%s\n", checked, bad, startPc, why.c_str());
-            if (why.find("0000ffff") != std::string::npos && bisected++ < 6u) // ADC words (0xFFFF) set on one side only
+            if (bisectMismatch && bisected++ < 6u)
             {
                 // bisect: smallest number of native blocks (rest exact) whose result already differs from the pure exact run
                 const auto differs = [&](unsigned limit)
@@ -2204,8 +2210,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                     return d;
                 };
                 unsigned lo = 0u, hi = 100000u;
-                std::fprintf(stderr, "[vu1n-verify]   exact-via-step differs from exact-compiled: %d\n", differs(0u) ? 1 : 0);
-                if (differs(hi))
+                const bool exactPathDiffers = differs(0u);
+                std::fprintf(stderr, "[vu1n-verify]   exact-via-step differs from exact-compiled: %d\n", exactPathDiffers ? 1 : 0);
+                if (!exactPathDiffers && differs(hi))
                 {
                     while (hi - lo > 1u)
                     {

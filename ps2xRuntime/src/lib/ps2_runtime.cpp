@@ -2,7 +2,7 @@
 #include <pthread.h>
 #endif
 #include "ps2_runtime.h"
-#include "host_video_settings.h"
+#include "host_pc_menu.h"
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/gs_hw_backend.h"
 #include "runtime/gs/gs_threaded_backend.h"
@@ -866,10 +866,11 @@ bool PS2Runtime::initialize(const char *title)
 #if defined(PLATFORM_VITA)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+        SetConfigFlags(FLAG_WINDOW_RESIZABLE | (std::getenv("PS2X_PC_MENU_TEST") ? FLAG_WINDOW_UNFOCUSED : 0));
         InitWindow(1920, 1080, title);
         host_video::initialize();
         host_video::selfTest();
+        host_menu::initialize(title);
         {
             // GS rasterizer: GPU by default, PS2X_GS=cpu selects the software path.
             const char *gsBackend = std::getenv("PS2X_GS");
@@ -3071,6 +3072,7 @@ void PS2Runtime::run()
             }
         });
         host_video::update();
+        host_menu::update();
         ps2UpdateHostPadInput();
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -3096,11 +3098,18 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
+        {
+            static int textureFilter = -1;
+            const int wanted = host_menu::filter ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT;
+            if (textureFilter != wanted) { SetTextureFilter(frameTex, wanted); textureFilter = wanted; }
+        }
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
+        host_menu::drawFps(host_video::fps);
+        host_menu::draw();
         host_video::drawHelp();
         EndDrawing();
         host_video::countFrame(static_cast<uint32_t>(m_memory.gs().dispfb1));

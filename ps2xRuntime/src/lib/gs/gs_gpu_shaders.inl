@@ -182,7 +182,9 @@ struct State
     uint wrapU, wrapV, minU, maxU;
     uint minV, maxV, ta0, ta1;
     uint aem, fogColor, texW, texH;
-    int ofx, ofy; uint pad0, pad1;
+    int ofx, ofy; uint tex1Lo, tex1Hi;
+    uint mip1Lo, mip1Hi, mip2Lo, mip2Hi;
+    uint pad0, pad1, pad2, pad3;
 };
 
 layout(std430, binding = 3) readonly buffer Prims { Prim prims[]; };
@@ -289,7 +291,7 @@ uint lerpChannel(uint c00, uint c10, uint c01, uint c11, float fx, float fy)
     return uint(clampU8(int(floor(v + 0.5))));
 }
 
-uint sampleTexture(State s, float sf, float tf, float qf, uint u, uint v)
+uint sampleTextureLevel(State s, float sf, float tf, float qf, uint u, uint v)
 {
     precise float texUf, texVf;
     if ((s.flags & kFlagFst) != 0u)
@@ -315,6 +317,60 @@ uint sampleTexture(State s, float sf, float tf, float qf, uint u, uint v)
         result |= lerpChannel((c00 >> shift) & 0xFFu, (c10 >> shift) & 0xFFu, (c01 >> shift) & 0xFFu,
                               (c11 >> shift) & 0xFFu, fx, fy) << shift;
     return result;
+}
+
+)GLSL"
+R"GLSL(
+State mipState(State s, uint level, bool linear)
+{
+    if (level != 0u)
+    {
+        const uint lo = level <= 3u ? s.mip1Lo : s.mip2Lo;
+        const uint hi = level <= 3u ? s.mip1Hi : s.mip2Hi;
+        const uint slot = (level - 1u) % 3u;
+        if (slot == 0u) { s.tbp0 = lo & 0x3FFFu; s.tbw = (lo >> 14u) & 63u; }
+        else if (slot == 1u) { s.tbp0 = ((lo >> 20u) | (hi << 12u)) & 0x3FFFu; s.tbw = (hi >> 2u) & 63u; }
+        else { s.tbp0 = (hi >> 8u) & 0x3FFFu; s.tbw = (hi >> 22u) & 63u; }
+        s.texW = max(1u, s.texW >> level); s.texH = max(1u, s.texH >> level);
+        s.minU >>= level; s.maxU >>= level; s.minV >>= level; s.maxV >>= level;
+    }
+    s.flags = (s.flags & ~kFlagLinear) | (linear ? kFlagLinear : 0u);
+    return s;
+}
+
+uint sampleTextureLod(State s, float sf, float tf, float qf, uint u, uint v, float lodQ)
+{
+    const uint mmin = (s.tex1Lo >> 6u) & 7u;
+    const uint maxLevel = min((s.tex1Lo >> 2u) & 7u, 6u);
+    if (maxLevel == 0u || mmin < 2u || mmin > 5u)
+        return sampleTextureLevel(s, sf, tf, qf, u, v);
+    int k = int(s.tex1Hi & 0xFFFu);
+    if ((k & 0x800) != 0) k -= 4096;
+    precise float lod = float(k) / 16.0;
+    if ((s.tex1Lo & 1u) == 0u && (s.flags & kFlagFst) == 0u)
+        lod -= log2(max(abs(lodQ), 1.17549435e-38)) * float(1u << ((s.tex1Lo >> 19u) & 3u));
+    if (isnan(lod)) lod = 0.0;
+    const bool linear = lod <= 0.0 ? (s.tex1Lo & 32u) != 0u : mmin >= 4u;
+    lod = clamp(lod, 0.0, float(maxLevel));
+    const bool blendLevels = mmin == 3u || mmin == 5u;
+    const uint first = uint(floor(lod + (blendLevels ? 0.0 : 0.5)));
+    const uint second = blendLevels ? min(first + 1u, maxLevel) : first;
+    const uint a = sampleTextureLevel(mipState(s, first, linear), sf, tf, qf, u >> first, v >> first);
+    const float blend = lod - float(first);
+    if (first == second || blend <= 0.0) return a;
+    const uint b = sampleTextureLevel(mipState(s, second, linear), sf, tf, qf, u >> second, v >> second);
+    uint result = 0u;
+    for (uint shift = 0u; shift < 32u; shift += 8u)
+    {
+        precise float channel = mix(float((a >> shift) & 255u), float((b >> shift) & 255u), blend);
+        result |= uint(clampU8(int(floor(channel + 0.5)))) << shift;
+    }
+    return result;
+}
+
+uint sampleTexture(State s, float sf, float tf, float qf, uint u, uint v)
+{
+    return sampleTextureLod(s, sf, tf, qf, u, v, qf);
 }
 
 void combineTexture(State s, inout int r, inout int g, inout int b, inout int a, uint texel)
@@ -507,7 +563,7 @@ void main()
             }
             else
             {
-                texel = sampleTexture(s, texUf / float(s.texW), texVf / float(s.texH), 1.0, 0u, 0u);
+                texel = sampleTextureLod(s, texUf / float(s.texW), texVf / float(s.texH), 1.0, 0u, 0u, p.q[1]);
             }
             combineTexture(s, r, g, b, a, texel);
         }
@@ -537,8 +593,13 @@ void main()
             {
                 for (uint shift = 0u; shift < 32u; shift += 8u)
                 {
-                    precise float c = float((p.rgba[0] >> shift) & 0xFFu) * w0 + float((p.rgba[1] >> shift) & 0xFFu) * w1 +
-                                      float((p.rgba[2] >> shift) & 0xFFu) * w2;
+                    const uint c0 = (p.rgba[0] >> shift) & 0xFFu;
+                    const uint c1 = (p.rgba[1] >> shift) & 0xFFu;
+                    const uint c2 = (p.rgba[2] >> shift) & 0xFFu;
+                    // Preserve a zero gradient exactly, especially alpha128 at
+                    // ATEST128: a rounded sum of weights must not suppress Z.
+                    precise float c = c0 == c1 && c1 == c2 ? float(c0) :
+                        float(c0) * w0 + float(c1) * w1 + float(c2) * w2;
                     const int ci = clampU8(int(c));
                     if (shift == 0u) r = ci; else if (shift == 8u) g = ci; else if (shift == 16u) b = ci; else a = ci;
                 }
