@@ -1375,10 +1375,17 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             uint8_t r, g, b, a;
             if (state.prim.iip)
             {
-                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
-                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
-                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
-                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
+                // A constant channel has no gradient. Floating point weights can
+                // sum just below one, turning alpha128 into127 and changing
+                // ATEST/depth writes despite all three vertices agreeing.
+                const auto interpolate = [&](uint8_t c0, uint8_t c1, uint8_t c2) {
+                    return c0 == c1 && c1 == c2 ? c0 :
+                        clampU8(static_cast<int>(c0 * w0 + c1 * w1 + c2 * w2));
+                };
+                r = interpolate(v0.r, v1.r, v2.r);
+                g = interpolate(v0.g, v1.g, v2.g);
+                b = interpolate(v0.b, v1.b, v2.b);
+                a = interpolate(v0.a, v1.a, v2.a);
             }
             else
             {

@@ -40,6 +40,12 @@ jobs:
           set -o pipefail
           cmake --build build --config Release -- -k 0 2>&1 | tee build.log
 
+      - name: Software GS tests
+        run: |
+          for name in constant_alpha_equal constant_alpha_gequal neutral_modulation low_alpha_still_fails; do
+            ./build/ps2xTest/gs_cache/ps2_gs_gouraud_tests "$name"
+          done
+
       - name: Tests
         run: ./build/ps2xTest/ps2x_tests
 
