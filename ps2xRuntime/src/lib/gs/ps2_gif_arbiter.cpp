@@ -76,9 +76,12 @@ void GifArbiter::drain()
         auto &pkt = m_queue[i];
         if (!pkt.data.empty())
         {
-            char detail[96]; std::snprintf(detail, sizeof(detail), "{\"index\":%zu,\"queue_size\":%zu}", i, m_queue.size());
-            Ps2TraceGifOrder("arbiter-dispatch", static_cast<unsigned>(pkt.pathId), pkt.data.data(),
-                static_cast<uint32_t>(pkt.data.size()), this, 0u, 0u, detail);
+            if (Ps2GifOrderTraceEnabled())
+            {
+                char detail[96]; std::snprintf(detail, sizeof(detail), "{\"index\":%zu,\"queue_size\":%zu}", i, m_queue.size());
+                Ps2TraceGifOrder("arbiter-dispatch", static_cast<unsigned>(pkt.pathId), pkt.data.data(),
+                    static_cast<uint32_t>(pkt.data.size()), this, 0u, 0u, detail);
+            }
             m_processFn(pkt.data.data(), static_cast<uint32_t>(pkt.data.size()));
         }
     }

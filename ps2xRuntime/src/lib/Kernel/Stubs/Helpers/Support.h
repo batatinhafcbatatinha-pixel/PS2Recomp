@@ -1878,6 +1878,7 @@ namespace
     {
         if (!runtime || !runtime->syncCoreSubsystems())
             return;
+        runtime->memory().gifVifSync();
         auto &regs = runtime->memory().gs();
         regs.pmode = env.pmode;
         regs.smode2 = env.smode2;

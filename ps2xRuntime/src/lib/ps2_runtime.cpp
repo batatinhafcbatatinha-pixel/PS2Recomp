@@ -74,10 +74,13 @@ std::atomic<uint64_t> g_perfVu1Ns{0}, g_perfGsNs{0}, g_perfIopNs{0};
 extern std::atomic<uint32_t> g_gsDebugVu1Pc, g_gsDebugVu1Top;
 extern const uint8_t *g_gsDebugVu1Data, *g_gsDebugVu1Code;
 static constexpr uint32_t kVu1ProgramCycleCap = 1u << 22;
-// On-demand capture (create analysis/vu-dump.trigger): VU1 data/code memory and
+// On-demand capture (with PS2X_VU_DUMP_TRIGGER set, create analysis/vu-dump.trigger): VU1 data/code memory and
 // registers before and after the next 24 microprogram runs (MSCAL or MSCNT).
 static int vuDumpBegin()
 {
+    static const bool allowed = std::getenv("PS2X_VU_DUMP_TRIGGER") != nullptr;
+    if (!allowed)
+        return -1;
     static uint32_t countdown = 0, left = 0, index = 0;
     if (left == 0u && countdown++ % 256u == 0u && std::filesystem::exists("analysis/vu-dump.trigger"))
     {
@@ -768,15 +771,16 @@ bool PS2Runtime::syncCoreSubsystems()
     m_memory.setGifArbiter(&m_gifArbiter);
     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
+                                     // On the VIF worker the EE context is not ours to touch: FBRST comes with the job.
+                                     const bool onWorker = PS2Memory::onVifWorker();
+                                     R5900Context *cpuContext = onWorker ? nullptr : m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+                                     if (!cpuContext && !onWorker)
                                      {
                                          cpuContext = &m_cpuContext;
                                      }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     const uint32_t fbrst = onWorker ? PS2Memory::vifJobFbrst() : cpuContext->vu0_fbrst;
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      const int dumpIndex = vuDumpBegin();
                                      if (dumpIndex >= 0)
                                      {
@@ -796,21 +800,23 @@ bool PS2Runtime::syncCoreSubsystems()
                                      g_perfVu1Ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - vuStart).count();
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+                                     if (cpuContext)
+                                         cpuContext->vu0_vpu_stat =
+                                             (cpuContext->vu0_vpu_stat & ~0x0600u) |
+                                             (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+                                             (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
     m_memory.setVu1MscntCallback([this](uint32_t top, uint32_t itop)
                                  {
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
+                                     // On the VIF worker the EE context is not ours to touch: FBRST comes with the job.
+                                     const bool onWorker = PS2Memory::onVifWorker();
+                                     R5900Context *cpuContext = onWorker ? nullptr : m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+                                     if (!cpuContext && !onWorker)
                                      {
                                          cpuContext = &m_cpuContext;
                                      }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     const uint32_t fbrst = onWorker ? PS2Memory::vifJobFbrst() : cpuContext->vu0_fbrst;
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      const int dumpIndex = vuDumpBegin();
                                      if (dumpIndex >= 0)
                                      {
@@ -827,13 +833,20 @@ bool PS2Runtime::syncCoreSubsystems()
                                      g_perfVu1Ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - vuStart).count();
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+                                     if (cpuContext)
+                                         cpuContext->vu0_vpu_stat =
+                                             (cpuContext->vu0_vpu_stat & ~0x0600u) |
+                                             (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+                                             (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
     resetIop();
     m_vu0.reset();
     m_vu1.reset();
+    if (!std::getenv("PS2X_VIF_THREAD") || std::getenv("PS2X_VIF_THREAD")[0] != '0')
+        m_memory.startVifWorker([this]
+        {
+            const R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+            return context ? context->vu0_fbrst : m_cpuContext.vu0_fbrst;
+        });
     // VU1 writes VF/VI/ACC at issue (readers interlock on them); PS2X_VU1=ref keeps the queued reference model.
     // Native blocks generated from captured microcode (tools/vu1n_gen.py) run when linked; the exact engine covers the rest.
     {

@@ -345,6 +345,10 @@ public:
     void processVIF1Data(const uint8_t *data, uint32_t sizeBytes);
     void processVIF1Stream(const uint8_t *data, uint32_t sizeBytes);
     void processPendingTransfers();
+    struct PendingTransfer;
+    void runGifTransfers(std::vector<PendingTransfer> &transfers);
+    void runVif1Transfers(std::vector<PendingTransfer> &transfers);
+    void materializeTransfer(PendingTransfer &transfer);
     std::vector<uint32_t> consumeCompletedDmacCauses();
 
     int pollDmaRegisters();
@@ -357,6 +361,13 @@ public:
 
     // GS register accessors
     GSRegisters &gs() { return gs_regs; }
+    // VIF1 / VU1 / GIF thread: DMA completes on the EE at once, the data is processed in order on the worker. The EE calls
+    // gifVifSync before it looks at anything that depends on that work.
+    void startVifWorker(std::function<uint32_t()> fbrstSource);
+    void stopVifWorker();
+    void gifVifSync() const;
+    [[nodiscard]] static bool onVifWorker();
+    [[nodiscard]] static uint32_t vifJobFbrst();
     const GSRegisters &gs() const { return gs_regs; }
     uint8_t *getGSVRAM() { return m_gsVRAM; }
     const uint8_t *getGSVRAM() const { return m_gsVRAM; }

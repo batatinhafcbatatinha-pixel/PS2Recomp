@@ -441,7 +441,7 @@ public:
     inline PS2Memory &memory() { return m_memory; }
     inline const PS2Memory &memory() const { return m_memory; }
 
-    inline GS &gs() { return m_gs; }
+    inline GS &gs() { m_memory.gifVifSync(); return m_gs; }
     inline const GS &gs() const { return m_gs; }
     inline GifArbiter &gifArbiter() { return m_gifArbiter; }
     inline const GifArbiter &gifArbiter() const { return m_gifArbiter; }
