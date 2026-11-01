@@ -266,7 +266,7 @@ public:
     static constexpr uint64_t kEeClockHz = 294912000ull;
     static constexpr uint64_t kHostSampleCycles = 4096ull;
     static constexpr uint64_t kAccountBatchCycles = 512ull; // estimated cycles charged per clock / timer / IOP update
-    static constexpr uint64_t kMaxHostCatchUpCycles = kEeClockHz / 60ull;
+    static constexpr uint64_t kMaxHostCatchUpCycles = kEeClockHz / 4ull; // only real stalls: idle waits between frames are game time
     static constexpr uint32_t kGeneratedCheckpointCycles = 32u;
     static constexpr uint32_t kGuestDispatchCycles = 8u;
     static constexpr uint64_t kDefaultTimeSliceCycles = 65536ull;

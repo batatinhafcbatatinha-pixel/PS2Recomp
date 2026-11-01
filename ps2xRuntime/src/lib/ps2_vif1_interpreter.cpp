@@ -908,7 +908,8 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                     }
 
                     std::memcpy(m_vu1Data + destOff, lanes, sizeof(lanes));
-                    if (destVec >= 0x3e0u && std::getenv("PS2X_VIF_CMD_TRACE"))
+                    static const bool cmdTrace = std::getenv("PS2X_VIF_CMD_TRACE") != nullptr;
+                    if (cmdTrace && destVec >= 0x3e0u)
                     {
                         static uint32_t cmdLogs = 0;
                         if (cmdLogs++ < 96u)

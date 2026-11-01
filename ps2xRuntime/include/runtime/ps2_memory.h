@@ -363,9 +363,13 @@ public:
     GSRegisters &gs() { return gs_regs; }
     // VIF1 / VU1 / GIF thread: DMA completes on the EE at once, the data is processed in order on the worker. The EE calls
     // gifVifSync before it looks at anything that depends on that work.
-    void startVifWorker(std::function<uint32_t()> fbrstSource);
+    void startVifWorker(std::function<uint32_t()> fbrstSource, std::function<void(const uint8_t *, uint32_t)> gsPacket);
+    bool queueGsPacket(const uint8_t *data, uint32_t sizeBytes); // false: not on the VU thread, process it directly
     void stopVifWorker();
     void gifVifSync() const;
+    // Display registers behind queued work: applied in order after it, as a flip behind a GPU's queue. False: write it now.
+    bool deferGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask);
+    void applyGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask);
     [[nodiscard]] static bool onVifWorker();
     [[nodiscard]] static uint32_t vifJobFbrst();
     const GSRegisters &gs() const { return gs_regs; }

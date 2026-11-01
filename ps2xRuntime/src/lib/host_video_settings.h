@@ -6,7 +6,7 @@
 #include <fstream>
 #include <string>
 #include <iostream>
-extern std::atomic<uint64_t> g_perfVu1Ns, g_perfGsNs, g_perfIopNs;
+extern std::atomic<uint64_t> g_perfVu1Ns, g_perfGsNs, g_perfIopNs, g_perfIdleNs, g_perfSyncNs;
 namespace host_video {
     enum class Mode { Windowed, Fullscreen, Borderless };
     inline Mode mode = Mode::Windowed;
@@ -78,10 +78,11 @@ namespace host_video {
             SetWindowTitle(title);
             static uint32_t logs = 0;
             const double span = (now - windowStart) * 1e7; // percent of one core
-            const double vu1 = g_perfVu1Ns.exchange(0) / span, gsp = g_perfGsNs.exchange(0) / span, iop = g_perfIopNs.exchange(0) / span;
+            const double vu1 = g_perfVu1Ns.exchange(0) / span, gsp = g_perfGsNs.exchange(0) / span, iop = g_perfIopNs.exchange(0) / span,
+                         idle = g_perfIdleNs.exchange(0) / span, sync = g_perfSyncNs.exchange(0) / span;
             if (logs++ % 5u == 0u)
                 std::cerr << "[perf] game_fps=" << fps << " present_fps=" << presents / (now - windowStart)
-                          << " vu1=" << vu1 << "% gs=" << gsp << "% iop=" << iop << "%" << std::endl;
+                          << " vu1=" << vu1 << "% gs=" << gsp << "% iop=" << iop << "% ee_idle=" << idle << "% ee_sync=" << sync << "%" << std::endl;
             frames = presents = 0;
             windowStart = now;
         }

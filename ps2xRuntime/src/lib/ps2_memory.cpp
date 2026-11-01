@@ -334,6 +334,7 @@ PS2Memory::PS2Memory()
 }
 
 void ps2ProfilerRegisterCurrentThread(const char *name);
+extern std::atomic<uint64_t> g_perfSyncNs;
 namespace
 {
     // One PS2Memory per process; kept out of the class so its layout (compiled into the game code) does not change.
@@ -341,7 +342,12 @@ namespace
     {
         std::vector<PS2Memory::PendingTransfer> gif, vif1;
         uint32_t fbrst = 0u;
+        bool privWrite = false;
+        uint32_t privAddress = 0u;
+        uint64_t privValue = 0u, privMask = 0u;
     };
+    std::atomic<uint32_t> g_deferredPrivWrites{0};
+    constexpr uint32_t kGsPrivPacketBytes = 20u; // GIF packets are whole qwords
     struct VifWorker
     {
         std::thread thread;
@@ -353,6 +359,18 @@ namespace
         bool stop = false;
         std::function<uint32_t()> fbrstSource;
     } g_vifWorker;
+    // Second stage: the VU thread hands finished GIF packets to the GS frontend's own thread.
+    struct GsWorker
+    {
+        std::thread thread;
+        std::mutex mutex;
+        std::condition_variable work, idle;
+        std::deque<std::vector<uint8_t>> queue;
+        std::vector<std::vector<uint8_t>> spare;
+        std::atomic<uint64_t> submitted{0}, done{0};
+        bool stop = false;
+        std::function<void(const uint8_t *, uint32_t)> process;
+    } g_gsWorker;
     thread_local bool t_onVifWorker = false;
     thread_local bool t_vifProducer = false;
     thread_local uint32_t t_vifFbrst = 0u;
@@ -372,7 +390,7 @@ namespace
 bool PS2Memory::onVifWorker() { return t_onVifWorker; }
 uint32_t PS2Memory::vifJobFbrst() { return t_vifFbrst; }
 
-void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource)
+void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource, std::function<void(const uint8_t *, uint32_t)> gsPacket)
 {
     if (g_vifWorker.enabled.load(std::memory_order_acquire))
         return;
@@ -394,6 +412,16 @@ void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource)
                 g_vifWorker.queue.pop_front();
             }
             t_vifFbrst = job.fbrst;
+            if (job.privWrite)
+            {
+                // behind the GS frontend too: it must have finished the frame being flipped to
+                uint8_t record[kGsPrivPacketBytes];
+                std::memcpy(record, &job.privAddress, 4);
+                std::memcpy(record + 4, &job.privValue, 8);
+                std::memcpy(record + 12, &job.privMask, 8);
+                if (!queueGsPacket(record, sizeof(record)))
+                    applyGsPrivWrite(job.privAddress, job.privValue, job.privMask);
+            }
             runGifTransfers(job.gif);
             runVif1Transfers(job.vif1);
             if (m_gifArbiter)
@@ -403,7 +431,106 @@ void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource)
             g_vifWorker.idle.notify_all();
         }
     });
+    if (const char *gsThread = std::getenv("PS2X_GS_THREAD"); !gsThread || gsThread[0] != '0')
+    {
+        g_gsWorker.process = std::move(gsPacket);
+        g_gsWorker.stop = false;
+        g_gsWorker.thread = std::thread([this]
+        {
+            ps2ProfilerRegisterCurrentThread("gsfe");
+            for (;;)
+            {
+                std::vector<uint8_t> packet;
+                {
+                    std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
+                    g_gsWorker.work.wait(lock, [] { return g_gsWorker.stop || !g_gsWorker.queue.empty(); });
+                    if (g_gsWorker.queue.empty())
+                        return;
+                    packet = std::move(g_gsWorker.queue.front());
+                    g_gsWorker.queue.pop_front();
+                }
+                if (packet.size() == kGsPrivPacketBytes)
+                {
+                    uint32_t address = 0u;
+                    uint64_t value = 0u, mask = 0u;
+                    std::memcpy(&address, packet.data(), 4);
+                    std::memcpy(&value, packet.data() + 4, 8);
+                    std::memcpy(&mask, packet.data() + 12, 8);
+                    applyGsPrivWrite(address, value, mask);
+                }
+                else
+                {
+                    g_gsWorker.process(packet.data(), static_cast<uint32_t>(packet.size()));
+                }
+                g_gsWorker.done.fetch_add(1u, std::memory_order_release);
+                std::lock_guard<std::mutex> lock(g_gsWorker.mutex);
+                if (g_gsWorker.spare.size() < 256u)
+                    g_gsWorker.spare.push_back(std::move(packet));
+                g_gsWorker.idle.notify_all();
+            }
+        });
+    }
     g_vifWorker.enabled.store(true, std::memory_order_release);
+}
+
+void PS2Memory::applyGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask)
+{
+    if (uint64_t *reg = gsRegPtr(gs_regs, address))
+        *reg = (*reg & ~mask) | (value & mask);
+    g_deferredPrivWrites.fetch_sub(1u, std::memory_order_acq_rel);
+}
+
+bool PS2Memory::deferGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask)
+{
+    if (!t_vifProducer || !g_vifWorker.enabled.load(std::memory_order_acquire))
+        return false;
+    const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
+    const bool displayReg = regOff == 0x0000u || (regOff >= 0x0070u && regOff <= 0x00A0u) || regOff == 0x00E0u;
+    if (!displayReg)
+        return false;
+    if (g_vifWorker.done.load(std::memory_order_acquire) == g_vifWorker.submitted.load(std::memory_order_relaxed) &&
+        g_gsWorker.done.load(std::memory_order_acquire) == g_gsWorker.submitted.load(std::memory_order_acquire))
+        return false; // nothing to wait for
+    // PMODE/DISPFB/DISPLAY of one flip come together; more than a few writes queued means a whole frame is behind.
+    if (g_deferredPrivWrites.load(std::memory_order_acquire) >= 8u)
+        gifVifSync();
+    VifJob job;
+    job.privWrite = true;
+    job.privAddress = address;
+    job.privValue = value;
+    job.privMask = mask;
+    g_deferredPrivWrites.fetch_add(1u, std::memory_order_acq_rel);
+    g_vifWorker.submitted.fetch_add(1u, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(g_vifWorker.mutex);
+        g_vifWorker.queue.push_back(std::move(job));
+    }
+    g_vifWorker.work.notify_one();
+    return true;
+}
+
+bool PS2Memory::queueGsPacket(const uint8_t *data, uint32_t sizeBytes)
+{
+    if (!t_onVifWorker || !g_gsWorker.process)
+        return false;
+    std::vector<uint8_t> packet;
+    {
+        std::lock_guard<std::mutex> lock(g_gsWorker.mutex);
+        if (!g_gsWorker.spare.empty())
+        {
+            packet = std::move(g_gsWorker.spare.back());
+            g_gsWorker.spare.pop_back();
+        }
+    }
+    packet.assign(data, data + sizeBytes);
+    {
+        std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
+        g_gsWorker.idle.wait(lock, [] { return g_gsWorker.queue.size() < 16384u; });
+        g_gsWorker.submitted.fetch_add(1u, std::memory_order_relaxed);
+        g_gsWorker.queue.push_back(std::move(packet));
+    }
+    g_gsWorker.work.notify_one();
+    return true;
 }
 
 void PS2Memory::stopVifWorker()
@@ -416,6 +543,15 @@ void PS2Memory::stopVifWorker()
     }
     g_vifWorker.work.notify_all();
     g_vifWorker.thread.join();
+    if (g_gsWorker.thread.joinable())
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_gsWorker.mutex);
+            g_gsWorker.stop = true;
+        }
+        g_gsWorker.work.notify_all();
+        g_gsWorker.thread.join();
+    }
 }
 
 void PS2Memory::gifVifSync() const
@@ -423,16 +559,28 @@ void PS2Memory::gifVifSync() const
     if (!t_vifProducer)
         return;
     const uint64_t target = g_vifWorker.submitted.load(std::memory_order_relaxed);
-    if (g_vifWorker.done.load(std::memory_order_acquire) == target)
+    const auto gsIdle = [] { return g_gsWorker.done.load(std::memory_order_acquire) == g_gsWorker.submitted.load(std::memory_order_acquire); };
+    if (g_vifWorker.done.load(std::memory_order_acquire) == target && gsIdle())
         return;
+    const auto waitStart = std::chrono::steady_clock::now();
     for (int spin = 0; spin < 4000; ++spin)
     {
         if (g_vifWorker.done.load(std::memory_order_acquire) == target)
-            return;
+            break;
         _mm_pause();
     }
-    std::unique_lock<std::mutex> lock(g_vifWorker.mutex);
-    g_vifWorker.idle.wait(lock, [&] { return g_vifWorker.done.load(std::memory_order_acquire) == target; });
+    if (g_vifWorker.done.load(std::memory_order_acquire) != target)
+    {
+        std::unique_lock<std::mutex> lock(g_vifWorker.mutex);
+        g_vifWorker.idle.wait(lock, [&] { return g_vifWorker.done.load(std::memory_order_acquire) == target; });
+    }
+    // The VU thread has finished, so the GS queue only shrinks from here.
+    if (!gsIdle())
+    {
+        std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
+        g_gsWorker.idle.wait(lock, gsIdle);
+    }
+    g_perfSyncNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count();
 }
 
 PS2Memory::~PS2Memory()
@@ -1151,8 +1299,10 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
 
     if (isGsPrivReg(address))
     {
-        gifVifSync();
         uint32_t off = address & 7;
+        if (deferGsPrivWrite(address, static_cast<uint64_t>(value) << (off * 8), 0xFFFFFFFFULL << (off * 8)))
+            return;
+        gifVifSync();
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
         if (regOff == kGsCsrRegOffset)
         {
@@ -1212,6 +1362,8 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
 
     if (isGsPrivReg(address))
     {
+        if (deferGsPrivWrite(address, value, ~0ULL))
+            return;
         gifVifSync();
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
         if (regOff == kGsCsrRegOffset)

@@ -150,13 +150,17 @@ static bool readHostPadState(int port, uint8_t *data, size_t size)
 
     // Optional deterministic controller input for port validation. The file is
     // a hexadecimal pressed-button mask added to the keyboard/gamepad state, so a
-    // scripted session stays playable; absent configuration changes nothing.
+    // scripted session stays playable; absent configuration changes nothing. Up to
+    // four hexadecimal stick values may follow the mask.
     const char *padFile = std::getenv("PS2X_PAD_FILE");
     if (port == 0 && padFile && *padFile) {
         std::ifstream input(padFile);
         uint32_t pressed = 0;
         if (input >> std::hex >> pressed) {
             btns &= static_cast<uint16_t>(~pressed);
+            uint32_t stick = 0; // optional: right X, right Y, left X, left Y
+            for (int axis = 4; axis < 8 && input >> std::hex >> stick; ++axis)
+                data[axis] = static_cast<uint8_t>(stick);
             static uint32_t lastPressed = 0xffffffffu;
             static uint32_t logs = 0;
             if (pressed != lastPressed && logs++ < 64u)

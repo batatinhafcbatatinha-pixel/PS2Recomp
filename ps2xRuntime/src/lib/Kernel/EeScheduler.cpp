@@ -2219,8 +2219,27 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
     std::memcpy(m_rdram + physical, &value, sizeof(value));
 }
 
+extern std::atomic<uint64_t> g_perfIdleNs;
+
 void EeScheduler::waitForEvent()
 {
+    // PS2X_IDLE_TRACE=1: every 2 s, what the EE threads are waiting for while none can run.
+    static const bool idleTrace = std::getenv("PS2X_IDLE_TRACE") != nullptr;
+    if (idleTrace)
+    {
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last > std::chrono::seconds(2))
+        {
+            last = now;
+            std::fprintf(stderr, "[idle]");
+            for (const auto &[id, item] : m_threads)
+                if (id >= 0 && item.status != EeThreadStatus::Dormant)
+                    std::fprintf(stderr, " t%d/p%d st=%d why=%d obj=%d pc=%x ra=%x;", id, item.currentPriority, static_cast<int>(item.status),
+                                 static_cast<int>(item.wait.reason), waitObjectId(item.wait), item.activeContext().pc, getRegU32(&item.activeContext(), 31));
+            std::fputc(10, stderr);
+        }
+    }
     std::unique_lock lock(m_eventMutex);
     if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
     {
@@ -2261,9 +2280,11 @@ void EeScheduler::waitForEvent()
         }
     }
 
+    const auto idleStart = std::chrono::steady_clock::now();
     const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });
+    g_perfIdleNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - idleStart).count();
     if (!signaled)
     {
         const uint64_t elapsed = deadlineCycle > m_eeCycle ? deadlineCycle - m_eeCycle : 0u;
