@@ -26,6 +26,8 @@
 
 // Diagnostics: host time the producer spends blocked on the GS thread, by reason,
 // reported every 5 s as [gs:sync] (synchronous jobs) and lock= (producer lock waits).
+void ps2ProfilerRegisterCurrentThread(const char *name);
+
 namespace GsSyncStats
 {
     struct Entry { const char *reason; std::atomic<uint64_t> calls{0}, nanos{0}; };
@@ -349,7 +351,7 @@ static void traceSubmit(const GSPrimitiveBatch &batch)
     {
         std::filesystem::remove("analysis/gs-trace.trigger");
         file = std::fopen("analysis/gs-trace.txt", "w");
-        remaining = file ? 3000u : 0u;
+        remaining = file ? static_cast<uint32_t>(std::max(3000, std::atoi(std::getenv("PS2X_GS_TRACE")))) : 0u;
     }
     if (remaining == 0u)
         return;
@@ -567,6 +569,7 @@ struct GSGpuBackend::Impl
 
     void workerMain(std::promise<bool> &ready)
     {
+        ps2ProfilerRegisterCurrentThread("gl");
         glfwMakeContextCurrent(window);
         const bool ok = gl.load() && checkCapabilities() && createObjects();
         ready.set_value(ok);
@@ -1340,8 +1343,19 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     Impl &impl = *m_impl;
 #if PS2X_GPU_COMPUTE_SCANOUT
     PresentationFrame frame;
+    std::promise<void> done;
+    std::future<void> finished = done.get_future();
+    {
+        // Queued in order under the lock, waited for without it: the frontend keeps submitting while the GS thread catches up.
+        std::lock_guard<std::mutex> lock(impl.producerMutex);
+        impl.flushPrimsLocked();
+        impl.enqueue([&]() {
+            frame = impl.presentGpu(request);
+            done.set_value();
+        }, "present-gpu");
+    }
+    finished.wait();
     std::lock_guard<std::mutex> lock(impl.producerMutex);
-    impl.runSyncLocked("present-gpu", [&]() { frame = impl.presentGpu(request); });
     impl.nativePresentationWidth = frame.width;
     impl.nativePresentationHeight = frame.height;
     return frame;

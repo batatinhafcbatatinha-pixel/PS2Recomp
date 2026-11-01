@@ -70,7 +70,7 @@ namespace ps2_stubs
 #define PT_LOAD 1            // Loadable segment
 
 // Host time spent per subsystem, reported with the [perf] line.
-std::atomic<uint64_t> g_perfVu1Ns{0}, g_perfGsNs{0}, g_perfIopNs{0};
+std::atomic<uint64_t> g_perfVu1Ns{0}, g_perfGsNs{0}, g_perfIopNs{0}, g_perfIdleNs{0}, g_perfSyncNs{0};
 extern std::atomic<uint32_t> g_gsDebugVu1Pc, g_gsDebugVu1Top;
 extern const uint8_t *g_gsDebugVu1Data, *g_gsDebugVu1Code;
 static constexpr uint32_t kVu1ProgramCycleCap = 1u << 22;
@@ -765,6 +765,8 @@ bool PS2Runtime::syncCoreSubsystems()
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     {
+                                        if (m_memory.queueGsPacket(data, size))
+                                            return;
                                         const auto gsStart = std::chrono::steady_clock::now();
                                         m_gs.processGIFPacket(data, size);
                                         g_perfGsNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - gsStart).count(); });
@@ -846,6 +848,12 @@ bool PS2Runtime::syncCoreSubsystems()
         {
             const R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
             return context ? context->vu0_fbrst : m_cpuContext.vu0_fbrst;
+        },
+        [this](const uint8_t *data, uint32_t size)
+        {
+            const auto gsStart = std::chrono::steady_clock::now();
+            m_gs.processGIFPacket(data, size);
+            g_perfGsNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - gsStart).count();
         });
     // VU1 writes VF/VI/ACC at issue (readers interlock on them); PS2X_VU1=ref keeps the queued reference model.
     // Native blocks generated from captured microcode (tools/vu1n_gen.py) run when linked; the exact engine covers the rest.
@@ -2943,6 +2951,34 @@ void PS2Runtime::run()
         registerCodeGapsSupplement(*this);
     // Diagnostic timing experiment, not an instruction-accurate replacement.
     // Keep normal execution unchanged unless explicitly selected for a boot test.
+    // The engine runs on measured frame time (com_maxfps at 0x583B50): only this cap keeps it at 30 fps.
+    if (Ps2FastRead32(bootRam, 0x14b6c8u) == 0x3c020058u && Ps2FastRead32(bootRam, 0x14b6d0u) == 0xc4403b40u)
+    {
+        registerFunction(0x14b6c8u, [](uint8_t *rdram, R5900Context *ctx, PS2Runtime *) {
+            static const char *setting = std::getenv("PS2X_COD_MAXFPS");
+            static const float period = 1.0f / static_cast<float>(setting ? std::atof(setting) : 60.0);
+            float fixed;
+            std::memcpy(&fixed, rdram + 0x583b40u, 4);
+            ctx->f[0] = fixed > 0.0f ? fixed : period;
+            ctx->pc = getRegU32(ctx, 31);
+        });
+    }
+    // sceGsSyncV at the end of the frame (0x259650) rounds every frame up to a multiple of the VBlank: a 20 ms frame took
+    // 33 ms. The engine's own limiter above paces it; the wrapper keeps reading the field and the swap follows as usual.
+    static RecompiledFunction codSyncV = nullptr;
+    if (!std::getenv("PS2X_COD_VSYNC"))
+    {
+        codSyncV = lookupFunction(0x424fd8u);
+        registerFunction(0x424fd8u, [](uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) {
+            if (getRegU32(ctx, 31) != 0x259658u)
+            {
+                codSyncV(rdram, ctx, runtime);
+                return;
+            }
+            setReturnS32(ctx, static_cast<int32_t>(runtime->eeScheduler().currentVSyncTick() & 1u));
+            ctx->pc = 0x259658u;
+        });
+    }
     const char *fastFrameWait = std::getenv("PS2X_FAST_FRAME_WAIT");
     if (fastFrameWait && std::string(fastFrameWait) == "1" &&
         Ps2FastRead32(bootRam, 0x14b380u) == 0x0c0908a2u &&
