@@ -270,6 +270,26 @@ void register_ps2_memory_tests()
         {
             path3MaterialWindows(t, false, false, true);
         });
+        tc.Run("VIF1 DMA chain is not cut after 4096 tags", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            constexpr uint32_t kChain = 0x00100000u;
+            constexpr uint32_t kTags = 5000u;
+            for (uint32_t i = 0; i < kTags; ++i)
+            {
+                // qwc 0: each tag only carries a MARK and a NOP through CHCR.TTE
+                const uint32_t tagId = i + 1u == kTags ? 7u : 1u;
+                mem.write32(kChain + i * 16u, tagId << 28u);
+                mem.write32(kChain + i * 16u + 4u, 0u);
+                mem.write32(kChain + i * 16u + 8u, makeVifCmd(0x07u, 0u, static_cast<uint16_t>(i)));
+                mem.write32(kChain + i * 16u + 12u, 0u);
+            }
+            mem.writeIORegister(0x10009030u, kChain);
+            mem.writeIORegister(0x10009000u, 0x145u); // STR, TTE, chain mode, from memory
+            mem.processPendingTransfers();
+            t.Equals(mem.vif1_regs.mark, kTags - 1u, "the last tag of the chain should reach the VIF");
+        });
         tc.Run("uncached aliases map to same RDRAM bytes", [](TestCase &t)
         {
             PS2Memory mem;

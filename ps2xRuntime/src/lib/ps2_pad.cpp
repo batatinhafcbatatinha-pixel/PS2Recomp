@@ -170,6 +170,11 @@ static bool readHostPadState(int port, uint8_t *data, size_t size)
     }
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    // DualShock 2 pressure bytes: games in pressure mode read these instead of the digital bits.
+    static constexpr uint16_t kPressureOrder[12] = {PAD_RIGHT, PAD_LEFT, PAD_UP, PAD_DOWN, PAD_TRIANGLE, PAD_CIRCLE,
+                                                    PAD_CROSS, PAD_SQUARE, PAD_L1, PAD_R1, PAD_L2, PAD_R2};
+    for (int i = 0; i < 12; ++i)
+        data[8 + i] = (btns & kPressureOrder[i]) ? 0u : 0xFFu;
     return true;
 }
 
