@@ -340,6 +340,7 @@ namespace
 
 // On-demand primitive capture: with PS2X_GS_TRACE set, create analysis/gs-trace.trigger to log the
 // next 3000 submitted primitives to analysis/gs-trace.txt (same format as the CPU backend).
+extern std::atomic<uint32_t> g_gsDebugVu1Pc, g_gsDebugVu1Top;
 static void traceSubmit(const GSPrimitiveBatch &batch)
 {
     static const bool allowed = std::getenv("PS2X_GS_TRACE") != nullptr;
@@ -367,8 +368,8 @@ static void traceSubmit(const GSPrimitiveBatch &batch)
         std::fprintf(file, "(%.1f,%.1f,%.0f rgba=%u,%u,%u,%u st=%.3f,%.3f,%.3f uv=%u,%u)", v.x, v.y, v.z, v.r, v.g, v.b, v.a,
                      v.s, v.t, v.q, v.u, v.v);
     }
-    std::fprintf(file, " ofs=%d,%d sc=%d,%d-%d,%d\n", ctx.xyoffset.ofx >> 4, ctx.xyoffset.ofy >> 4, ctx.scissor.x0, ctx.scissor.y0,
-                 ctx.scissor.x1, ctx.scissor.y1);
+    std::fprintf(file, " ofs=%d,%d sc=%d,%d-%d,%d vu=%x top=%x\n", ctx.xyoffset.ofx >> 4, ctx.xyoffset.ofy >> 4, ctx.scissor.x0, ctx.scissor.y0,
+                 ctx.scissor.x1, ctx.scissor.y1, g_gsDebugVu1Pc.load(std::memory_order_relaxed), g_gsDebugVu1Top.load(std::memory_order_relaxed));
     if (--remaining == 0u)
     {
         std::fclose(file);
