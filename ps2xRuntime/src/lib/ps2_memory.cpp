@@ -1723,7 +1723,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
                     uint32_t asp = (chcr >> 4) & 0x3u;
                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
-                    const int kMaxChainTags = 4096;
+                    // Hardware has no tag limit; this only stops a corrupted chain that loops
+                    // forever. Ben 10 sends over 4,096 tags in one frame.
+                    const int kMaxChainTags = 1 << 20;
                     std::vector<uint8_t> chainBuf;
 
                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
@@ -1900,6 +1902,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                     }
 
+                    if (tagsProcessed >= kMaxChainTags)
+                    {
+                        static std::atomic<bool> warned{false};
+                        if (!warned.exchange(true, std::memory_order_relaxed))
+                            std::cerr << "[dma] chain stopped at the tag limit on channel 0x" << std::hex << channelBase
+                                      << " tadr=0x" << tagAddr << std::dec << std::endl;
+                    }
                     m_ioRegisters[channelBase + 0x30] = tagAddr;
                     m_ioRegisters[channelBase + 0x40] = asr0;
                     m_ioRegisters[channelBase + 0x50] = asr1;
