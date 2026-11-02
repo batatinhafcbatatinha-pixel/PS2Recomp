@@ -63,7 +63,7 @@ namespace
                 payloadBytes = static_cast<uint64_t>(nloop) * nreg * 8ull;
                 payloadBytes = (payloadBytes + 15ull) & ~15ull;
             }
-            else if (flg >= kGifFmtImage) // IMAGE; FLG 3 operates like IMAGE
+            else if (flg == kGifFmtImage || flg == 3u) // FLG=3 ("disabled" in the GS manual) behaves exactly like IMAGE: NLOOP qwords of image data.
             {
                 payloadBytes = static_cast<uint64_t>(nloop) * 16ull;
                 const uint64_t availableBytes = sizeBytes - offset;
