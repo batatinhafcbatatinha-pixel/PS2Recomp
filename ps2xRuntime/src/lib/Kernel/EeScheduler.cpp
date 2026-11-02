@@ -1549,6 +1549,34 @@ void EeScheduler::completeVSync(uint64_t tick)
                                : static_cast<int>((tick - 1u) & 1u);
         makeReady(*waiter, result, false);
     }
+
+    // A picture wait normally ends when another thread feeds the decoder. Ben 10 feeds
+    // from the waiting thread, so with an empty queue nothing can wake it. End such a
+    // wait with an error, which the guest treats as the end of the movie.
+    constexpr uint64_t kMaxMpegWaitTicks = 180u;
+    static std::unordered_map<int, uint64_t> mpegWaitStart;
+    for (auto entry = mpegWaitStart.begin(); entry != mpegWaitStart.end();)
+    {
+        const auto waiter = m_threads.find(entry->first);
+        const bool stillWaiting = waiter != m_threads.end() && waiter->second.wait.reason == EeWaitReason::Mpeg &&
+                                  waiter->second.status == EeThreadStatus::Waiting && entry->second <= tick;
+        entry = stillWaiting ? std::next(entry) : mpegWaitStart.erase(entry);
+    }
+    completed.clear();
+    for (const auto &[id, candidate] : m_threads)
+    {
+        if (candidate.status != EeThreadStatus::Waiting || candidate.wait.reason != EeWaitReason::Mpeg)
+            continue;
+        const uint64_t start = mpegWaitStart.try_emplace(id, tick).first->second;
+        if (tick - start >= kMaxMpegWaitTicks)
+            completed.push_back(id);
+    }
+    std::sort(completed.begin(), completed.end());
+    for (const int id : completed)
+    {
+        mpegWaitStart.erase(id);
+        makeReady(*thread(id), -1, false);
+    }
     publishSnapshot();
 }
 

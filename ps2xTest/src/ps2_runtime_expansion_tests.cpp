@@ -779,6 +779,29 @@ void register_ps2_runtime_expansion_tests()
                      "resumed GetPicture should publish the configured height");
         });
 
+        tc.Run("sceMpegGetPicture gives up when nothing can feed the decoder", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            ps2_stubs::resetMpegStubState();
+            ps2_stubs::notifyMpegCdStreamStart();
+            runtime.registerFunction(kMpegWaitMainPc, testMpegWaitMain);
+            runtime.registerFunction(kMpegWaitResumePc, testMpegWaitResume);
+            gMpegWaitResult.store(-999, std::memory_order_release);
+            gMpegWaitStage.store(0u, std::memory_order_release);
+
+            R5900Context mainContext{};
+            mainContext.pc = kMpegWaitMainPc;
+            EeScheduler &ee = runtime.eeScheduler();
+            ee.reset(rdram.data(), mainContext);
+            ee.run();
+
+            t.Equals(gMpegWaitStage.load(std::memory_order_acquire), 3u,
+                     "the waiter must resume with no producer");
+            t.Equals(gMpegWaitResult.load(std::memory_order_acquire), -1,
+                     "the guest must see the error it treats as the end of the movie");
+        });
+
         tc.Run("sceMpegGetPicture waits for new decoder output instead of duplicating the last frame", [](TestCase &t)
         {
             PS2Runtime runtime;
