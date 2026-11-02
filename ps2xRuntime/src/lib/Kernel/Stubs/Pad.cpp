@@ -1,6 +1,8 @@
 #include "Common.h"
 #include "Pad.h"
 
+void ps2SetHostPadRumble(int port, uint16_t low, uint16_t high);
+
 namespace ps2_stubs
 {
     namespace
@@ -58,6 +60,7 @@ namespace ps2_stubs
             uint8_t lastData[32]{};
             uint32_t readCount = 0u;
             uint32_t lastReadDataAddr = 0u;
+            uint8_t actAlign[6] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu};  // actuator of each direct byte
         };
 
         std::mutex g_padOverrideMutex;
@@ -589,6 +592,7 @@ namespace ps2_stubs
         }
 
         portState->open = false;
+        ps2SetHostPadRumble(static_cast<int>(getRegU32(ctx, 4)), 0u, 0u);
         portState->pressureEnabled = false;
         portState->reqState = 0u;
         portState->transientState = 0u;
@@ -685,17 +689,41 @@ namespace ps2_stubs
         setReturnS32(ctx, 0);
     }
 
+    // Which of the six bytes given to scePadSetActDirect drives which motor. 0xFF = none.
     void scePadSetActAlign(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
         (void)runtime;
+        std::lock_guard<std::mutex> lock(g_padStateMutex);
+        PadPortState *portState = lookupPadPortStateLocked(static_cast<int>(getRegU32(ctx, 4)),
+                                                           static_cast<int>(getRegU32(ctx, 5)));
+        const uint8_t *align = getMemPtr(rdram, getRegU32(ctx, 6));
+        if (portState && portState->open && align)
+        {
+            std::memcpy(portState->actAlign, align, sizeof(portState->actAlign));
+        }
         setReturnS32(ctx, 1);
     }
 
+    // DualShock 2: motor 0 is the small one, on or off; motor 1 the large one, 0 to 255.
     void scePadSetActDirect(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
         (void)runtime;
+        const int port = static_cast<int>(getRegU32(ctx, 4));
+        std::lock_guard<std::mutex> lock(g_padStateMutex);
+        const PadPortState *portState = lookupPadPortStateLocked(port, static_cast<int>(getRegU32(ctx, 5)));
+        const uint8_t *data = getMemPtr(rdram, getRegU32(ctx, 6));
+        if (portState && portState->open && data)
+        {
+            uint16_t low = 0u, high = 0u;
+            for (size_t i = 0; i < sizeof(portState->actAlign); ++i)
+            {
+                if (portState->actAlign[i] == 0u && data[i] != 0u)
+                    high = 0xFFFFu;
+                else if (portState->actAlign[i] == 1u)
+                    low = static_cast<uint16_t>(data[i] * 257u);
+            }
+            ps2SetHostPadRumble(port, low, high);
+        }
         setReturnS32(ctx, 1);
     }
 

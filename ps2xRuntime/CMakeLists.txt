@@ -750,6 +750,52 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     endif()
 endif()
 
+# Controller support files next to the executable (both zlib license, downloaded and checked, never committed):
+# gamecontrollerdb.txt names the buttons of PlayStation pads, USB adapters and generic controllers, and on Windows
+# SDL3.dll reads every pad that SDL knows. Without them the runner still works, with raylib's pads only.
+if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+    set(PS2X_PAD_DIR "${CMAKE_BINARY_DIR}/pad-support")
+    set(PS2X_PAD_DB "${PS2X_PAD_DIR}/gamecontrollerdb.txt")
+    if(NOT EXISTS "${PS2X_PAD_DB}")
+        file(DOWNLOAD
+            "https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/22a98f6339abf4b6ca6cb061443a70e4f7ab252d/gamecontrollerdb.txt"
+            "${PS2X_PAD_DB}"
+            EXPECTED_HASH SHA256=0f17831b6a9e0e9fc2f52bf8ab1bef1d30ffd307d966c2118e556db345ea7e96
+            STATUS PS2X_PAD_DB_STATUS)
+        list(GET PS2X_PAD_DB_STATUS 0 PS2X_PAD_DB_CODE)
+        if(NOT PS2X_PAD_DB_CODE EQUAL 0)
+            message(WARNING "gamecontrollerdb.txt was not downloaded: ${PS2X_PAD_DB_STATUS}")
+            file(REMOVE "${PS2X_PAD_DB}")
+        endif()
+    endif()
+    if(EXISTS "${PS2X_PAD_DB}")
+        add_custom_command(TARGET ps2EntryRunner POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PS2X_PAD_DB}" "$<TARGET_FILE_DIR:ps2EntryRunner>")
+    endif()
+    if(WIN32)
+        set(PS2X_SDL3_ZIP "${PS2X_PAD_DIR}/SDL3-3.2.26-win32-x64.zip")
+        if(NOT EXISTS "${PS2X_PAD_DIR}/SDL3.dll")
+            file(DOWNLOAD
+                "https://github.com/libsdl-org/SDL/releases/download/release-3.2.26/SDL3-3.2.26-win32-x64.zip"
+                "${PS2X_SDL3_ZIP}"
+                EXPECTED_HASH SHA256=866bd702f16cc767420ed401e8c5663679833a0de56892f03e4ef3e9c0a5a333
+                STATUS PS2X_SDL3_STATUS)
+            list(GET PS2X_SDL3_STATUS 0 PS2X_SDL3_CODE)
+            if(PS2X_SDL3_CODE EQUAL 0)
+                file(ARCHIVE_EXTRACT INPUT "${PS2X_SDL3_ZIP}" DESTINATION "${PS2X_PAD_DIR}" PATTERNS SDL3.dll LICENSE.txt)
+            else()
+                message(WARNING "SDL3.dll was not downloaded: ${PS2X_SDL3_STATUS}")
+            endif()
+            file(REMOVE "${PS2X_SDL3_ZIP}")
+        endif()
+        if(EXISTS "${PS2X_PAD_DIR}/SDL3.dll")
+            add_custom_command(TARGET ps2EntryRunner POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PS2X_PAD_DIR}/SDL3.dll" "$<TARGET_FILE_DIR:ps2EntryRunner>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PS2X_PAD_DIR}/LICENSE.txt" "$<TARGET_FILE_DIR:ps2EntryRunner>/SDL3-LICENSE.txt")
+        endif()
+    endif()
+endif()
+
 # Work around WinAPI vs raylib symbol clash for CloseWindow on x64
 if(MSVC)
     target_link_options(ps2EntryRunner PRIVATE "/FORCE:MULTIPLE")

@@ -1,8 +1,10 @@
 #pragma once
 // "PC Settings" menu of the PS2 ports (F1, or Select+Start on a gamepad): display mode, monitor, aspect,
-// picture filter, vsync, volume and an fps counter, saved to pc-settings.ini next to the game. It is drawn
+// picture filter, vsync, volume, an fps counter, vibration, the mouse and the pad layout, saved to pc-settings.ini
+// next to the game. It is drawn
 // over the game with raylib in the look of each game's own menus (colours, layout, letter spacing); the
 // fonts come from the system, nothing from the game is bundled.
+#include "host_pad.h"
 #include "host_video_settings.h"
 #include <cctype>
 #include <cmath>
@@ -69,6 +71,16 @@ namespace host_menu {
     inline int vsync = 0;
     inline int volume = 100;
     inline int showFps = 0;
+    inline int vibration = 1;
+    inline bool hasModernLayout = false;  // games with a remapped pad layout
+    // The mouse is the right stick, so a game with its own sensitivity and invert options applies them to the mouse:
+    // the menu must not offer them twice.
+    inline bool gameHasLookOptions = false;
+    inline int modernLayout = 0;          // triggers do L1/R1, bumpers do L2/R2
+    inline int mouseLook = 0;             // mouse = right stick
+    inline int mouseSensitivity = 100;    // percent
+    inline int mouseInvert = 0;
+    inline bool debugCursor = false;      // Shift+F1 debugger open: it needs the pointer
     inline Font font{};
     inline bool fontLoaded = false;
 
@@ -77,7 +89,9 @@ namespace host_menu {
     inline void save() {
         std::ofstream file("pc-settings.ini");
         file << "aspect=" << (host_video::stretch ? 1 : 0) << "\nfilter=" << filter << "\nvsync=" << vsync
-             << "\nvolume=" << volume << "\nshow_fps=" << showFps << "\n";
+             << "\nvolume=" << volume << "\nshow_fps=" << showFps << "\nmouse_look=" << mouseLook
+             << "\nmouse_sensitivity=" << mouseSensitivity << "\nmouse_invert=" << mouseInvert
+             << "\nmodern_layout=" << modernLayout << "\nvibration=" << vibration << "\n";
     }
     inline void load() {
         std::ifstream file("pc-settings.ini");
@@ -96,6 +110,13 @@ namespace host_menu {
         vsync = get("vsync", 0, 0, 1);
         volume = get("volume", 100, 0, 100);
         showFps = get("show_fps", 0, 0, 1);
+        // The shooter starts with PC controls; the other games have no free camera for the mouse to turn.
+        hasModernLayout = gameHasLookOptions = std::strcmp(theme->gameId, "SLUS_217.46") == 0;
+        vibration = get("vibration", 1, 0, 1);
+        mouseLook = get("mouse_look", hasModernLayout ? 1 : 0, 0, 1);
+        mouseSensitivity = gameHasLookOptions ? 100 : get("mouse_sensitivity", 100, 10, 300);
+        mouseInvert = gameHasLookOptions ? 0 : get("mouse_invert", 0, 0, 1);
+        modernLayout = hasModernLayout ? get("modern_layout", 1, 0, 1) : 0;
     }
     inline void applyRuntime() {
         if (vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
@@ -118,6 +139,7 @@ namespace host_menu {
 #endif
         load();
         applyRuntime();
+        host_pad::initialize();
         std::vector<int> codepoints;
         for (int c = 32; c < 127; ++c) codepoints.push_back(c);
         for (int c : {0xC0, 0xC1, 0xC2, 0xC3, 0xC7, 0xC9, 0xCA, 0xCD, 0xD3, 0xD4, 0xD5, 0xDA,
@@ -152,8 +174,10 @@ namespace host_menu {
         return text;
     }
 
-    struct Item { std::string label, value; int id; };
-    enum { kDisplay, kMonitor, kAspect, kFilter, kVsync, kVolume, kFps, kResume };
+    struct Item { std::string label, value; int id; float slider = -1.0f; };  // slider: 0 to 1, drawn as a bar
+    enum { kDisplay, kMonitor, kAspect, kFilter, kVsync, kVolume, kFps, kVibration, kLayout, kMouseLook, kMouseSpeed, kMouseInvert, kResume };
+    constexpr int kMinSensitivity = 10, kMaxSensitivity = 300;
+    constexpr float kSliderOffset = 330.0f, kSliderWidth = 220.0f;  // from the right edge of the rows
 
     inline std::vector<Item> items() {
         std::vector<Item> list;
@@ -170,6 +194,16 @@ namespace host_menu {
         list.push_back({T("Sincronização vertical", "Vertical sync"), vsync ? T("Ligada", "On") : T("Desligada", "Off"), kVsync});
         list.push_back({T("Volume", "Volume"), std::to_string(volume) + "%", kVolume});
         list.push_back({T("Mostrar FPS", "Show FPS"), showFps ? T("Sim", "Yes") : T("Não", "No"), kFps});
+        list.push_back({T("Vibração do controle", "Controller vibration"), vibration ? T("Ligada", "On") : T("Desligada", "Off"), kVibration});
+        if (hasModernLayout)
+            list.push_back({T("Layout do controle", "Controller layout"),
+                            modernLayout ? T("Moderno (LT mira, RT atira)", "Modern (LT aim, RT fire)") : T("Original do PS2", "Original PS2"), kLayout});
+        list.push_back({T("Mouse como câmera", "Mouse look"), mouseLook ? T("Ligado", "On") : T("Desligado", "Off"), kMouseLook});
+        if (!gameHasLookOptions) {
+            list.push_back({T("Sensibilidade do mouse", "Mouse sensitivity"), std::to_string(mouseSensitivity) + "%", kMouseSpeed,
+                            static_cast<float>(mouseSensitivity - kMinSensitivity) / (kMaxSensitivity - kMinSensitivity)});
+            list.push_back({T("Inverter mouse", "Invert mouse"), mouseInvert ? T("Sim", "Yes") : T("Não", "No"), kMouseInvert});
+        }
         list.push_back({T("Voltar ao jogo", "Back to game"), "", kResume});
         return list;
     }
@@ -205,19 +239,24 @@ namespace host_menu {
         case kVsync: vsync = !vsync; applyRuntime(); break;
         case kVolume: volume = std::clamp(volume + direction * 10, 0, 100); applyRuntime(); break;
         case kFps: showFps = !showFps; break;
+        case kVibration: vibration = !vibration; break;
+        case kLayout: modernLayout = !modernLayout; break;
+        case kMouseLook: mouseLook = !mouseLook; break;
+        case kMouseSpeed: mouseSensitivity = std::clamp(mouseSensitivity + direction * 10, kMinSensitivity, kMaxSensitivity); break;
+        case kMouseInvert: mouseInvert = !mouseInvert; break;
         case kResume: close(); return;
         }
         save();
     }
 
     inline bool padPressed(int button) {
-        for (int pad = 0; pad < 2; ++pad)
-            if (IsGamepadAvailable(pad) && IsGamepadButtonPressed(pad, button)) return true;
+        for (int pad = 0; pad < host_pad::kMaxPads; ++pad)
+            if (host_pad::pressed(pad, button)) return true;
         return false;
     }
     inline bool padDown(int button) {
-        for (int pad = 0; pad < 2; ++pad)
-            if (IsGamepadAvailable(pad) && IsGamepadButtonDown(pad, button)) return true;
+        for (int pad = 0; pad < host_pad::kMaxPads; ++pad)
+            if (host_pad::down(pad, button)) return true;
         return false;
     }
 
@@ -228,7 +267,7 @@ namespace host_menu {
         l.scale = std::min(GetScreenWidth() / 1280.0f, GetScreenHeight() / 720.0f);
         l.x0 = (GetScreenWidth() - 1280.0f * l.scale) * 0.5f;
         l.y0 = (GetScreenHeight() - 720.0f * l.scale) * 0.5f;
-        l.rowH = 48.0f;
+        l.rowH = std::min(48.0f, 530.0f / rows);  // the mouse rows must still fit the canvas
         const float height = 110.0f + rows * l.rowH + 60.0f;
         l.top = (720.0f - height) * 0.5f;
         l.left = theme->band ? 230.0f : 300.0f;
@@ -249,15 +288,18 @@ namespace host_menu {
     }
 
     inline void update() {
+        host_pad::rumbleEnabled = vibration && !open;
+        host_pad::update();
         testStep();
         if (suppressPad) {
             const bool held = IsKeyDown(KEY_ESCAPE) || IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_X) || IsKeyDown(KEY_C) ||
-                              IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_F1) || padDown(GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) ||
+                              IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_BACKSPACE) || IsKeyDown(KEY_F1) || padDown(GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) ||
                               padDown(GAMEPAD_BUTTON_RIGHT_FACE_DOWN) || padDown(GAMEPAD_BUTTON_MIDDLE_LEFT) ||
                               padDown(GAMEPAD_BUTTON_MIDDLE_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_LEFT);
             if (!held) suppressPad = false;
         }
         const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (IsKeyPressed(KEY_F1) && shift) debugCursor = !debugCursor;
         const bool padCombo = (padPressed(GAMEPAD_BUTTON_MIDDLE_RIGHT) && padDown(GAMEPAD_BUTTON_MIDDLE_LEFT)) ||
                               (padPressed(GAMEPAD_BUTTON_MIDDLE_LEFT) && padDown(GAMEPAD_BUTTON_MIDDLE_RIGHT));
         if (!open) {
@@ -273,11 +315,10 @@ namespace host_menu {
         const int count = static_cast<int>(list.size());
         static double stickRepeat = 0.0;
         float stickY = 0.0f, stickX = 0.0f;
-        for (int pad = 0; pad < 2; ++pad)
-            if (IsGamepadAvailable(pad)) {
-                stickY += GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_Y);
-                stickX += GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X);
-            }
+        for (int pad = 0; pad < host_pad::kMaxPads; ++pad) {
+            stickY += host_pad::axis(pad, GAMEPAD_AXIS_LEFT_Y);
+            stickX += host_pad::axis(pad, GAMEPAD_AXIS_LEFT_X);
+        }
         int stickStep = 0, stickSide = 0;
         if ((std::abs(stickY) > 0.6f || std::abs(stickX) > 0.6f) && GetTime() >= stickRepeat) {
             if (std::abs(stickY) >= std::abs(stickX)) stickStep = stickY > 0 ? 1 : -1;
@@ -304,16 +345,29 @@ namespace host_menu {
         const float mx = (mouse.x - l.x0) / l.scale, my = (mouse.y - l.y0) / l.scale;
         // Hover only counts once the mouse moves after the menu opened (else it steals the keyboard selection).
         static Vector2 lastMouse{-1.0f, -1.0f};
-        if (!mouseArmed) lastMouse = mouse;
+        static bool dragging = false;
+        if (!mouseArmed) { lastMouse = mouse; dragging = false; }
         mouseArmed = true;
         const bool moved = mouse.x != lastMouse.x || mouse.y != lastMouse.y;
         lastMouse = mouse;
         const float rowsTop = l.top + 110.0f;
-        if (mx >= l.left - 30.0f && mx <= l.right + 30.0f && my >= rowsTop && my < rowsTop + count * l.rowH) {
+        const float sliderLeft = l.right - kSliderOffset;
+        const auto dragSlider = [&] {
+            const float position = std::clamp((mx - sliderLeft) / kSliderWidth, 0.0f, 1.0f);
+            const int steps = (kMaxSensitivity - kMinSensitivity) / 5;
+            mouseSensitivity = kMinSensitivity + static_cast<int>(std::lround(position * steps)) * 5;
+        };
+        if (dragging) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) dragSlider();
+            else { dragging = false; save(); }
+        } else if (mx >= l.left - 30.0f && mx <= l.right + 30.0f && my >= rowsTop && my < rowsTop + count * l.rowH) {
             const int row = static_cast<int>((my - rowsTop) / l.rowH);
             if (moved) selected = row;
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) change(list[row].id, 1);
-            else if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && list[row].id != kResume) change(list[row].id, -1);
+            const bool onSlider = list[row].slider >= 0.0f && mx >= sliderLeft - 12.0f && mx <= sliderLeft + kSliderWidth + 12.0f;
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (onSlider) { dragging = true; dragSlider(); }
+                else change(list[row].id, 1);
+            } else if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && list[row].id != kResume) change(list[row].id, -1);
         }
     }
 
@@ -382,6 +436,14 @@ namespace host_menu {
                 continue;
             }
             text(list[i].label, l.left, cy, theme->textSize, color, l);
+            if (list[i].slider >= 0.0f) {
+                const float left = l.right - kSliderOffset;
+                DrawRectangleRounded(rect(l, left, cy - 3.0f, kSliderWidth, 6.0f), 1.0f, 6, Fade(color, 0.35f));
+                DrawRectangleRounded(rect(l, left, cy - 3.0f, kSliderWidth * list[i].slider, 6.0f), 1.0f, 6, color);
+                DrawCircleV({l.x0 + (left + kSliderWidth * list[i].slider) * l.scale, l.y0 + cy * l.scale}, 9.0f * l.scale, color);
+                text(list[i].value, l.right, cy, theme->textSize, color, l, 1);
+                continue;
+            }
             text(sel ? "\xE2\x80\xB9  " + list[i].value + "  \xE2\x80\xBA" : list[i].value, l.right, cy, theme->textSize, color, l, 1);
         }
         text(T("Setas: escolher e mudar   Enter: mudar   F1 / Esc: voltar ao jogo",
