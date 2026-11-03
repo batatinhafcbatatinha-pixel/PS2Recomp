@@ -1,5 +1,6 @@
 #pragma once
 #include "ps2_host_backend.h"
+#include "host_os.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -18,6 +19,7 @@ namespace host_video {
     }
     // Windowed size: 1920x1080, reduced to a 16:9 window that fits 90% of smaller monitors.
     inline int resolutionWidth = 0, resolutionHeight = 0;  // 0 = automatic; set from the F1 menu
+    inline int refreshRate = 0;                            // exclusive fullscreen; 0 = the highest the monitor offers
     inline void windowSize(int &width, int &height) {
         int monitor = GetCurrentMonitor();
         if (resolutionWidth > 0) {
@@ -37,7 +39,10 @@ namespace host_video {
         if (IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) ToggleBorderlessWindowed();
         if (resolutionWidth > 0) { int width, height; windowSize(width, height); SetWindowSize(width, height); }
         else SetWindowSize(1920, 1080);
-        if (next == Mode::Fullscreen) ToggleFullscreen();
+        if (next == Mode::Fullscreen) {
+            ToggleFullscreen();
+            if (refreshRate > 0) host_os::setFullscreenRefresh(GetWindowHandle(), GetScreenWidth(), GetScreenHeight(), refreshRate);
+        }
         else if (next == Mode::Borderless) ToggleBorderlessWindowed();
         else {
             int monitor = GetCurrentMonitor(), width, height;
