@@ -16,15 +16,15 @@ void ps2UpdateHostPadInput();
 void ps2ProfilerRegisterCurrentThread(const char *name);
 void ps2WatchInstall(uint8_t *rdram, uint32_t (*currentPc)(), void (*dump)());
 #if PS2X_ENABLE_CODWAW_SUPPLEMENTS
-#include "../../../../../codwaw-ff/project/supplemental/sub_001C93F0_0x1c93f0.cpp"
-#include "../../../../../codwaw-ff/project/supplemental-1c90b0/sub_001C90B0_0x1c90b0.cpp"
-#include "../../../../../codwaw-ff/project/supplemental-4496b8/sub_004496B8_0x4496b8.cpp"
+#include "supplemental/sub_001C93F0_0x1c93f0.cpp"
+#include "supplemental-1c90b0/sub_001C90B0_0x1c90b0.cpp"
+#include "supplemental-4496b8/sub_004496B8_0x4496b8.cpp"
 int32_t codWawMpegDelta();
 uint32_t codWawMpegAddress(uint32_t address);
-#include "../../../../../codwaw-ff/project/supplemental-mpeg-ctor/integrated.inc"
-#include "../../../../../codwaw-ff/project/supplemental-139fb0/integrated.inc"
-#include "../../../../../codwaw-ff/project/supplemental-159fc8/integrated.inc"
-#include "../../../../../codwaw-ff/project/supplemental-gaps/bindings.inc"
+#include "supplemental-mpeg-ctor/integrated.inc"
+#include "supplemental-139fb0/integrated.inc"
+#include "supplemental-159fc8/integrated.inc"
+#include "supplemental-gaps/bindings.inc"
 void registerCodWawMpegCtor(PS2Runtime &runtime) { registerMpegCtorSupplement(runtime); }
 bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #endif

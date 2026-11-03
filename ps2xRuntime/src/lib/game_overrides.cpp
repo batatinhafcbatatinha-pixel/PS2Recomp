@@ -12,8 +12,8 @@ namespace {
 int32_t codWawMpegDelta() { return codWawMpegRelocation; }
 uint32_t codWawMpegAddress(uint32_t address) { return address + codWawMpegRelocation; }
 void registerCodWawMpegCtor(PS2Runtime &runtime);
-#include "../../../../../codwaw-ff/project/supplemental-mpeg/bindings.inc"
-#include "../../../../../codwaw-ff/project/supplemental-mpeg-extra/bindings.inc"
+#include "supplemental-mpeg/bindings.inc"
+#include "supplemental-mpeg-extra/bindings.inc"
 
 bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target)
 {
