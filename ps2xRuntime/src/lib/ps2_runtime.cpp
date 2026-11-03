@@ -61,6 +61,17 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #include <thread>
 #include <unordered_map>
 #include <sstream>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define PS2X_TICKS() __rdtsc()
+#elif defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#define PS2X_TICKS() __rdtsc()
+#else
+#include <chrono>
+// no time-stamp counter: nanoseconds scaled to the 3.6 GHz ticks the [perf] figures assume
+#define PS2X_TICKS() (static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) * 18u / 5u)
+#endif
 
 namespace ps2_stubs
 {
@@ -883,11 +894,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                      g_gsDebugVu1Data = m_memory.getVU1Data();
                                      g_gsDebugVu1Code = m_memory.getVU1Code();
                                      // VU1 runs a microprogram to its E bit; the cap only guards runaway code.
-                                     const uint64_t vuStart = __rdtsc();
+                                     const uint64_t vuStart = PS2X_TICKS();
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, kVu1ProgramCycleCap);
-                                     g_perfVu1Ns += (__rdtsc() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
+                                     g_perfVu1Ns += (PS2X_TICKS() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
                                      if (cpuContext)
@@ -914,13 +925,13 @@ bool PS2Runtime::syncCoreSubsystems()
                                          std::cerr << "[vu1:dump] index=" << dumpIndex << " mscnt pc=0x" << std::hex << m_vu1.state().pc
                                                    << " top=0x" << top << " itop=0x" << itop << std::dec << std::endl;
                                      }
-                                     const uint64_t vuStart = __rdtsc();
+                                     const uint64_t vuStart = PS2X_TICKS();
                                      g_gsDebugVu1Pc.store(0x10000u | m_vu1.state().pc, std::memory_order_relaxed);
                                      g_gsDebugVu1Top.store(top, std::memory_order_relaxed);
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, kVu1ProgramCycleCap);
-                                     g_perfVu1Ns += (__rdtsc() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
+                                     g_perfVu1Ns += (PS2X_TICKS() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
                                      if (cpuContext)
