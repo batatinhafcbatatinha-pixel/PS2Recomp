@@ -496,6 +496,12 @@ file(GLOB CODWAW_OVERLAY_SRC_FILES CONFIGURE_DEPENDS
 )
 endif()
 target_compile_definitions(ps2_runtime PRIVATE PS2X_ENABLE_CODWAW_SUPPLEMENTS=$<BOOL:${PS2X_ENABLE_CODWAW_SUPPLEMENTS}>)
+if(PS2X_ENABLE_CODWAW_SUPPLEMENTS)
+    # The game folder whose project/ holds the supplements generated from your disc (scripts/prepare_game_code.py).
+    set(PS2X_CODWAW_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../codwaw-ff/project" CACHE PATH
+        "Final Fronts project folder with the generated supplements")
+    target_include_directories(ps2_runtime PRIVATE "${PS2X_CODWAW_PROJECT_DIR}")
+endif()
 
 if(MSVC AND CODWAW_OVERLAY_SRC_FILES)
     set_source_files_properties(${CODWAW_OVERLAY_SRC_FILES} PROPERTIES COMPILE_OPTIONS "/Ob1")
