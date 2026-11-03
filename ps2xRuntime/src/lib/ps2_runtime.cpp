@@ -2,7 +2,9 @@
 #include <pthread.h>
 #endif
 #include "ps2_runtime.h"
+#include "ps2_timeline.h"
 #include "host_pc_menu.h"
+#include "runtime/gs/gs_shared_present.h"
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/gs_hw_backend.h"
 #include "runtime/gs/gs_threaded_backend.h"
@@ -42,6 +44,8 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #include "ps2x/iop/iop_subsystem.h"
 
 #include <iostream>
+#include <immintrin.h>
+#include <intrin.h>
 #include <stdexcept>
 #include <fstream>
 #include <algorithm>
@@ -70,6 +74,54 @@ namespace ps2_stubs
 
 // Host time spent per subsystem, reported with the [perf] line.
 std::atomic<uint64_t> g_perfVu1Ns{0}, g_perfGsNs{0}, g_perfIopNs{0}, g_perfIdleNs{0}, g_perfSyncNs{0};
+
+void ps2ProfilerRegisterCurrentThread(const char *name);
+std::atomic<bool> g_timelineOn{false};
+namespace
+{
+    struct TimelineRecord { int64_t ns; uint32_t event, a, b, pad; };
+    constexpr uint32_t kTimelineCapacity = 1u << 23;
+    std::atomic<uint32_t> g_timelineCount{0};
+    TimelineRecord *g_timeline = nullptr;
+}
+
+void ps2TimelineRecord(uint32_t event, uint32_t a, uint32_t b)
+{
+    const uint32_t slot = g_timelineCount.fetch_add(1u, std::memory_order_relaxed);
+    if (slot < kTimelineCapacity)
+        g_timeline[slot] = TimelineRecord{std::chrono::steady_clock::now().time_since_epoch().count(), event, a, b, 0u};
+}
+
+void ps2TimelinePoll()
+{
+    static const char *path = std::getenv("PS2X_TIMELINE");
+    if (!path || !*path)
+        return;
+    static const double openAt = std::getenv("PS2X_TL_AT") ? std::atof(std::getenv("PS2X_TL_AT")) : 120.0;
+    static const double span = std::getenv("PS2X_TL_SECS") ? std::atof(std::getenv("PS2X_TL_SECS")) : 6.0;
+    static const auto boot = std::chrono::steady_clock::now();
+    static int stage = 0;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - boot).count();
+    if (stage == 0 && now >= openAt)
+    {
+        g_timeline = static_cast<TimelineRecord *>(std::malloc(sizeof(TimelineRecord) * kTimelineCapacity));
+        stage = 1;
+        g_timelineOn.store(true, std::memory_order_release);
+    }
+    else if (stage == 1 && now >= openAt + span)
+    {
+        stage = 2;
+        g_timelineOn.store(false, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const uint32_t count = std::min(g_timelineCount.load(), kTimelineCapacity);
+        if (FILE *file = std::fopen(path, "wb"))
+        {
+            std::fwrite(g_timeline, sizeof(TimelineRecord), count, file);
+            std::fclose(file);
+        }
+        std::cerr << "[timeline] " << count << " records in " << path << std::endl;
+    }
+}
 extern std::atomic<uint32_t> g_gsDebugVu1Pc, g_gsDebugVu1Top;
 extern const uint8_t *g_gsDebugVu1Data, *g_gsDebugVu1Code;
 static constexpr uint32_t kVu1ProgramCycleCap = 1u << 22;
@@ -228,9 +280,9 @@ namespace
     {
         DispatchHistory &h = g_dispatchHistory;
         h.pcs[h.next] = pc;
-        h.next = (h.next + 1u) % static_cast<uint32_t>(h.pcs.size());
-        if (h.next == 0u)
+        if (++h.next == static_cast<uint32_t>(h.pcs.size()))
         {
+            h.next = 0u;
             h.wrapped = true;
         }
     }
@@ -446,6 +498,8 @@ namespace
     }
 }
 
+extern std::atomic<bool> g_gsForceReadback;
+
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
@@ -460,7 +514,38 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
 
     const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
-    const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
+    const char *frameDump = std::getenv("PS2X_FRAME_DUMP");
+    static uint64_t lastFrameDumpTick = std::numeric_limits<uint64_t>::max();
+    // PS2X_FRAME_DUMP_TICKS: a dump reads the frame back from the GPU, which disturbs measurements.
+    static const uint64_t dumpTicks = std::getenv("PS2X_FRAME_DUMP_TICKS") ? std::strtoull(std::getenv("PS2X_FRAME_DUMP_TICKS"), nullptr, 0) : 120u;
+    const bool dumpDue = frameDump && *frameDump &&
+                         (lastFrameDumpTick == std::numeric_limits<uint64_t>::max() || currentTick >= lastFrameDumpTick + dumpTicks);
+    const bool sharedFrames = GSSharedPresent::Active();
+    if (sharedFrames && !dumpDue)
+    {
+        if (currentTick != s_lastPresentationTick)
+        {
+            rt->gs().latchHostPresentationFrame();
+            s_lastPresentationTick = currentTick;
+            s_hasLatchedInitialFrame = true;
+        }
+        GSSharedPresent::Frame frame;
+        if (GSSharedPresent::Acquire(frame) && !frame.blank && frame.texture != 0u)
+        {
+            tex.id = frame.texture;
+            tex.width = static_cast<int>(frame.width);
+            tex.height = static_cast<int>(frame.height);
+            s_lastWidth = frame.width;
+            s_lastHeight = frame.height;
+            s_hasUploadedFrame = true;
+        }
+        outWidth = s_lastWidth != 0u ? s_lastWidth : FB_WIDTH;
+        outHeight = s_lastHeight != 0u ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
+        return;
+    }
+    if (dumpDue && sharedFrames)
+        g_gsForceReadback.store(true, std::memory_order_relaxed);
+    const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick || dumpDue;
     if (needsLatch)
     {
         rt->gs().latchHostPresentationFrame();
@@ -554,14 +639,18 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         }
     }
 
-    const char *frameDump = std::getenv("PS2X_FRAME_DUMP");
-    static uint64_t lastFrameDumpTick = std::numeric_limits<uint64_t>::max();
     if (frameDump && *frameDump && width && height && !s_scratch.empty() &&
         (lastFrameDumpTick == std::numeric_limits<uint64_t>::max() || currentTick >= lastFrameDumpTick + 120u)) {
         Image frame{s_scratch.data(), static_cast<int>(width), static_cast<int>(height), 1,
                     PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
         ExportImage(frame, frameDump);
         lastFrameDumpTick = currentTick;
+    }
+    if (sharedFrames)
+    {
+        outWidth = s_lastWidth != 0u ? s_lastWidth : width;
+        outHeight = s_lastHeight != 0u ? s_lastHeight : height;
+        return;
     }
     UpdateTexture(tex, s_uploadBuffer.data());
     outWidth = width;
@@ -794,11 +883,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                      g_gsDebugVu1Data = m_memory.getVU1Data();
                                      g_gsDebugVu1Code = m_memory.getVU1Code();
                                      // VU1 runs a microprogram to its E bit; the cap only guards runaway code.
-                                     const auto vuStart = std::chrono::steady_clock::now();
+                                     const uint64_t vuStart = __rdtsc();
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, kVu1ProgramCycleCap);
-                                     g_perfVu1Ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - vuStart).count();
+                                     g_perfVu1Ns += (__rdtsc() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
                                      if (cpuContext)
@@ -825,13 +914,13 @@ bool PS2Runtime::syncCoreSubsystems()
                                          std::cerr << "[vu1:dump] index=" << dumpIndex << " mscnt pc=0x" << std::hex << m_vu1.state().pc
                                                    << " top=0x" << top << " itop=0x" << itop << std::dec << std::endl;
                                      }
-                                     const auto vuStart = std::chrono::steady_clock::now();
+                                     const uint64_t vuStart = __rdtsc();
                                      g_gsDebugVu1Pc.store(0x10000u | m_vu1.state().pc, std::memory_order_relaxed);
                                      g_gsDebugVu1Top.store(top, std::memory_order_relaxed);
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, kVu1ProgramCycleCap);
-                                     g_perfVu1Ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - vuStart).count();
+                                     g_perfVu1Ns += (__rdtsc() - vuStart) * 5u / 18u; // about 3.6 GHz: a figure for the [perf] line
                                      if (dumpIndex >= 0)
                                          vuDumpWrite(m_memory, m_vu1, dumpIndex, "after");
                                      if (cpuContext)
@@ -900,8 +989,11 @@ bool PS2Runtime::initialize(const char *title)
 #endif
             if (gsBackend && std::string(gsBackend) == "hw")
             {
-                // Native renderer (render targets, texture cache) on its own GS thread.
+                // Native renderer (render targets, texture cache) on its own GS thread. Its context shares objects
+                // with the window's, so finished frames reach the window as textures, without a GPU readback.
+                GSSharedPresent::CaptureHostContext();
                 m_gs.setRasterBackend(std::make_unique<GSThreadedBackend>(std::make_unique<GSHwBackend>()));
+                GSSharedPresent::RestoreHostContext();
                 std::cerr << "[gs] backend=hw" << std::endl;
             }
             else if (!gsBackend || std::string(gsBackend) != "cpu")
@@ -929,7 +1021,11 @@ bool PS2Runtime::initialize(const char *title)
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
-        SetTargetFPS(60);
+        {
+            // Presentation only; the guest vblank stays at 60 Hz. 0 removes the limit.
+            const char *fpsLimit = std::getenv("PS2X_FPS_LIMIT");
+            SetTargetFPS(fpsLimit ? std::atoi(fpsLimit) : 60);
+        }
         if (m_debugUiInitCallback)
         {
             m_debugUiInitCallback(*this, m_debugUiUserData);
@@ -1623,7 +1719,14 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return false;
     }
 
-    if (!hasFunction(targetPc))
+    // One table read for the common case: this runs on every guest call.
+    RecompiledFunction targetFn = nullptr;
+    uint32_t tableSlot = 0u;
+    if (generatedFunctionTableSlot(targetPc, tableSlot))
+        targetFn = g_ps2RecompiledFunctionTable[tableSlot];
+    if (targetFn != nullptr)
+        pushDispatchPc(targetPc);
+    else if (!hasFunction(targetPc))
     {
         reportMissingFunction(rdram, ctx, targetPc, sourcePc, kind, debugName);
 
@@ -1645,7 +1748,8 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return false;
     }
 
-    RecompiledFunction targetFn = lookupFunction(targetPc);
+    if (targetFn == nullptr)
+        targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
     const uint64_t yieldGeneration = s_guestYieldGeneration;
     const uint32_t entrySp = getRegU32(ctx, 29);
@@ -2954,6 +3058,7 @@ void PS2Runtime::run()
     if (Ps2FastRead32(bootRam, 0x14b6c8u) == 0x3c020058u && Ps2FastRead32(bootRam, 0x14b6d0u) == 0xc4403b40u)
     {
         registerFunction(0x14b6c8u, [](uint8_t *rdram, R5900Context *ctx, PS2Runtime *) {
+            PS2TL(TL_GAME_FRAME, getRegU32(ctx, 31));
             static const char *setting = std::getenv("PS2X_COD_MAXFPS");
             static const float period = 1.0f / static_cast<float>(setting ? std::atof(setting) : 60.0);
             float fixed;
@@ -3014,6 +3119,7 @@ void PS2Runtime::run()
     // A blank image to use as a framebuffer
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
+    const unsigned ownFrameTexture = frameTex.id;
     UnloadImage(blank);
 
     std::atomic<bool> gameThreadFinished{false};
@@ -3140,6 +3246,13 @@ void PS2Runtime::run()
             dstWidth = std::min(screenWidth, screenHeight * 4.0f / 3.0f);
             dstHeight = dstWidth * 3.0f / 4.0f;
         }
+        else if (host_video::resolutionWidth > 0)
+        {
+            // an ultrawide choice on a narrower screen keeps its shape
+            const float shape = static_cast<float>(host_video::resolutionWidth) / static_cast<float>(host_video::resolutionHeight);
+            dstWidth = std::min(screenWidth, screenHeight * shape);
+            dstHeight = dstWidth / shape;
+        }
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,
@@ -3149,9 +3262,19 @@ void PS2Runtime::run()
         {
             static int textureFilter = -1;
             const int wanted = host_menu::filter ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT;
-            if (textureFilter != wanted) { SetTextureFilter(frameTex, wanted); textureFilter = wanted; }
+            static unsigned filteredTexture = 0u; // shared frames arrive in several textures
+            if (textureFilter != wanted || filteredTexture != frameTex.id)
+            {
+                SetTextureFilter(frameTex, wanted);
+                textureFilter = wanted;
+                filteredTexture = frameTex.id;
+            }
         }
+        const bool fxaaActive = host_menu::beginFxaa(static_cast<float>(frameTex.width), static_cast<float>(frameTex.height)) ||
+                                host_menu::beginDownscale(static_cast<float>(frameTex.width), static_cast<float>(frameTex.height), srcHeight / dstHeight);
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        if (fxaaActive)
+            EndShaderMode();
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
@@ -3159,7 +3282,10 @@ void PS2Runtime::run()
         host_menu::drawFps(host_video::fps);
         host_menu::draw();
         host_video::drawHelp();
+        PS2TL(TL_SWAP_BEGIN);
         EndDrawing();
+        PS2TL(TL_SWAP_END);
+        ps2TimelinePoll();
         host_video::countFrame(static_cast<uint32_t>(m_memory.gs().dispfb1));
         {
             // Stall diagnostic: when the game stops flipping frames for 8 s, log the
@@ -3209,6 +3335,8 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
+    frameTex.id = ownFrameTexture;
+    GSSharedPresent::ShutdownHost();
     UnloadTexture(frameTex);
     CloseWindow();
 

@@ -1893,6 +1893,18 @@ namespace
     {
         if (!runtime || !pairs || !runtime->syncCoreSubsystems())
             return;
+        // Set in order behind the queued work: a draw environment does not need the GS to have caught up.
+        std::array<uint64_t, 32> queued{};
+        if (pairCount * 2u <= queued.size())
+        {
+            for (size_t i = 0; i < pairCount; ++i)
+            {
+                queued[i * 2u] = pairs[i].value;
+                queued[i * 2u + 1u] = pairs[i].reg & 0xFFu;
+            }
+            if (runtime->memory().queueGsRegisterWrites(queued.data(), pairCount))
+                return;
+        }
         for (size_t i = 0; i < pairCount; ++i)
         {
             runtime->gs().writeRegister(static_cast<uint8_t>(pairs[i].reg & 0xFFu), pairs[i].value);

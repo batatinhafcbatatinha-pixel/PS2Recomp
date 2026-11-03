@@ -364,6 +364,9 @@ public:
     // VIF1 / VU1 / GIF thread: DMA completes on the EE at once, the data is processed in order on the worker. The EE calls
     // gifVifSync before it looks at anything that depends on that work.
     void startVifWorker(std::function<uint32_t()> fbrstSource, std::function<void(const uint8_t *, uint32_t)> gsPacket);
+    // GS register writes from the game thread, as an A+D packet behind everything already queued. false: no queue, the
+    // caller must sync and write them itself. `pairs` holds value, register, value, register...
+    bool queueGsRegisterWrites(const uint64_t *pairs, size_t count);
     bool queueGsPacket(const uint8_t *data, uint32_t sizeBytes); // false: not on the VU thread, process it directly
     void stopVifWorker();
     void gifVifSync() const;

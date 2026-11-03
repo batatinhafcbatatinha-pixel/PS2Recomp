@@ -58,6 +58,8 @@ namespace
     }
 }
 
+uint64_t g_uploadBytesByPsm[64] = {};
+
 void GSTextureStore::Initialize(uint8_t *vram, uint32_t vramSize)
 {
     if (vram && vramSize < GSMem::MEMORY_SIZE)
@@ -147,8 +149,14 @@ void GSTextureStore::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut
 uint64_t GSTextureStore::ClutHash() const
 {
     uint64_t hash = 1469598103934665603ull;
-    for (uint16_t v : m_clut)
-        hash = (hash ^ v) * 1099511628211ull;
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(m_clut.data());
+    for (size_t at = 0u; at + 8u <= sizeof(m_clut); at += 8u)
+    {
+        uint64_t word;
+        std::memcpy(&word, bytes + at, sizeof(word));
+        hash = (hash ^ word) * 0xFF51AFD7ED558CCDull;
+        hash ^= hash >> 32u;
+    }
     return hash;
 }
 
@@ -270,6 +278,7 @@ void GSTextureStore::UploadAligned(const uint8_t *data, uint32_t sizeBytes)
         m_state.x = dsax + (m_state.copiedPixels % rrw);
         m_state.y = dsay + (m_state.copiedPixels / rrw);
     };
+    g_uploadBytesByPsm[dpsm & 63u] += sizeBytes;
     uint32_t bits;
     switch (dpsm)
     {

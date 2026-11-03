@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -114,9 +115,14 @@ namespace {
         const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
         timeBeginPeriod(1);
         auto lastReport = std::chrono::steady_clock::now();
+        // PS2X_PROFILE_AT=<s>: sample only from then on; boot and menus would otherwise count as idle time.
+        static const double sampleFrom = std::getenv("PS2X_PROFILE_AT") ? std::atof(std::getenv("PS2X_PROFILE_AT")) : 0.0;
+        const auto samplerStart = std::chrono::steady_clock::now();
         for (;;)
         {
             Sleep(1);
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - samplerStart).count() < sampleFrom)
+                continue;
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 for (SampledThread &thread : g_threads)
@@ -242,6 +248,14 @@ namespace {
 void ps2ProfilerRegisterCurrentThread(const char *name)
 {
 #ifdef _WIN32
+    // PS2X_PIN=game:2,vif:4,...: thread name to logical processor.
+    if (const char *pins = std::getenv("PS2X_PIN"))
+    {
+        const std::string list = std::string(",") + pins, key = std::string(",") + name + ":";
+        const size_t at = list.find(key);
+        if (at != std::string::npos)
+            SetThreadAffinityMask(GetCurrentThread(), 1ull << std::atoi(list.c_str() + at + key.size()));
+    }
     const char *enabled = std::getenv("PS2X_PROFILE");
     if (!enabled || enabled[0] != '1')
         return;

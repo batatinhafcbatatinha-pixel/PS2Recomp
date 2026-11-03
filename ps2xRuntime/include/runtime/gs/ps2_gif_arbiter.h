@@ -33,6 +33,7 @@ public:
     void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
 
     void drain();
+    bool sendDirect(const uint8_t *data, uint32_t sizeBytes); // false: packets are queued, use submit and drain
     bool empty() const { return m_queue.empty(); }
 
 private:

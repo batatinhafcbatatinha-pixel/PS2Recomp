@@ -14,7 +14,15 @@
 
 #include "ps2_runtime.h"
 
-static inline int32_t Ps2ExtractEpi32(__m128i v, int index)
+#ifndef PS2_HOT_INLINE
+#if defined(_MSC_VER)
+#define PS2_HOT_INLINE static __forceinline
+#else
+#define PS2_HOT_INLINE static inline __attribute__((always_inline))
+#endif
+#endif
+
+PS2_HOT_INLINE int32_t Ps2ExtractEpi32(__m128i v, int index)
 {
     switch (index & 3)
     {
@@ -29,7 +37,7 @@ static inline int32_t Ps2ExtractEpi32(__m128i v, int index)
     }
 }
 
-static inline int64_t Ps2ExtractEpi64(__m128i v, int index)
+PS2_HOT_INLINE int64_t Ps2ExtractEpi64(__m128i v, int index)
 {
     if ((index & 1) == 0)
     {
@@ -275,19 +283,19 @@ inline bool ps2_fnormal(float r)
     return (std::bit_cast<uint32_t>(r) * 2u + 0x01000000u) >= 0x02000000u;
 }
 
-inline float ps2_fadd(float a, float b)
+PS2_HOT_INLINE float ps2_fadd(float a, float b)
 {
     const float r = a + b;
     return ps2_fnormal(r) ? r : ps2_fadd_slow(a, b);
 }
 
-inline float ps2_fsub(float a, float b)
+PS2_HOT_INLINE float ps2_fsub(float a, float b)
 {
     const float r = a - b;
     return ps2_fnormal(r) ? r : ps2_fsub_slow(a, b);
 }
 
-inline float ps2_fmul(float a, float b)
+PS2_HOT_INLINE float ps2_fmul(float a, float b)
 {
     const float r = a * b;
     return ps2_fnormal(r) ? r : ps2_fmul_slow(a, b);
@@ -386,12 +394,12 @@ static inline bool Ps2FastRangeIsContiguous(uint32_t offset, uint32_t bytes)
     return offset <= (PS2_RAM_SIZE - bytes);
 }
 
-static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
+PS2_HOT_INLINE uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
 {
     return rdram[addr & PS2_RAM_MASK];
 }
 
-static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
+PS2_HOT_INLINE uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
@@ -411,7 +419,7 @@ static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
     return value;
 }
 
-static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
+PS2_HOT_INLINE uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
@@ -431,7 +439,7 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
     return value;
 }
 
-static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
+PS2_HOT_INLINE uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
@@ -473,12 +481,12 @@ static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
     return value;
 }
 
-static inline void Ps2FastWrite8(uint8_t *rdram, uint32_t addr, uint8_t value)
+PS2_HOT_INLINE void Ps2FastWrite8(uint8_t *rdram, uint32_t addr, uint8_t value)
 {
     rdram[addr & PS2_RAM_MASK] = value;
 }
 
-static inline void Ps2FastWrite16(uint8_t *rdram, uint32_t addr, uint16_t value)
+PS2_HOT_INLINE void Ps2FastWrite16(uint8_t *rdram, uint32_t addr, uint16_t value)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
@@ -494,7 +502,7 @@ static inline void Ps2FastWrite16(uint8_t *rdram, uint32_t addr, uint16_t value)
     std::memcpy(rdram + offset, &value, sizeof(value));
 }
 
-static inline void Ps2FastWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
+PS2_HOT_INLINE void Ps2FastWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
@@ -510,7 +518,7 @@ static inline void Ps2FastWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
     std::memcpy(rdram + offset, &value, sizeof(value));
 }
 
-static inline void Ps2FastWrite64(uint8_t *rdram, uint32_t addr, uint64_t value)
+PS2_HOT_INLINE void Ps2FastWrite64(uint8_t *rdram, uint32_t addr, uint64_t value)
 {
     const uint32_t offset = addr & PS2_RAM_MASK;
     if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
@@ -973,17 +981,32 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
 #define PS2_VSQRT(x) sqrtf(x)
 #define PS2_VRSQRT(x) (1.0f / sqrtf(x))
 
-#define GPR_U32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0U : static_cast<uint32_t>(PS2_EXTRACT_EPI32_0(ctx_ptr->r[reg_idx])))
-#define GPR_S32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0 : PS2_EXTRACT_EPI32_0(ctx_ptr->r[reg_idx]))
-#define GPR_U64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0ULL : static_cast<uint64_t>(PS2_EXTRACT_EPI64_0(ctx_ptr->r[reg_idx])))
-#define GPR_S64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0LL : PS2_EXTRACT_EPI64_0(ctx_ptr->r[reg_idx]))
+// The low halves are read and written as plain integers: every guest instruction does this, and going through a
+// 128-bit load, merge and store costs several times more than the instruction itself.
+PS2_HOT_INLINE uint32_t Ps2GprLow32(const __m128i &r)
+{
+    uint32_t v;
+    std::memcpy(&v, &r, sizeof(v));
+    return v;
+}
+PS2_HOT_INLINE uint64_t Ps2GprLow64(const __m128i &r)
+{
+    uint64_t v;
+    std::memcpy(&v, &r, sizeof(v));
+    return v;
+}
+#define GPR_U32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0U : Ps2GprLow32(ctx_ptr->r[reg_idx]))
+#define GPR_S32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0 : static_cast<int32_t>(Ps2GprLow32(ctx_ptr->r[reg_idx])))
+#define GPR_U64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0ULL : Ps2GprLow64(ctx_ptr->r[reg_idx]))
+#define GPR_S64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0LL : static_cast<int64_t>(Ps2GprLow64(ctx_ptr->r[reg_idx])))
 #define GPR_VEC(ctx_ptr, reg_idx) ((reg_idx == 0) ? _mm_setzero_si128() : ctx_ptr->r[reg_idx])
 
-static inline void Ps2SetGprLow64(R5900Context *ctx, int reg, __m128i new_low)
+PS2_HOT_INLINE void Ps2SetGprLow64(R5900Context *ctx, int reg, __m128i new_low)
 {
     if (reg != 0)
     {
-        ctx->r[reg] = _mm_castpd_si128(_mm_move_sd(_mm_castsi128_pd(ctx->r[reg]), _mm_castsi128_pd(new_low)));
+        const uint64_t value = static_cast<uint64_t>(_mm_cvtsi128_si64(new_low));
+        std::memcpy(&ctx->r[reg], &value, sizeof(value));
     }
 }
 

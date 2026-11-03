@@ -508,6 +508,8 @@ void GS::refreshDisplaySnapshot()
     snapshotVRAM();
 }
 
+std::atomic<bool> g_gsForceReadback{false}; // next presentation returns pixels (test frame dumps)
+
 GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 {
     GSPresentationRequest request{};
@@ -526,12 +528,15 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.preferredSource = m_preferredDisplaySourceFrame;
     request.preferredDestFbp = m_preferredDisplayDestFbp;
     request.hasPreferredSource = m_hasPreferredDisplaySource;
+    request.forceReadback = g_gsForceReadback.exchange(false, std::memory_order_relaxed);
     return request;
 }
 
 void GS::latchHostPresentationFrame()
 {
     GSPresentationRequest request{};
+    PresentationFrame frame{};
+    bool presented = false;
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
         if (!m_backend || !m_privRegs)
@@ -543,9 +548,20 @@ void GS::latchHostPresentationFrame()
             return;
         }
         request = buildPresentationRequestUnlocked();
+        // Queued presents must enter the renderer's queue at the point the display registers were read: the frontend
+        // holds this lock per packet, and left free it would queue the first draws of the next frame into the buffer that
+        // is about to be shown, which then appears half drawn for one frame.
+        if (m_backend->UsesSharedPresentation() && !request.forceReadback)
+        {
+            std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+            m_backend->Flush();
+            m_backend->Sync(GSSyncReason::Presentation);
+            frame = m_backend->Present(request);
+            presented = true;
+        }
     }
 
-    PresentationFrame frame{};
+    if (!presented)
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
         if (m_backend)

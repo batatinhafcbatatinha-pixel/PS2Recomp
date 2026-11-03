@@ -6,6 +6,7 @@
 #include "gs_inventory.h"
 #include "ThreadPriority.h"
 #include "ThreadNaming.h"
+#include "../ps2_timeline.h"
 
 #include <atomic>
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <cstdio>
 #include <xmmintrin.h>
+#include <intrin.h>
 #include <chrono>
 
 void ps2ProfilerRegisterCurrentThread(const char *name);
@@ -188,8 +190,11 @@ void GSThreadedBackend::PublishLocked()
                           { return m_stop || m_pending.size() < m_queueChunkLimit; });
             noteWait(kWaitQueueFull, std::chrono::steady_clock::now() - t0);
         }
+        if (m_pending.size() >= m_queueChunkLimit)
+            PS2TL(TL_QUEUE_FULL_BEGIN);
         m_doneCv.wait(lock, [&]
                       { return m_stop || m_pending.size() < m_queueChunkLimit; });
+        PS2TL(TL_QUEUE_FULL_END);
         m_pending.push_back(std::move(m_open));
         ++m_published;
         if (!m_spare.empty())
@@ -234,8 +239,11 @@ void GSThreadedBackend::WorkerLoop()
         std::vector<uint8_t> chunk;
         {
             std::unique_lock<std::mutex> lock(m_queueMutex);
+            if (m_pending.empty())
+                PS2TL(TL_GS_IDLE);
             m_workCv.wait(lock, [&]
                           { return m_stop || !m_pending.empty(); });
+            PS2TL(TL_GS_BUSY, static_cast<uint32_t>(m_pending.size()));
             if (m_stop)
             {
                 m_inner.reset();
@@ -258,17 +266,54 @@ void GSThreadedBackend::WorkerLoop()
     }
 }
 
+static uint32_t s_phasePresents = 0u;
+
 void GSThreadedBackend::Execute(const std::vector<uint8_t> &chunk, GSPrimitiveBatch &draw)
 {
     const uint8_t *data = chunk.data();
     const size_t size = chunk.size();
     size_t offset = 0u;
+    // PS2X_GS_PHASES=1: count, bytes and time per kind of queued operation, every 120 presents.
+    static const bool phases = std::getenv("PS2X_GS_PHASES") != nullptr;
+    static uint64_t phaseTicks[16], phaseCount[16], phaseBytes[16];
+    uint64_t phaseStart = 0u;
+    int phaseOp = -1;
     while (offset + 5u <= size)
     {
         const Op op = static_cast<Op>(data[offset]);
         const uint32_t length = readAt<uint32_t>(data + offset + 1u);
         const uint8_t *payload = data + offset + 5u;
         offset += 5u + length;
+        if (phases)
+        {
+            const uint64_t now = __rdtsc();
+            if (phaseOp >= 0)
+                phaseTicks[phaseOp] += now - phaseStart;
+            phaseStart = now;
+            phaseOp = static_cast<int>(op) & 15;
+            ++phaseCount[phaseOp];
+            phaseBytes[phaseOp] += length;
+            if (op == Op::Present && ++s_phasePresents == 120u)
+            {
+                s_phasePresents = 0u;
+                std::fprintf(stderr, "[gs:phases]");
+                for (int i = 0; i < 16; ++i)
+                    if (phaseCount[i])
+                        std::fprintf(stderr, " op%d n=%.0f kb=%.0f mcyc=%.2f;", i, phaseCount[i] / 120.0, phaseBytes[i] / 120.0 / 1024.0, phaseTicks[i] / 120.0 / 1e6);
+                std::fprintf(stderr, " upload-kb:");
+                extern uint64_t g_uploadBytesByPsm[64];
+                for (int i = 0; i < 64; ++i)
+                    if (g_uploadBytesByPsm[i])
+                    {
+                        std::fprintf(stderr, " psm%02x=%.0f", i, g_uploadBytesByPsm[i] / 120.0 / 1024.0);
+                        g_uploadBytesByPsm[i] = 0u;
+                    }
+                std::fputc(10, stderr);
+                std::memset(phaseCount, 0, sizeof(phaseCount));
+                std::memset(phaseBytes, 0, sizeof(phaseBytes));
+                std::memset(phaseTicks, 0, sizeof(phaseTicks));
+            }
+        }
         switch (op)
         {
         case Op::Mxcsr:
@@ -311,13 +356,17 @@ void GSThreadedBackend::Execute(const std::vector<uint8_t> &chunk, GSPrimitiveBa
                 m_inner->Submit(draw);
             break;
         case Op::Present:
+            PS2TL(TL_PRESENT_BEGIN);
             m_inner->Present(readAt<GSPresentationRequest>(payload));
+            PS2TL(TL_PRESENT_END);
             break;
         case Op::Call:
             (*readAt<const std::function<void()> *>(payload))();
             break;
         }
     }
+    if (phases && phaseOp >= 0)
+        phaseTicks[phaseOp] += __rdtsc() - phaseStart;
 }
 
 void GSThreadedBackend::RunOnWorker(const std::function<void()> &function) const

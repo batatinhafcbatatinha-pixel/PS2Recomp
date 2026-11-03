@@ -14,6 +14,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -71,6 +72,7 @@ namespace host_menu {
     inline int vsync = 0;
     inline int volume = 100;
     inline int showFps = 0;
+    inline int fxaa = 0;              // 0 off, 1-3 FXAA low to high, 4-7 supersampling 2x, 4x, 8x, 16x
     inline int vibration = 1;
     inline bool hasModernLayout = false;  // games with a remapped pad layout
     // The mouse is the right stick, so a game with its own sensitivity and invert options applies them to the mouse:
@@ -86,12 +88,109 @@ namespace host_menu {
 
     inline const char *T(const char *pt, const char *en) { return portuguese ? pt : en; }
 
+
+    // FXAA over the upscaled picture. The PS2 frame stays at its own resolution, so this softens
+    // its stair-steps and shimmer where the plain bilinear filter leaves them visible.
+    inline const char *kFxaaShader = R"(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+out vec4 finalColor;
+uniform sampler2D texture0;
+uniform vec2 texel;
+uniform float spanMax;
+uniform float reduceMul;
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main() {
+    vec3 center = texture(texture0, fragTexCoord).rgb;
+    float lumaM = luma(center);
+    float lumaNW = luma(texture(texture0, fragTexCoord + vec2(-1.0, -1.0) * texel).rgb);
+    float lumaNE = luma(texture(texture0, fragTexCoord + vec2( 1.0, -1.0) * texel).rgb);
+    float lumaSW = luma(texture(texture0, fragTexCoord + vec2(-1.0,  1.0) * texel).rgb);
+    float lumaSE = luma(texture(texture0, fragTexCoord + vec2( 1.0,  1.0) * texel).rgb);
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    vec2 dir = vec2(-((lumaNW + lumaNE) - (lumaSW + lumaSE)), (lumaNW + lumaSW) - (lumaNE + lumaSE));
+    float reduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.25 * reduceMul, 1.0 / 128.0);
+    float scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+    dir = clamp(dir * scale, vec2(-spanMax), vec2(spanMax)) * texel;
+    vec3 a = 0.5 * (texture(texture0, fragTexCoord + dir * (1.0 / 3.0 - 0.5)).rgb +
+                    texture(texture0, fragTexCoord + dir * (2.0 / 3.0 - 0.5)).rgb);
+    vec3 b = a * 0.5 + 0.25 * (texture(texture0, fragTexCoord - dir * 0.5).rgb +
+                               texture(texture0, fragTexCoord + dir * 0.5).rgb);
+    float lumaB = luma(b);
+    finalColor = vec4(lumaB < lumaMin || lumaB > lumaMax ? a : b, 1.0) * fragColor;
+}
+)";
+    inline Shader fxaaProgram{};
+    inline bool beginFxaa(float textureWidth, float textureHeight) {
+        if (fxaa <= 0 || fxaa > 3) return false;
+        if (fxaaProgram.id == 0) fxaaProgram = LoadShaderFromMemory(nullptr, kFxaaShader);
+        if (!IsShaderValid(fxaaProgram)) return false;
+        const float texel[2] = {1.0f / textureWidth, 1.0f / textureHeight};
+        const float spans[3] = {4.0f, 8.0f, 16.0f}, reductions[3] = {1.0f / 4.0f, 1.0f / 8.0f, 1.0f / 16.0f};
+        SetShaderValue(fxaaProgram, GetShaderLocation(fxaaProgram, "texel"), texel, SHADER_UNIFORM_VEC2);
+        SetShaderValue(fxaaProgram, GetShaderLocation(fxaaProgram, "spanMax"), &spans[fxaa - 1], SHADER_UNIFORM_FLOAT);
+        SetShaderValue(fxaaProgram, GetShaderLocation(fxaaProgram, "reduceMul"), &reductions[fxaa - 1], SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(fxaaProgram);
+        return true;
+    }
+
+    // A frame rendered above the window's size: a plain bilinear fetch would skip most of its pixels, so average them.
+    inline const char *kBoxShader = R"(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+out vec4 finalColor;
+uniform sampler2D texture0;
+uniform vec2 texel;
+uniform int taps;
+void main() {
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < taps; ++y)
+        for (int x = 0; x < taps; ++x)
+            sum += texture(texture0, fragTexCoord + (vec2(x, y) - 0.5 * float(taps - 1)) * texel).rgb;
+    finalColor = vec4(sum / float(taps * taps), 1.0) * fragColor;
+}
+)";
+    inline Shader boxProgram{};
+    inline bool beginDownscale(float textureWidth, float textureHeight, float ratio) {
+        if (filter == 0 || (fxaa >= 1 && fxaa <= 3) || ratio <= 1.2f) return false;
+        if (boxProgram.id == 0) boxProgram = LoadShaderFromMemory(nullptr, kBoxShader);
+        if (!IsShaderValid(boxProgram)) return false;
+        const float texel[2] = {1.0f / textureWidth, 1.0f / textureHeight};
+        const int taps = std::clamp(static_cast<int>(std::ceil(ratio)), 2, 8);
+        SetShaderValue(boxProgram, GetShaderLocation(boxProgram, "texel"), texel, SHADER_UNIFORM_VEC2);
+        SetShaderValue(boxProgram, GetShaderLocation(boxProgram, "taps"), &taps, SHADER_UNIFORM_INT);
+        BeginShaderMode(boxProgram);
+        return true;
+    }
+
+    // Picture sizes offered by the menu. A size above the monitor still renders at that size and is shown scaled down.
+    inline std::vector<std::pair<int, int>> resolutions() {
+        return {{0, 0}, {1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080}, {2560, 1080}, {2560, 1440}, {3440, 1440}, {3840, 1600}, {3840, 2160}};
+    }
+    inline std::string resolutionName(int width, int height) {
+        std::string text = std::to_string(width) + "x" + std::to_string(height);
+        if (height == 2160) text += " (4K)";
+        else if (width == 2560 && height == 1440) text += " (2K)";
+        else if (width * 9 > height * 16 + 8) text += " (ultrawide)";
+        return text;
+    }
+    // Render targets scale the PS2's 448 lines by a whole factor, to at least the chosen height; supersampling multiplies
+    // the pixel count on top of that. The GS renderer reads it once, at startup.
+    inline int renderScale() {
+        const int height = host_video::resolutionHeight > 0 ? host_video::resolutionHeight : GetMonitorHeight(GetCurrentMonitor());
+        const float samples = fxaa > 3 ? static_cast<float>(1 << (fxaa - 3)) : 1.0f;
+        return std::clamp(static_cast<int>(std::ceil(height / 448.0f * std::sqrt(samples) - 0.001f)), 1, 12);
+    }
+    inline int startScale = 0;
+
     inline void save() {
         std::ofstream file("pc-settings.ini");
         file << "aspect=" << (host_video::stretch ? 1 : 0) << "\nfilter=" << filter << "\nvsync=" << vsync
              << "\nvolume=" << volume << "\nshow_fps=" << showFps << "\nmouse_look=" << mouseLook
              << "\nmouse_sensitivity=" << mouseSensitivity << "\nmouse_invert=" << mouseInvert
-             << "\nmodern_layout=" << modernLayout << "\nvibration=" << vibration << "\n";
+             << "\nmodern_layout=" << modernLayout << "\nvibration=" << vibration << "\nfxaa=" << fxaa
+             << "\nres_w=" << host_video::resolutionWidth << "\nres_h=" << host_video::resolutionHeight << "\n";
     }
     inline void load() {
         std::ifstream file("pc-settings.ini");
@@ -110,6 +209,9 @@ namespace host_menu {
         vsync = get("vsync", 0, 0, 1);
         volume = get("volume", 100, 0, 100);
         showFps = get("show_fps", 0, 0, 1);
+        fxaa = get("fxaa", 0, 0, 7);
+        host_video::resolutionWidth = get("res_w", 0, 0, 7680);
+        host_video::resolutionHeight = get("res_h", 0, 0, 4320);
         // The shooter starts with PC controls; the other games have no free camera for the mouse to turn.
         hasModernLayout = gameHasLookOptions = std::strcmp(theme->gameId, "SLUS_217.46") == 0;
         vibration = get("vibration", 1, 0, 1);
@@ -117,6 +219,15 @@ namespace host_menu {
         mouseSensitivity = gameHasLookOptions ? 100 : get("mouse_sensitivity", 100, 10, 300);
         mouseInvert = gameHasLookOptions ? 0 : get("mouse_invert", 0, 0, 1);
         modernLayout = hasModernLayout ? get("modern_layout", 1, 0, 1) : 0;
+        startScale = renderScale();
+        if (!std::getenv("PS2X_GS_HW_SCALE")) {
+            const std::string value = std::to_string(startScale);
+#if defined(_WIN32)
+            _putenv_s("PS2X_GS_HW_SCALE", value.c_str());
+#else
+            setenv("PS2X_GS_HW_SCALE", value.c_str(), 1);
+#endif
+        }
     }
     inline void applyRuntime() {
         if (vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
@@ -138,6 +249,7 @@ namespace host_menu {
         portuguese = lang && std::strncmp(lang, "pt", 2) == 0;
 #endif
         load();
+        if (host_video::resolutionWidth > 0) host_video::apply(host_video::mode, false);
         applyRuntime();
         host_pad::initialize();
         std::vector<int> codepoints;
@@ -175,12 +287,13 @@ namespace host_menu {
     }
 
     struct Item { std::string label, value; int id; float slider = -1.0f; };  // slider: 0 to 1, drawn as a bar
-    enum { kDisplay, kMonitor, kAspect, kFilter, kVsync, kVolume, kFps, kVibration, kLayout, kMouseLook, kMouseSpeed, kMouseInvert, kResume };
+    enum { kDisplay, kMonitor, kResolution, kAspect, kFilter, kFxaa, kVsync, kVolume, kFps, kVibration, kLayout, kMouseLook, kMouseSpeed, kMouseInvert, kResume };
     constexpr int kMinSensitivity = 10, kMaxSensitivity = 300;
     constexpr float kSliderOffset = 330.0f, kSliderWidth = 220.0f;  // from the right edge of the rows
 
     inline std::vector<Item> items() {
         std::vector<Item> list;
+        const std::string restart = renderScale() != startScale ? T(" - ao reiniciar", " - after restart") : "";
         const char *modes[] = {T("Janela", "Window"), T("Tela cheia sem bordas", "Borderless fullscreen"), T("Tela cheia", "Fullscreen")};
         const int mode = host_video::mode == host_video::Mode::Windowed ? 0 : host_video::mode == host_video::Mode::Borderless ? 1 : 2;
         list.push_back({T("Modo de exibição", "Display mode"), modes[mode], kDisplay});
@@ -189,8 +302,13 @@ namespace host_menu {
             list.push_back({"Monitor", std::to_string(monitor + 1) + " (" + std::to_string(GetMonitorWidth(monitor)) + "x" +
                                            std::to_string(GetMonitorHeight(monitor)) + ")", kMonitor});
         }
+        list.push_back({T("Resolução", "Resolution"), host_video::resolutionWidth > 0
+                            ? resolutionName(host_video::resolutionWidth, host_video::resolutionHeight) + restart
+                            : std::string(T("Automática", "Automatic")) + restart, kResolution});
         list.push_back({T("Proporção", "Aspect ratio"), host_video::stretch ? T("Esticada", "Stretched") : T("4:3 (original)", "4:3 (original)"), kAspect});
         list.push_back({T("Filtro da imagem", "Picture filter"), filter ? T("Suave", "Smooth") : T("Nítido (pixels)", "Sharp (pixels)"), kFilter});
+        const char *aaLevels[] = {T("Desligada", "Off"), "FXAA 1", "FXAA 2", "FXAA 3", "SSAA 2x", "SSAA 4x", "SSAA 8x", "SSAA 16x"};
+        list.push_back({T("Suavização", "Anti-aliasing"), std::string(aaLevels[fxaa]) + (fxaa > 3 ? restart : ""), kFxaa});
         list.push_back({T("Sincronização vertical", "Vertical sync"), vsync ? T("Ligada", "On") : T("Desligada", "Off"), kVsync});
         list.push_back({T("Volume", "Volume"), std::to_string(volume) + "%", kVolume});
         list.push_back({T("Mostrar FPS", "Show FPS"), showFps ? T("Sim", "Yes") : T("Não", "No"), kFps});
@@ -234,6 +352,18 @@ namespace host_menu {
             host_video::apply(mode, false);
             break;
         }
+        case kResolution: {
+            const auto list = resolutions();
+            size_t index = 0;
+            for (size_t i = 0; i < list.size(); ++i)
+                if (list[i].first == host_video::resolutionWidth && list[i].second == host_video::resolutionHeight) index = i;
+            const auto &next = list[(index + list.size() + direction) % list.size()];
+            host_video::resolutionWidth = next.first;
+            host_video::resolutionHeight = next.second;
+            host_video::apply(host_video::mode, false);
+            break;
+        }
+        case kFxaa: fxaa = (fxaa + direction + 8) % 8; break;
         case kAspect: host_video::stretch = !host_video::stretch; break;
         case kFilter: filter = !filter; break;
         case kVsync: vsync = !vsync; applyRuntime(); break;

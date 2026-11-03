@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <emmintrin.h>
 
 enum VIFCmd : uint8_t
 {
@@ -34,6 +35,128 @@ enum VIFCmd : uint8_t
 namespace
 {
     constexpr uint8_t kGifFmtImage = 2u;
+
+    // UNPACK, one loop per format and one for the write stage. Same results as the general loop below it, which stays for
+    // CL < WL (fill writes), the undefined formats and the command trace. A frame unpacks hundreds of thousands of vectors.
+    template <uint32_t Comps, typename T, bool Signed>
+    void decodeUnpack(const uint8_t *src, uint32_t count, __m128i *out)
+    {
+        for (uint32_t i = 0u; i < count; ++i, src += Comps * sizeof(T))
+        {
+            uint32_t v[4] = {};
+            for (uint32_t c = 0u; c < Comps; ++c)
+            {
+                T raw;
+                std::memcpy(&raw, src + c * sizeof(T), sizeof(T));
+                if constexpr (sizeof(T) == 4u)
+                    v[c] = static_cast<uint32_t>(raw);
+                else if constexpr (sizeof(T) == 2u)
+                    v[c] = Signed ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(raw))) : static_cast<uint32_t>(raw);
+                else
+                    v[c] = Signed ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(raw))) : static_cast<uint32_t>(raw);
+            }
+            // built from registers: a load of four words just stored would pay a failed store forward per vector
+            if constexpr (Comps == 1u)
+                out[i] = _mm_set1_epi32(static_cast<int>(v[0]));
+            else
+                out[i] = _mm_set_epi32(static_cast<int>(v[3]), static_cast<int>(v[2]), static_cast<int>(v[1]), static_cast<int>(v[0]));
+        }
+    }
+
+    void decodeUnpackV45(const uint8_t *src, uint32_t count, __m128i *out)
+    {
+        for (uint32_t i = 0u; i < count; ++i, src += 2u)
+        {
+            uint16_t p;
+            std::memcpy(&p, src, 2u);
+            out[i] = _mm_set_epi32((p >> 15) << 7, ((p >> 10) & 0x1F) << 3, ((p >> 5) & 0x1F) << 3, (p & 0x1F) << 3);
+        }
+    }
+
+    bool decodeUnpackAny(uint32_t vl, uint32_t comps, bool zeroExtend, const uint8_t *src, uint32_t count, __m128i *out)
+    {
+        switch ((vl << 4) | comps)
+        {
+        case 0x01: decodeUnpack<1u, uint32_t, false>(src, count, out); return true;
+        case 0x02: decodeUnpack<2u, uint32_t, false>(src, count, out); return true;
+        case 0x03: decodeUnpack<3u, uint32_t, false>(src, count, out); return true;
+        case 0x04: decodeUnpack<4u, uint32_t, false>(src, count, out); return true;
+        case 0x11: zeroExtend ? decodeUnpack<1u, uint16_t, false>(src, count, out) : decodeUnpack<1u, uint16_t, true>(src, count, out); return true;
+        case 0x12: zeroExtend ? decodeUnpack<2u, uint16_t, false>(src, count, out) : decodeUnpack<2u, uint16_t, true>(src, count, out); return true;
+        case 0x13: zeroExtend ? decodeUnpack<3u, uint16_t, false>(src, count, out) : decodeUnpack<3u, uint16_t, true>(src, count, out); return true;
+        case 0x14: zeroExtend ? decodeUnpack<4u, uint16_t, false>(src, count, out) : decodeUnpack<4u, uint16_t, true>(src, count, out); return true;
+        case 0x21: zeroExtend ? decodeUnpack<1u, uint8_t, false>(src, count, out) : decodeUnpack<1u, uint8_t, true>(src, count, out); return true;
+        case 0x22: zeroExtend ? decodeUnpack<2u, uint8_t, false>(src, count, out) : decodeUnpack<2u, uint8_t, true>(src, count, out); return true;
+        case 0x23: zeroExtend ? decodeUnpack<3u, uint8_t, false>(src, count, out) : decodeUnpack<3u, uint8_t, true>(src, count, out); return true;
+        case 0x24: zeroExtend ? decodeUnpack<4u, uint8_t, false>(src, count, out) : decodeUnpack<4u, uint8_t, true>(src, count, out); return true;
+        case 0x34: decodeUnpackV45(src, count, out); return true;
+        default: return false;
+        }
+    }
+
+    // CL >= WL: every write has a source vector and the destination skips CL - WL vectors per block.
+    void writeUnpack(uint8_t *vuData, const __m128i *decoded, uint32_t count, uint32_t vuAddr, uint32_t cl, uint32_t wl, uint32_t comps,
+                     bool scalarBroadcast, bool canAdd, uint32_t mode, bool masked, uint32_t mask, uint32_t *row, const uint32_t *col)
+    {
+        const auto all = _mm_set1_epi32(-1);
+        const auto fieldMask = [](uint32_t bits) {
+            return _mm_set_epi32(bits & 8u ? -1 : 0, bits & 4u ? -1 : 0, bits & 2u ? -1 : 0, bits & 1u ? -1 : 0);
+        };
+        const __m128i present = scalarBroadcast ? all : fieldMask((1u << comps) - 1u); // fields the format does not carry keep memory
+        const uint32_t addMode = canAdd && (mode == 1u || mode == 2u) ? mode : 0u;
+        __m128i raw[4], useRow[4], useCol[4], protect[4];
+        for (uint32_t cycle = 0u; cycle < 4u; ++cycle)
+        {
+            uint32_t bits[4] = {};
+            for (uint32_t field = 0u; field < 4u && masked; ++field)
+                bits[(mask >> (((cycle * 4u) + field) * 2u)) & 3u] |= 1u << field;
+            raw[cycle] = masked ? fieldMask(bits[0]) : all;
+            useRow[cycle] = fieldMask(bits[1]);
+            useCol[cycle] = _mm_and_si128(fieldMask(bits[2]), _mm_set1_epi32(static_cast<int>(col[cycle])));
+            protect[cycle] = fieldMask(bits[3]);
+        }
+        if (!masked && addMode == 0u && (scalarBroadcast || comps == 4u))
+        {
+            // the common case: every field comes from the stream
+            uint32_t cycle = 0u, base = 0u;
+            for (uint32_t i = 0u; i < count; ++i)
+            {
+                _mm_storeu_si128(reinterpret_cast<__m128i *>(vuData + ((vuAddr + base + cycle) & 0x3FFu) * 16u), decoded[i]);
+                if (++cycle == wl)
+                {
+                    cycle = 0u;
+                    base += cl;
+                }
+            }
+            return;
+        }
+        __m128i rowValue = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row));
+        uint32_t cyclePos = 0u, blockBase = 0u;
+        for (uint32_t i = 0u; i < count; ++i)
+        {
+            const uint32_t destVec = (vuAddr + blockBase + cyclePos) & 0x3FFu;
+            __m128i *dest = reinterpret_cast<__m128i *>(vuData + destVec * 16u);
+            const uint32_t c = cyclePos > 3u ? 3u : cyclePos;
+            const __m128i old = _mm_loadu_si128(dest);
+            __m128i value = _mm_or_si128(_mm_and_si128(decoded[i], present), _mm_andnot_si128(present, old));
+            if (addMode != 0u)
+            {
+                value = _mm_add_epi32(value, rowValue);
+                if (addMode == 2u)
+                    rowValue = _mm_or_si128(_mm_and_si128(value, raw[c]), _mm_andnot_si128(raw[c], rowValue));
+            }
+            value = _mm_and_si128(value, raw[c]);
+            if (masked)
+                value = _mm_or_si128(_mm_or_si128(value, _mm_and_si128(rowValue, useRow[c])), _mm_or_si128(useCol[c], _mm_and_si128(old, protect[c])));
+            _mm_storeu_si128(dest, value);
+            if (++cyclePos == wl)
+            {
+                cyclePos = 0u;
+                blockBase += cl;
+            }
+        }
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(row), rowValue);
+    }
 
     uint32_t pendingGifImageQwc(const uint8_t *data, uint32_t sizeBytes)
     {
@@ -588,9 +711,13 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
             }
             if (m_vu1Code && destAddr < PS2_VU1_CODE_SIZE)
             {
+                // Games send their microprograms again and again: unchanged code changes nothing.
                 const uint32_t copyBytes = std::min(mpgBytes, PS2_VU1_CODE_SIZE - destAddr);
-                std::memcpy(m_vu1Code + destAddr, data + pos, copyBytes);
-                markVU1CodeModified();
+                if (std::memcmp(m_vu1Code + destAddr, data + pos, copyBytes) != 0)
+                {
+                    std::memcpy(m_vu1Code + destAddr, data + pos, copyBytes);
+                    markVU1CodeModified();
+                }
             }
             pos += mpgBytes;
             continue;
@@ -712,7 +839,15 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                 carry(cmdStart);
                 return;
             }
-            if (m_vu1Data) // CL=0 fills still write with no source bytes
+            static const bool unpackTrace = std::getenv("PS2X_VIF_CMD_TRACE") != nullptr;
+            alignas(16) __m128i decodedVectors[256];
+            if (m_vu1Data && cl >= wl && !unpackTrace &&
+                decodeUnpackAny(vl, static_cast<uint32_t>(components), zeroExtend, data + pos, writeVectorCount, decodedVectors))
+            {
+                writeUnpack(m_vu1Data, decodedVectors, writeVectorCount, vuAddr, cl, wl, static_cast<uint32_t>(components), components == 1,
+                            vl != 3u || vn != 3u, vif1_regs.mode & 3u, maskEnable, vif1_regs.mask, vif1_regs.row, vif1_regs.col);
+            }
+            else if (m_vu1Data) // CL=0 fills still write with no source bytes
             {
                 const uint8_t *srcBase = data + pos;
                 uint32_t srcIndex = 0u;

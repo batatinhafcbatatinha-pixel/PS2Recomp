@@ -385,9 +385,42 @@ namespace GSMem
         template<PixelStorageMode psm, typename Table, typename Fetch>
         void writeRunT(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, Fetch fetch)
         {
-            using Packed = typename PixelStorageTraits<psm>::PackedT;
-            for (u32 i = 0; i < count; ++i)
-                PixelStorageTraits<psm>::Write(table, data, bp, bw, x + i, y, static_cast<Packed>(fetch(i)));
+            using Traits = PixelStorageTraits<psm>;
+            using Packed = typename Traits::PackedT;
+            if constexpr (psm == C32 || psm == P8 || psm == P4)
+            {
+                // Texture uploads, thousands of pixels per draw: the row of the page table and the page row are the same
+                // for the whole run, so only the column is looked up per pixel.
+                const auto extent = Traits::PageExtent();
+                const u32 pages = bp / static_cast<u32>(Traits::BlocksPerPage()) + (y / extent.y) * ((bw * 64u) / extent.x);
+                const u16 *row = &table[bp % static_cast<u32>(Traits::BlocksPerPage())][y % extent.y][0];
+                const u32 perPage = static_cast<u32>(Traits::PixelsPerPage());
+                for (u32 i = 0; i < count;)
+                {
+                    // one page at a time: inside it only the table lookup changes
+                    const u32 column = (x + i) % extent.x, page = (x + i) / extent.x;
+                    const u32 run = std::min<u32>(count - i, extent.x - column), base = (pages + page) * perPage;
+                    for (u32 k = 0; k < run; ++k)
+                    {
+                        const u32 address = base + row[column + k];
+                        const u32 value = static_cast<u32>(fetch(i + k));
+                        if constexpr (psm == C32)
+                            std::memcpy(&data[(address * 4u) & (MEMORY_SIZE - 4u)], &value, 4u);
+                        else if constexpr (psm == P8)
+                            data[address & (MEMORY_SIZE - 1u)] = static_cast<u8>(value);
+                        else
+                        {
+                            u8 &target = data[(address >> 1u) & (MEMORY_SIZE - 1u)];
+                            const u32 shift = (address & 1u) * 4u;
+                            target = static_cast<u8>((target & ~(0xFu << shift)) | ((value & 0xFu) << shift));
+                        }
+                    }
+                    i += run;
+                }
+            }
+            else
+                for (u32 i = 0; i < count; ++i)
+                    Traits::Write(table, data, bp, bw, x + i, y, static_cast<Packed>(fetch(i)));
         }
     }
 
