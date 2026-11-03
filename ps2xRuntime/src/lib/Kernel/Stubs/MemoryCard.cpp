@@ -155,8 +155,14 @@ namespace ps2_stubs
 
         void ensureMcRootExists(int32_t port)
         {
+            // Asked on every card poll, from the game thread.
+            static std::array<bool, 8> ready{};
+            const size_t slot = static_cast<size_t>(port) % ready.size();
+            if (ready[slot])
+                return;
             std::error_code ec;
             std::filesystem::create_directories(getMcRootPath(port), ec);
+            ready[slot] = !ec;
         }
 
         std::vector<std::string> splitMcPathComponents(const std::string &value)
@@ -928,9 +934,15 @@ namespace ps2_stubs
             }
         }
 
-        RUNTIME_LOG("[MC] GetInfo port=" << port << " type=" << cardType
+        // Games poll the card every frame: log changes only, a console write per frame stalls the guest thread.
+        static int lastInfo[4] = {-1, -1, -1, -1};
+        if (lastInfo[0] != static_cast<int>(port) || lastInfo[1] != static_cast<int>(cardType) || lastInfo[2] != static_cast<int>(freeBlocks) || lastInfo[3] != static_cast<int>(result))
+        {
+            lastInfo[0] = static_cast<int>(port), lastInfo[1] = static_cast<int>(cardType), lastInfo[2] = static_cast<int>(freeBlocks), lastInfo[3] = static_cast<int>(result);
+            RUNTIME_LOG("[MC] GetInfo port=" << port << " type=" << cardType
                                          << " free=" << freeBlocks << " format=" << format
                                          << " result=" << result);
+        }
         setReturnS32(ctx, 0);
     }
 
@@ -1236,7 +1248,12 @@ namespace ps2_stubs
             return;
         }
 
-        RUNTIME_LOG("[MC] Sync cmd=" << cmd << " result=" << result);
+        static int lastSync[2] = {-1000, -1000};
+        if (lastSync[0] != static_cast<int>(cmd) || lastSync[1] != static_cast<int>(result))
+        {
+            lastSync[0] = static_cast<int>(cmd), lastSync[1] = static_cast<int>(result);
+            RUNTIME_LOG("[MC] Sync cmd=" << cmd << " result=" << result);
+        }
 
         if (cmdPtr != 0u)
         {

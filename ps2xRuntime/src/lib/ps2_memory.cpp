@@ -1,4 +1,6 @@
 #include "runtime/ps2_memory.h"
+#include "ps2_timeline.h"
+#include <intrin.h>
 #include <condition_variable>
 #include <deque>
 #include <thread>
@@ -345,9 +347,26 @@ namespace
         bool privWrite = false;
         uint32_t privAddress = 0u;
         uint64_t privValue = 0u, privMask = 0u;
+        std::vector<uint8_t> gsPacket;
     };
     std::atomic<uint32_t> g_deferredPrivWrites{0};
     constexpr uint32_t kGsPrivPacketBytes = 20u; // GIF packets are whole qwords
+    // The VU thread hands the frontend batches, not single packets: a mutex and a wake per packet, over 100,000 a second,
+    // was a tenth of its time. Each record: size, padding to 16 bytes, the packet.
+    constexpr uint32_t kGsBatchHeader = 16u;
+    constexpr size_t kGsBatchBytes = 256u * 1024u, kGsBatchQueue = 128u;
+    // grows without zeroing what is about to be overwritten
+    template <typename T>
+    struct NoInitAllocator : std::allocator<T>
+    {
+        template <typename U> struct rebind { using other = NoInitAllocator<U>; };
+        template <typename U, typename... Args>
+        void construct(U *where, Args &&...args) { ::new (static_cast<void *>(where)) U(std::forward<Args>(args)...); }
+        template <typename U>
+        void construct(U *where) { ::new (static_cast<void *>(where)) U; }
+    };
+    using GsBatch = std::vector<uint8_t, NoInitAllocator<uint8_t>>;
+    GsBatch g_gsBatch; // VU thread only
     struct VifWorker
     {
         std::thread thread;
@@ -365,8 +384,8 @@ namespace
         std::thread thread;
         std::mutex mutex;
         std::condition_variable work, idle;
-        std::deque<std::vector<uint8_t>> queue;
-        std::vector<std::vector<uint8_t>> spare;
+        std::deque<GsBatch> queue;
+        std::vector<GsBatch> spare;
         std::atomic<uint64_t> submitted{0}, done{0};
         bool stop = false;
         std::function<void(const uint8_t *, uint32_t)> process;
@@ -386,6 +405,8 @@ namespace
         g_path3Consumed = 0u;
     }
 }
+
+static void flushGsBatch();
 
 bool PS2Memory::onVifWorker() { return t_onVifWorker; }
 uint32_t PS2Memory::vifJobFbrst() { return t_vifFbrst; }
@@ -411,6 +432,7 @@ void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource, std::funct
                 job = std::move(g_vifWorker.queue.front());
                 g_vifWorker.queue.pop_front();
             }
+            PS2TL(TL_VIF_BEGIN, static_cast<uint32_t>(job.vif1.size()), job.privWrite ? job.privAddress : static_cast<uint32_t>(job.gif.size()));
             t_vifFbrst = job.fbrst;
             if (job.privWrite)
             {
@@ -422,10 +444,26 @@ void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource, std::funct
                 if (!queueGsPacket(record, sizeof(record)))
                     applyGsPrivWrite(job.privAddress, job.privValue, job.privMask);
             }
-            runGifTransfers(job.gif);
-            runVif1Transfers(job.vif1);
+            if (!job.gsPacket.empty())
+                queueGsPacket(job.gsPacket.data(), static_cast<uint32_t>(job.gsPacket.size()));
+            static const bool asyncPaths = std::getenv("PS2X_ASYNC_PATHS") != nullptr;
+            if (asyncPaths && !job.gif.empty() && m_path3Masked)
+            {
+                m_path3MaskedFifo.clear();
+                resetPath3Stream();
+            }
+            // PS2X_DROP_VIF_AT=<s>: stage ceiling test, from then on the VIF work is thrown away.
+            static const double dropAt = std::getenv("PS2X_DROP_VIF_AT") ? std::atof(std::getenv("PS2X_DROP_VIF_AT")) : 0.0;
+            static const auto workerStart = std::chrono::steady_clock::now();
+            if (dropAt <= 0.0 || std::chrono::duration<double>(std::chrono::steady_clock::now() - workerStart).count() < dropAt)
+            {
+                runGifTransfers(job.gif);
+                runVif1Transfers(job.vif1);
+            }
             if (m_gifArbiter)
                 m_gifArbiter->drain();
+            flushGsBatch();
+            PS2TL(TL_VIF_END);
             g_vifWorker.done.fetch_add(1u, std::memory_order_release);
             std::lock_guard<std::mutex> lock(g_vifWorker.mutex);
             g_vifWorker.idle.notify_all();
@@ -440,27 +478,35 @@ void PS2Memory::startVifWorker(std::function<uint32_t()> fbrstSource, std::funct
             ps2ProfilerRegisterCurrentThread("gsfe");
             for (;;)
             {
-                std::vector<uint8_t> packet;
+                GsBatch packet;
                 {
                     std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
+                    if (g_gsWorker.queue.empty())
+                        PS2TL(TL_GSFE_IDLE);
                     g_gsWorker.work.wait(lock, [] { return g_gsWorker.stop || !g_gsWorker.queue.empty(); });
+                    PS2TL(TL_GSFE_BUSY, static_cast<uint32_t>(g_gsWorker.queue.size()));
                     if (g_gsWorker.queue.empty())
                         return;
                     packet = std::move(g_gsWorker.queue.front());
                     g_gsWorker.queue.pop_front();
                 }
-                if (packet.size() == kGsPrivPacketBytes)
+                for (size_t offset = 0u; offset < packet.size();)
                 {
-                    uint32_t address = 0u;
-                    uint64_t value = 0u, mask = 0u;
-                    std::memcpy(&address, packet.data(), 4);
-                    std::memcpy(&value, packet.data() + 4, 8);
-                    std::memcpy(&mask, packet.data() + 12, 8);
-                    applyGsPrivWrite(address, value, mask);
-                }
-                else
-                {
-                    g_gsWorker.process(packet.data(), static_cast<uint32_t>(packet.size()));
+                    uint32_t size = 0u;
+                    std::memcpy(&size, packet.data() + offset, 4);
+                    const uint8_t *record = packet.data() + offset + kGsBatchHeader;
+                    if (size == kGsPrivPacketBytes)
+                    {
+                        uint32_t address = 0u;
+                        uint64_t value = 0u, mask = 0u;
+                        std::memcpy(&address, record, 4);
+                        std::memcpy(&value, record + 4, 8);
+                        std::memcpy(&mask, record + 12, 8);
+                        applyGsPrivWrite(address, value, mask);
+                    }
+                    else
+                        g_gsWorker.process(record, size);
+                    offset += kGsBatchHeader + ((size + 15u) & ~15u);
                 }
                 g_gsWorker.done.fetch_add(1u, std::memory_order_release);
                 std::lock_guard<std::mutex> lock(g_gsWorker.mutex);
@@ -477,23 +523,36 @@ void PS2Memory::applyGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask
 {
     if (uint64_t *reg = gsRegPtr(gs_regs, address))
         *reg = (*reg & ~mask) | (value & mask);
+    PS2TL(TL_DISP_APPLY, address, static_cast<uint32_t>(value));
     g_deferredPrivWrites.fetch_sub(1u, std::memory_order_acq_rel);
 }
 
+static const uint32_t kMaxDeferredDisplayWrites = std::getenv("PS2X_DISPLAY_BACKLOG") ? static_cast<uint32_t>(std::atoi(std::getenv("PS2X_DISPLAY_BACKLOG"))) : 14u;
 bool PS2Memory::deferGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask)
 {
     if (!t_vifProducer || !g_vifWorker.enabled.load(std::memory_order_acquire))
         return false;
     const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
-    const bool displayReg = regOff == 0x0000u || (regOff >= 0x0070u && regOff <= 0x00A0u) || regOff == 0x00E0u;
+    const bool displayReg = regOff == 0x0000u || regOff == 0x0020u || (regOff >= 0x0070u && regOff <= 0x00A0u) || regOff == 0x00E0u;
     if (!displayReg)
         return false;
     if (g_vifWorker.done.load(std::memory_order_acquire) == g_vifWorker.submitted.load(std::memory_order_relaxed) &&
         g_gsWorker.done.load(std::memory_order_acquire) == g_gsWorker.submitted.load(std::memory_order_acquire))
         return false; // nothing to wait for
-    // PMODE/DISPFB/DISPLAY of one flip come together; more than a few writes queued means a whole frame is behind.
-    if (g_deferredPrivWrites.load(std::memory_order_acquire) >= 8u)
-        gifVifSync();
+    // PMODE/SMODE2/DISPFB/DISPLAY arrive together at every vblank; this many queued means several frames are behind.
+    if (g_deferredPrivWrites.load(std::memory_order_acquire) >= kMaxDeferredDisplayWrites)
+    {
+        // Wait for the backlog to shrink, not for the pipeline to empty: draining it would throw the overlap away.
+        PS2TL(TL_BACKLOG_BEGIN);
+        const auto waitStart = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> lock(g_vifWorker.mutex);
+        while (g_deferredPrivWrites.load(std::memory_order_acquire) + 5u >= kMaxDeferredDisplayWrites)
+            g_vifWorker.idle.wait_for(lock, std::chrono::microseconds(200));
+        lock.unlock();
+        g_perfSyncNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count();
+        PS2TL(TL_BACKLOG_END);
+    }
+    PS2TL(TL_DISP_DEFER, address, static_cast<uint32_t>(value));
     VifJob job;
     job.privWrite = true;
     job.privAddress = address;
@@ -509,28 +568,61 @@ bool PS2Memory::deferGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask
     return true;
 }
 
+bool PS2Memory::queueGsRegisterWrites(const uint64_t *pairs, size_t count)
+{
+    if (!t_vifProducer || !g_vifWorker.enabled.load(std::memory_order_acquire) || !g_gsWorker.thread.joinable() || count == 0u)
+        return false;
+    VifJob job;
+    job.gsPacket.resize((count + 1u) * 16u);
+    const uint64_t tag[2] = {static_cast<uint64_t>(count) | (1ull << 15u) | (1ull << 60u), 0x0Eull}; // EOP, PACKED, NREG 1: A+D
+    std::memcpy(job.gsPacket.data(), tag, sizeof(tag));
+    std::memcpy(job.gsPacket.data() + 16u, pairs, count * 16u);
+    g_vifWorker.submitted.fetch_add(1u, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(g_vifWorker.mutex);
+        g_vifWorker.queue.push_back(std::move(job));
+    }
+    g_vifWorker.work.notify_one();
+    return true;
+}
+
 bool PS2Memory::queueGsPacket(const uint8_t *data, uint32_t sizeBytes)
 {
     if (!t_onVifWorker || !g_gsWorker.process)
         return false;
-    std::vector<uint8_t> packet;
+    const size_t start = g_gsBatch.size();
+    g_gsBatch.resize(start + kGsBatchHeader + ((sizeBytes + 15u) & ~15u));
+    std::memcpy(g_gsBatch.data() + start, &sizeBytes, 4);
+    std::memcpy(g_gsBatch.data() + start + kGsBatchHeader, data, sizeBytes);
+    if (g_gsBatch.size() >= kGsBatchBytes)
+        flushGsBatch();
+    return true;
+}
+
+static void flushGsBatch()
+{
+    if (g_gsBatch.empty())
+        return;
+    GsBatch next;
     {
-        std::lock_guard<std::mutex> lock(g_gsWorker.mutex);
+        std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
+        if (g_gsWorker.queue.size() >= kGsBatchQueue)
+            PS2TL(TL_FEQ_BEGIN);
+        g_gsWorker.idle.wait(lock, [] { return g_gsWorker.queue.size() < kGsBatchQueue; });
+        PS2TL(TL_FEQ_END);
+        g_gsWorker.submitted.fetch_add(1u, std::memory_order_relaxed);
+        g_gsWorker.queue.push_back(std::move(g_gsBatch));
         if (!g_gsWorker.spare.empty())
         {
-            packet = std::move(g_gsWorker.spare.back());
+            next = std::move(g_gsWorker.spare.back());
             g_gsWorker.spare.pop_back();
         }
     }
-    packet.assign(data, data + sizeBytes);
-    {
-        std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
-        g_gsWorker.idle.wait(lock, [] { return g_gsWorker.queue.size() < 16384u; });
-        g_gsWorker.submitted.fetch_add(1u, std::memory_order_relaxed);
-        g_gsWorker.queue.push_back(std::move(packet));
-    }
     g_gsWorker.work.notify_one();
-    return true;
+    next.clear();
+    g_gsBatch = std::move(next);
+    if (g_gsBatch.capacity() < kGsBatchBytes)
+        g_gsBatch.reserve(kGsBatchBytes + 8192u);
 }
 
 void PS2Memory::stopVifWorker()
@@ -562,6 +654,7 @@ void PS2Memory::gifVifSync() const
     const auto gsIdle = [] { return g_gsWorker.done.load(std::memory_order_acquire) == g_gsWorker.submitted.load(std::memory_order_acquire); };
     if (g_vifWorker.done.load(std::memory_order_acquire) == target && gsIdle())
         return;
+    PS2TL(TL_SYNC_BEGIN, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(_ReturnAddress())));
     const auto waitStart = std::chrono::steady_clock::now();
     for (int spin = 0; spin < 4000; ++spin)
     {
@@ -580,6 +673,7 @@ void PS2Memory::gifVifSync() const
         std::unique_lock<std::mutex> lock(g_gsWorker.mutex);
         g_gsWorker.idle.wait(lock, gsIdle);
     }
+    PS2TL(TL_SYNC_END);
     g_perfSyncNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count();
 }
 
@@ -1088,6 +1182,9 @@ uint32_t PS2Memory::read32(uint32_t address)
 
     if (isGsPrivReg(address))
     {
+        static const bool asyncPaths = std::getenv("PS2X_ASYNC_PATHS") != nullptr;
+        if (asyncPaths && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
+            return static_cast<uint32_t>(((gs_regs.csr.load() | 2u) >> ((address & 7u) * 8u)) & 0xFFFFFFFFull);
         gifVifSync();
         uint32_t off = address & 7;
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
@@ -1673,9 +1770,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             // Ben 10 builds one list for every material but opens gates only for the
             // ones it draws; keeping the rest would feed last frame's materials to
             // this frame's gates.
-            if (channelBase == 0x1000A000u)
+            static const bool asyncPaths = std::getenv("PS2X_ASYNC_PATHS") != nullptr;
+            if (channelBase == 0x1000A000u && !asyncPaths)
                 gifVifSync();
-            if (channelBase == 0x1000A000u && m_path3Masked)
+            if (channelBase == 0x1000A000u && m_path3Masked && !asyncPaths)
             {
                 m_path3MaskedFifo.clear();
                 resetPath3Stream();
@@ -1684,6 +1782,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             const uint32_t madr = m_ioRegisters[channelBase + 0x10];
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
+            PS2TL(TL_KICK, channelBase, qwc);
 
             if (tryProcessScratchpadDma(channelBase, value))
             {
@@ -1727,6 +1826,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     // forever. Ben 10 sends over 4,096 tags in one frame.
                     const int kMaxChainTags = 1 << 20;
                     std::vector<uint8_t> chainBuf;
+                    static std::atomic<size_t> lastChainBytes{0u};
+                    chainBuf.reserve(lastChainBytes.load(std::memory_order_relaxed) + 4096u);
 
                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
                     {
@@ -1918,6 +2019,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                     if (!chainBuf.empty())
                     {
+                        lastChainBytes.store(chainBuf.size(), std::memory_order_relaxed);
                         PendingTransfer pt;
                         pt.fromScratchpad = false;
                         pt.srcAddr = 0;
@@ -2483,6 +2585,8 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
         flushMaskedPath3Packets(false);
     }
 
+    if (m_gifArbiter && drainImmediately && !Ps2GifOrderTraceEnabled() && m_gifArbiter->sendDirect(data, sizeBytes))
+        return; // nothing to arbitrate against: no copy
     if (m_gifArbiter)
         m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl);
     else if (m_gifPacketCallback)
@@ -2818,7 +2922,8 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
-    if ((address & 0xFFFFF000u) == 0x10003000u)
+    static const bool asyncPaths = std::getenv("PS2X_ASYNC_PATHS") != nullptr;
+    if ((address & 0xFFFFF000u) == 0x10003000u && !asyncPaths)
         gifVifSync(); // GIF and VIF registers
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
@@ -2842,6 +2947,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
 
     if (isGsPrivReg(address))
     {
+        if (asyncPaths && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
+            return static_cast<uint32_t>(((gs_regs.csr.load() | 2u) >> ((address & 7u) * 8u)) & 0xFFFFFFFFull);
         gifVifSync();
         // NB: unreachable from read8/16/32/64 today, same reasoning as the write
         // path above; kept correct for direct callers.

@@ -20,7 +20,8 @@ bool GifArbiter::isImagePacket(const uint8_t *data, uint32_t sizeBytes)
     uint64_t tagLo = 0;
     std::memcpy(&tagLo, data, sizeof(tagLo));
     const uint8_t flg = static_cast<uint8_t>((tagLo >> 58) & 0x3u);
-    return flg >= 2u; // IMAGE, or FLG 3 which operates like IMAGE
+    // FLG=3 ("disabled" in the GS manual) behaves exactly like IMAGE: NLOOP qwords of image data.
+    return flg == 2u || flg == 3u;
 }
 
 void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl)
@@ -42,6 +43,14 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
         Ps2TraceGifOrder("arbiter-enqueue", static_cast<unsigned>(pathId), data, sizeBytes, this, 0u, 0u, detail);
     }
     m_queue.push_back(std::move(pkt));
+}
+
+bool GifArbiter::sendDirect(const uint8_t *data, uint32_t sizeBytes)
+{
+    if (!m_processFn || !m_queue.empty())
+        return false;
+    m_processFn(data, sizeBytes);
+    return true;
 }
 
 void GifArbiter::drain()

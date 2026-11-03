@@ -145,14 +145,14 @@ struct VU1Interpreter::NativeState
         bool known = false;
         bool readsEntryFlags = false;
         bool memoable = false;   // its entry timing does not depend on FDIV/EFU state
-        // Entry timing by predecessor (blocks that read entry flags): when the block before ran for maxLat cycles or more
-        // and nothing from the exact engine is still in flight, that block and its timing table alone decide the entry
-        // state; the timing found for it is reused.
-        alignas(64) const BlockTiming *memoPred = nullptr;
-        const uint8_t *memoCyc = nullptr;
-        uint32_t memoPredId = 0, memoId = 0;
+        // Entry timing by predecessors (blocks that read entry flags): when the unbroken run of blocks before this one spans
+        // maxLat cycles or more and nothing from the exact engine is still in flight, those blocks and their timing tables
+        // alone decide the entry state; the timing found for that run is reused.
+        struct Memo { uint64_t key = 0; const uint8_t *cyc = nullptr; uint32_t id = 0; };
+        alignas(64) Memo memo[4];
+        uint32_t memoNext = 0;
     };
-    static_assert(sizeof(Slot) == 128);
+    static_assert(sizeof(Slot) == 192);
     Slot slots[2048];
     // Native blocks run since native entry (or the last sync), newest last; histCount counts them all (the ring keeps the
     // last kHist). A write is ready less than maxLat cycles after its block ended, so only blocks that ended less than

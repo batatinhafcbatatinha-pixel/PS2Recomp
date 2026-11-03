@@ -17,8 +17,17 @@ namespace host_video {
         return value == Mode::Fullscreen ? "fullscreen" : value == Mode::Borderless ? "borderless" : "windowed";
     }
     // Windowed size: 1920x1080, reduced to a 16:9 window that fits 90% of smaller monitors.
+    inline int resolutionWidth = 0, resolutionHeight = 0;  // 0 = automatic; set from the F1 menu
     inline void windowSize(int &width, int &height) {
         int monitor = GetCurrentMonitor();
+        if (resolutionWidth > 0) {
+            // larger than the monitor: the window keeps the shape, the picture still renders at the chosen size
+            const float fit = std::min({1.0f, GetMonitorWidth(monitor) / static_cast<float>(resolutionWidth),
+                                        GetMonitorHeight(monitor) / static_cast<float>(resolutionHeight)});
+            width = static_cast<int>(resolutionWidth * fit);
+            height = static_cast<int>(resolutionHeight * fit);
+            return;
+        }
         width = std::min({1920, GetMonitorWidth(monitor) * 9 / 10, GetMonitorHeight(monitor) * 9 / 10 * 16 / 9});
         if (width <= 0) width = 1920;
         height = width * 9 / 16;
@@ -26,7 +35,8 @@ namespace host_video {
     inline void apply(Mode next, bool save = true) {
         if (IsWindowFullscreen()) ToggleFullscreen();
         if (IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) ToggleBorderlessWindowed();
-        SetWindowSize(1920, 1080);
+        if (resolutionWidth > 0) { int width, height; windowSize(width, height); SetWindowSize(width, height); }
+        else SetWindowSize(1920, 1080);
         if (next == Mode::Fullscreen) ToggleFullscreen();
         else if (next == Mode::Borderless) ToggleBorderlessWindowed();
         else {
@@ -46,6 +56,15 @@ namespace host_video {
         std::string setting;
         std::ifstream file("video-settings.cfg"); file >> setting;
         if (const char *overrideMode = std::getenv("PS2X_WINDOW_MODE")) setting = overrideMode;
+        // Test runs: start on the first monitor with this refresh rate.
+        if (const char *monitorHz = std::getenv("PS2X_MONITOR_HZ")) {
+            for (int monitor = 0; monitor < GetMonitorCount(); ++monitor) {
+                if (GetMonitorRefreshRate(monitor) != std::atoi(monitorHz)) continue;
+                const Vector2 origin = GetMonitorPosition(monitor);
+                SetWindowPosition(static_cast<int>(origin.x) + 40, static_cast<int>(origin.y) + 40);
+                break;
+            }
+        }
         apply(setting == "fullscreen" ? Mode::Fullscreen : setting == "borderless" ? Mode::Borderless : Mode::Windowed, false);
         std::cerr << "[video] F9: window | F10: borderless | F11/Alt+Enter: fullscreen | F8: help" << std::endl;
     }
@@ -68,7 +87,14 @@ namespace host_video {
     inline void countFrame(uint32_t displayBuffer) {
         static uint32_t lastBuffer = 0, frames = 0, presents = 0;
         static double windowStart = GetTime();
-        if (displayBuffer != lastBuffer) { lastBuffer = displayBuffer; ++frames; }
+        static double lastFlip = GetTime(), worstGap = 0.0; static uint32_t hitches = 0; // longest wait between flips in this window
+        if (displayBuffer != lastBuffer) {
+            lastBuffer = displayBuffer; ++frames;
+            const double t = GetTime(), gap = t - lastFlip;
+            lastFlip = t;
+            worstGap = std::max(worstGap, gap);
+            if (gap > 0.025) ++hitches;
+        }
         ++presents;
         const double now = GetTime();
         if (now - windowStart >= 1.0) {
@@ -80,10 +106,12 @@ namespace host_video {
             const double span = (now - windowStart) * 1e7; // percent of one core
             const double vu1 = g_perfVu1Ns.exchange(0) / span, gsp = g_perfGsNs.exchange(0) / span, iop = g_perfIopNs.exchange(0) / span,
                          idle = g_perfIdleNs.exchange(0) / span, sync = g_perfSyncNs.exchange(0) / span;
-            if (logs++ % 5u == 0u)
+            static const uint32_t logEvery = std::getenv("PS2X_PERF_EVERY") ? static_cast<uint32_t>(std::atoi(std::getenv("PS2X_PERF_EVERY"))) : 5u;
+            if (logs++ % logEvery == 0u)
                 std::cerr << "[perf] game_fps=" << fps << " present_fps=" << presents / (now - windowStart)
-                          << " vu1=" << vu1 << "% gs=" << gsp << "% iop=" << iop << "% ee_idle=" << idle << "% ee_sync=" << sync << "%" << std::endl;
-            frames = presents = 0;
+                          << " vu1=" << vu1 << "% gs=" << gsp << "% iop=" << iop << "% ee_idle=" << idle << "% ee_sync=" << sync << "% worst_ms=" << static_cast<int>(worstGap * 1000.0) << " hitches=" << hitches << std::endl;
+            frames = presents = hitches = 0;
+            worstGap = 0.0;
             windowStart = now;
         }
     }

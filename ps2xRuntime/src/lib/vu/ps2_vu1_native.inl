@@ -206,6 +206,15 @@ void VU1NativeAccess::xgkick(VU1NativeCtx &n, uint32_t rel, uint32_t qwordAddres
             uint8_t *dst = vu.m_xgkick.packet.data();
             const uint32_t first = src & (size - 1u);
             const uint32_t head = std::min(total, size - first);
+            if (head == total && vu.m_activeMemory && !vu.m_verifySilent)
+            {
+                // in one piece in VU memory: no copy on the way to the GS queue
+                vu.m_xgkick.copiedBytes = total;
+                vu.m_xgkick.totalBytes = total;
+                vu.m_xgkick.active = false;
+                vu.m_activeMemory->submitGifPacket(GifPathId::Path1, vu.m_activeVuData + first, total);
+                return;
+            }
             std::memcpy(dst, vu.m_activeVuData + first, head);
             for (uint32_t done = head; done < total;)
             {
@@ -447,6 +456,8 @@ void VU1NativeAccess::walkHistory(VU1Interpreter::NativeState &ns, uint64_t now,
     uint32_t k = 0;
     for (; k < n; ++k)
     {
+        if ((want[0] | want[1] | want[2]) == 0u)
+            return; // nothing left to find, here or in the arrays
         const NS::Hist &h = ns.hist[(ns.histNext + NS::kHist - 1u - k) % NS::kHist];
         if (h.end + ns.maxLat <= now)
             break;
@@ -501,19 +512,57 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     NS &ns = *vu.m_native;
     NS::BlockTiming &bt = *sl.bt;
     const uint64_t start = vu.m_cycle;
-    const NS::Hist *pred = ns.histCount ? &ns.hist[(ns.histNext + NS::kHist - 1u) % NS::kHist] : nullptr;
-    const bool memoOk = pred && sl.memoable && pred->end == start && pred->end - pred->start >= ns.maxLat &&
-                        ns.arraysReadyBy <= start;
-    if (memoOk && sl.memoPred == pred->bt && sl.memoPredId == pred->cycId && sl.memoCyc)
+    uint64_t memoKey = 0u;
+    if (ns.arraysReadyBy <= start)
     {
-        cycId = sl.memoId;
-        return sl.memoCyc;
+        // The run of blocks that ends where this one starts, back to maxLat cycles or to the first block since the arrays
+        // were last current (nothing older is in flight then): their tables give every lane's ready cycle. FDIV, EFU and
+        // XGKICK are part of the key as the block sees them.
+        const uint32_t n = std::min<uint32_t>({ns.histCount, NS::kHist, 16u});
+        uint64_t key = 0x9E3779B97F4A7C15ull, expected = start;
+        bool complete = n == ns.histCount;
+        for (uint32_t k = 0; k < n; ++k)
+        {
+            const NS::Hist &h = ns.hist[(ns.histNext + NS::kHist - 1u - k) % NS::kHist];
+            if (h.end != expected)
+            {
+                complete = false;
+                break;
+            }
+            key = (key ^ reinterpret_cast<uintptr_t>(h.bt)) * 0xFF51AFD7ED558CCDull;
+            key = (key ^ h.cycId ^ (key >> 29)) * 0xC4CEB9FE1A85EC53ull;
+            expected = h.start;
+            if (start - expected >= ns.maxLat)
+            {
+                complete = true;
+                break;
+            }
+        }
+        if (complete)
+        {
+            if (bt.scalarRead)
+            {
+                uint64_t ready[4] = {vu.m_fdiv.valid ? vu.m_fdiv.readyCycle : 0u, vu.m_efuResourceReady, 0u, ns.kickReady};
+                for (const VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
+                    if (e.valid)
+                        ready[2] = std::max(ready[2], e.readyCycle);
+                for (uint32_t k = 0; k < 4u; ++k)
+                    if ((bt.scalarRead & (1u << k)) && ready[k] > start + bt.scalarAt[k])
+                        key = (key ^ ((k + 1u) << 8 | std::min<uint64_t>(ready[k] - start - bt.scalarAt[k], 255u))) * 0xFF51AFD7ED558CCDull;
+            }
+            memoKey = key | 1u;
+        }
     }
-    const NS::BlockTiming *predBt = memoOk ? pred->bt : nullptr;
-    const uint32_t predId = memoOk ? pred->cycId : 0u;
+    if (memoKey != 0u)
+        for (const NS::Slot::Memo &m : sl.memo)
+            if (m.key == memoKey && m.cyc)
+            {
+                cycId = m.id;
+                return m.cyc;
+            }
     const auto remember = [&](const uint8_t *cyc, uint32_t id) {
-        if (predBt)
-            sl.memoPred = predBt, sl.memoPredId = predId, sl.memoCyc = cyc, sl.memoId = id;
+        if (memoKey != 0u)
+            sl.memo[sl.memoNext++ & 3u] = NS::Slot::Memo{memoKey, cyc, id};
         cycId = id;
         return cyc;
     };
@@ -608,7 +657,8 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     slot.id = ns.nextCycId++;
     for (NS::Slot &other : ns.slots) // may point into the cache slot replaced here
         if (other.bt == &bt)
-            other.memoCyc = nullptr;
+            for (NS::Slot::Memo &m : other.memo)
+                m.cyc = nullptr;
     return remember(slot.cyc.data(), slot.id);
 }
 
@@ -677,7 +727,7 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
     VU1Interpreter::NativeState::Slot &sl = ns.slots[pc >> 3];
     if (!sl.known)
     {
-        uint32_t words[128];
+        uint32_t words[130]; // 64 pairs and the delay slot of a branch in the last one
         ++ns.slotSetups;
         const uint32_t count = nativeExtent(code, codeSize, pc, words);
         sl = {};
@@ -722,7 +772,7 @@ void VU1Interpreter::commitEverythingNow()
 
 bool VU1Interpreter::runNative(StepContext &context)
 {
-    if (m_unit != Unit::VU1 || context.vuData == nullptr || context.codeSize != PS2_VU1_CODE_SIZE)
+    if (context.vuData == nullptr || context.codeSize != (m_unit == Unit::VU1 ? PS2_VU1_CODE_SIZE : PS2_VU0_CODE_SIZE))
         return false;
     if (!m_native)
         m_native = new NativeState();
@@ -732,11 +782,20 @@ bool VU1Interpreter::runNative(StepContext &context)
     if (m_state.branchPending || m_state.ebit || m_state.haltAfterDelaySlot || m_stopRequested)
         return false;
 
-    const uint64_t generation = context.memory ? context.memory->getVU1CodeGeneration() : 0u;
-    if (generation != ns.generation)
+    const uint64_t generation = !context.memory ? 0u : m_unit == Unit::VU1 ? context.memory->getVU1CodeGeneration()
+                                                                           : context.memory->getVU0CodeGeneration();
+    if (generation != ns.generation || !ns.codeValid)
     {
         ns.generation = generation;
-        VU1NativeAccess::codeChanged(ns, context.vuCode);
+        if (m_unit == Unit::VU1)
+            VU1NativeAccess::codeChanged(ns, context.vuCode);
+        else
+        {
+            // The slot tables cover the VU1 size: VU0's smaller memory is compared through a zero-padded image.
+            static uint8_t padded[PS2_VU1_CODE_SIZE];
+            std::memcpy(padded, context.vuCode, PS2_VU0_CODE_SIZE);
+            VU1NativeAccess::codeChanged(ns, padded);
+        }
     }
 
     const unsigned savedCsr = _mm_getcsr();
@@ -758,7 +817,7 @@ bool VU1Interpreter::runNative(StepContext &context)
             handled = true;
             break;
         }
-        const uint32_t pc = m_state.pc & 0x3FF8u;
+        const uint32_t pc = m_state.pc & (context.codeSize - 8u);
         if (pc + 8u > context.codeSize)
             break;
         NativeState::Slot &sl = ns.slots[pc >> 3];
@@ -831,7 +890,7 @@ bool VU1Interpreter::runNative(StepContext &context)
             commitReadyPipelines(); // FDIV/EFU entries kept for timing retire when ready (values are written already)
         ns.nativePairs += sl.pairs;
         ++ns.nativeBlocks;
-        m_state.pc = result & 0x3FFFu;
+        m_state.pc = result & (context.codeSize - 1u);
         if (result & kVu1nEnded)
         {
             context.programEnded = true;

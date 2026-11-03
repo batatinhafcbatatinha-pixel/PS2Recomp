@@ -798,6 +798,8 @@ endif()
 
 # Work around WinAPI vs raylib symbol clash for CloseWindow on x64
 if(MSVC)
+    # Recompiled guest recursion lives on the host stack, and inlined helpers make its frames large.
+    target_link_options(ps2EntryRunner PRIVATE "/STACK:67108864")
     target_link_options(ps2EntryRunner PRIVATE "/FORCE:MULTIPLE")
     # Function address map for the built-in sampling profiler (PS2X_PROFILE=1).
     target_link_options(ps2EntryRunner PRIVATE "/MAP:$<TARGET_FILE_DIR:ps2EntryRunner>/ps2EntryRunner.map")

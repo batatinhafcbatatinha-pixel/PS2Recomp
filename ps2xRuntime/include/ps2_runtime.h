@@ -429,7 +429,10 @@ public:
                                  uint32_t tadr,
                                  uint32_t chcr);
 
-    static inline bool isSpecialAddress(uint32_t addr)
+    #if defined(_MSC_VER)
+    __forceinline
+#endif
+    static bool isSpecialAddress(uint32_t addr)
     {
         return Ps2IsSpecialAddress(addr);
     }

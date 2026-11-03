@@ -19,6 +19,18 @@
 #endif
 #include <windows.h>
 
+namespace GSGL
+{
+    // The GL thread of gs_gl_async.inc takes the context over.
+    bool DetachContext(void *&dc, void *&context)
+    {
+        dc = wglGetCurrentDC();
+        context = wglGetCurrentContext();
+        return dc && context && wglMakeCurrent(nullptr, nullptr);
+    }
+    void AttachContext(void *dc, void *context) { wglMakeCurrent(static_cast<HDC>(dc), static_cast<HGLRC>(context)); }
+}
+
 namespace
 {
     constexpr int kContextMajorVersion = 0x2091;

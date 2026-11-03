@@ -1,6 +1,7 @@
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
+#include "../ps2_timeline.h"
 #include "ps2_runtime_macros.h"
 
 std::string ps2xDispatchTrail();
@@ -1868,6 +1869,7 @@ void EeScheduler::makeRunning(GuestThread &item)
     assert(item.status == EeThreadStatus::Ready);
     item.status = EeThreadStatus::Running;
     m_currentThreadId = item.id;
+    PS2TL(TL_GUEST_IN, static_cast<uint32_t>(item.id));
     renewTimeSlice();
 }
 
@@ -2121,6 +2123,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         break;
     case EeEventType::VBlankStart:
         ++m_vsyncTick;
+        PS2TL(TL_VBLANK, static_cast<uint32_t>(m_vsyncTick));
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
         if ((m_vsyncTick & 1u) != 0u)
         {
@@ -2308,11 +2311,13 @@ void EeScheduler::waitForEvent()
         }
     }
 
+    PS2TL(TL_EE_IDLE_BEGIN);
     const auto idleStart = std::chrono::steady_clock::now();
     const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });
     g_perfIdleNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - idleStart).count();
+    PS2TL(TL_EE_IDLE_END);
     if (!signaled)
     {
         const uint64_t elapsed = deadlineCycle > m_eeCycle ? deadlineCycle - m_eeCycle : 0u;

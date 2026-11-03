@@ -1109,7 +1109,7 @@ void VU1Interpreter::progressXgkick()
                 tagBytes += static_cast<uint64_t>(nloop) * nreg * 16u;
             else if (format == 1u)
                 tagBytes += ((static_cast<uint64_t>(nloop) * nreg + 1u) & ~1ull) * 8u;
-            else if (format == 2u)
+            else if (format == 2u || format == 3u) // FLG=3 ("disabled" in the GS manual) behaves exactly like IMAGE: NLOOP qwords of image data.
                 tagBytes += static_cast<uint64_t>(nloop) * 16u;
             else
             {
@@ -1916,8 +1916,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     m_activeMemory = memory;
 
     ps2_perf::Scope perf(ps2_perf::Bucket::Vu); // GOW-Port: VU0/VU1; las llamadas al GS se descuentan.
-    const int previousRoundingMode = std::fegetround();
-    const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
+    // SSE rounding only: fesetround also goes through the x87 control word and the CRT, for every program.
+    const unsigned previousCsr = _mm_getcsr();
+    _mm_setcsr((previousCsr & ~0x6000u) | 0x6000u);
     StepContext context{vuCode, codeSize, vuData, dataSize, &gs, memory, m_cycle + maxCycles, false};
     m_lastRunHitBudget = false; // GOW-Port: funciona también con un despachador compilado.
     const uint32_t runStartPc = m_state.pc;
@@ -2017,16 +2018,17 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                 return true;
         }
     };
-    if (m_unit == Unit::VU1 && !m_native)
+    if (!m_native)
         m_native = new NativeState();
-    if (m_unit == Unit::VU1 && m_native && m_native->enabled && vuData && codeSize == PS2_VU1_CODE_SIZE)
+    const bool nativeUnit = m_native->enabled && vuData && codeSize == (m_unit == Unit::VU1 ? PS2_VU1_CODE_SIZE : PS2_VU0_CODE_SIZE);
+    if (m_unit == Unit::VU1 && nativeUnit)
         VU1NativeAccess::recordReplay(*this, &context, maxCycles);
     // Allow bounded verification to start at gameplay instead of exhausting its
     // sample budget on the boot/menu programs.
     static const double verifyAt = std::getenv("GOW_VU1N_VERIFY_AT") ? std::atof(std::getenv("GOW_VU1N_VERIFY_AT")) : 0.0;
     static const auto verifyStart = std::chrono::steady_clock::now();
     const bool verifyReady = verifyAt <= 0.0 || std::chrono::duration<double>(std::chrono::steady_clock::now() - verifyStart).count() >= verifyAt;
-    if (m_unit == Unit::VU1 && m_native && m_native->enabled && m_native->verifyLeft != 0u && verifyReady && vuData && codeSize == PS2_VU1_CODE_SIZE)
+    if (nativeUnit && m_native->verifyLeft != 0u && verifyReady)
     {
         --m_native->verifyLeft;
         const uint32_t startPc = m_state.pc;
@@ -2252,7 +2254,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         else if (checked % 2000u == 0u)
             std::fprintf(stderr, "[vu1n-verify] %u runs checked, %u mismatches\n", checked, bad);
     }
-    if (m_unit == Unit::VU1 && m_native && m_native->enabled && vuData && codeSize == PS2_VU1_CODE_SIZE)
+    if (nativeUnit)
     {
         if (!runNativeLoop(context))
             runExact(context);
@@ -2306,8 +2308,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         if (++endMacRuns % 20000u == 0u)
             std::fprintf(stderr, "[vu1-endmac] ours runs=%u mac12=%u mac0=%u other=%u\n", endMacRuns, endMacCount[0], endMacCount[1], endMacCount[2]);
     }
-    if (useVuRounding && previousRoundingMode != -1)
-        std::fesetround(previousRoundingMode);
+    _mm_setcsr(previousCsr);
 }
 
 // GOW-Port: GOW_VU1C_VERIFICAR. Antes de un bloque compilado se ejecutan sus pares con el interprete desde el
