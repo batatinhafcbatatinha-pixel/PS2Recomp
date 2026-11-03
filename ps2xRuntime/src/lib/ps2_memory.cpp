@@ -17,6 +17,12 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define PS2X_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define PS2X_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 
 bool Ps2GifOrderTraceEnabled()
 {
@@ -654,7 +660,7 @@ void PS2Memory::gifVifSync() const
     const auto gsIdle = [] { return g_gsWorker.done.load(std::memory_order_acquire) == g_gsWorker.submitted.load(std::memory_order_acquire); };
     if (g_vifWorker.done.load(std::memory_order_acquire) == target && gsIdle())
         return;
-    PS2TL(TL_SYNC_BEGIN, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(_ReturnAddress())));
+    PS2TL(TL_SYNC_BEGIN, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(PS2X_RETURN_ADDRESS())));
     const auto waitStart = std::chrono::steady_clock::now();
     for (int spin = 0; spin < 4000; ++spin)
     {
