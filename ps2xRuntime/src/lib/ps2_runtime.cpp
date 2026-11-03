@@ -1034,8 +1034,12 @@ bool PS2Runtime::initialize(const char *title)
 #endif
         {
             // Presentation only; the guest vblank stays at 60 Hz. 0 removes the limit.
+#if defined(PLATFORM_VITA)
             const char *fpsLimit = std::getenv("PS2X_FPS_LIMIT");
             SetTargetFPS(fpsLimit ? std::atoi(fpsLimit) : 60);
+#else
+            host_menu::applyFrameLimit();  // the F1 menu's limit, else PS2X_FPS_LIMIT, else 60
+#endif
         }
         if (m_debugUiInitCallback)
         {
@@ -3281,11 +3285,7 @@ void PS2Runtime::run()
                 filteredTexture = frameTex.id;
             }
         }
-        const bool fxaaActive = host_menu::beginFxaa(static_cast<float>(frameTex.width), static_cast<float>(frameTex.height)) ||
-                                host_menu::beginDownscale(static_cast<float>(frameTex.width), static_cast<float>(frameTex.height), srcHeight / dstHeight);
-        DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
-        if (fxaaActive)
-            EndShaderMode();
+        host_menu::drawPicture(frameTex, srcRect, dstRect);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
