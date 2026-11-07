@@ -1,3 +1,4 @@
+#include "ps2x/iop/iop_audio.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <pthread.h>
 #endif
@@ -227,6 +228,36 @@ namespace
     // the end of its .bss, never hands out the same bytes. The interrupt/callback stacks sit above it.
     constexpr uint32_t kRuntimeArenaBase = kGuestHeapHardLimit;
     constexpr uint32_t kRuntimeArenaEnd = 0x01FE0000u;
+
+    // PS2X_RUNTIME_ARENA=<base>:<end> (hex): put the runtime arena and the callback stacks there instead, for games whose
+    // own allocator ignores EndOfHeap and uses RAM up to its main stack (GTA VCS manages 0x74DF54..0x1FE0000 itself,
+    // and the runtime's packets and interrupt stacks in 0x1F00000..0x1FE0000 overwrote its heap: new() then failed
+    // with 0xF0000FC2 after the legal-screen movie). The top quarter (at most 256 KB) holds the callback stacks.
+    struct RuntimeArenaOverride
+    {
+        bool set = false;
+        uint32_t base = 0u, end = 0u, stacks = 0u;
+    };
+    const RuntimeArenaOverride &runtimeArenaOverride()
+    {
+        static const RuntimeArenaOverride value = []
+        {
+            RuntimeArenaOverride o{};
+            const char *env = std::getenv("PS2X_RUNTIME_ARENA");
+            unsigned base = 0u, end = 0u;
+            if (env && std::sscanf(env, "%x:%x", &base, &end) == 2 && base < end && end <= PS2_RAM_SIZE && end - base >= 0x20000u)
+            {
+                o.set = true;
+                o.base = base & ~0xFFFu;
+                o.end = end & ~0xFFFu;
+                o.stacks = std::min<uint32_t>((o.end - o.base) / 4u, 0x40000u) & ~0xFFFu;
+                std::fprintf(stderr, "[runtime] arena 0x%x-0x%x, callback stacks 0x%x-0x%x\n", o.base, o.end - o.stacks,
+                             o.end - o.stacks, o.end);
+            }
+            return o;
+        }();
+        return value;
+    }
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -1031,6 +1062,15 @@ bool PS2Runtime::initialize(const char *title)
         ps2UpdateHostPadInput();
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        if (IsAudioDeviceReady() && ps2x::iop::spu2Enabled())
+        {
+            // Native SPU2 output (ps2xIOP iop_spu2): 48 kHz stereo pulled by the audio thread.
+            SetAudioStreamBufferSizeDefault(1024);
+            static AudioStream spu2Stream = LoadAudioStream(48000, 16, 2);
+            SetAudioStreamCallback(spu2Stream, [](void *buffer, unsigned int frames)
+                                   { ps2x::iop::spu2ReadOutput(static_cast<int16_t *>(buffer), frames); });
+            PlayAudioStream(spu2Stream);
+        }
 #endif
         {
             // Presentation only; the guest vblank stays at 60 Hz. 0 removes the limit.
@@ -1277,6 +1317,11 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
         m_asyncCallbackStackFloor = std::min(std::max(kRuntimeArenaEnd, suggestedHeapBase), PS2_RAM_SIZE);
         m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        if (const RuntimeArenaOverride &arena = runtimeArenaOverride(); arena.set)
+        {
+            m_asyncCallbackStackFloor = arena.end - arena.stacks;
+            m_asyncCallbackStackTop = arena.end;
+        }
     }
 
     LoadedModule module;
@@ -2091,6 +2136,11 @@ void PS2Runtime::resetGuestHeapLocked(uint32_t guestBase, uint32_t guestLimit)
     (void)guestLimit;
     uint32_t base = kRuntimeArenaBase;
     uint32_t limit = std::min(m_runtimeArenaEnd, PS2_RAM_SIZE);
+    if (const RuntimeArenaOverride &arena = runtimeArenaOverride(); arena.set)
+    {
+        base = arena.base;
+        limit = arena.end - arena.stacks;
+    }
 
     m_guestHeapBlocks.clear();
     if (limit > base)

@@ -93,6 +93,9 @@ enum class GuestInvocationKind : uint8_t
     SifCommand,
 };
 
+// GuestInvocation::tag of IOP->EE RPC server requests (PS2IopHostAdapter::callEeRpc).
+inline constexpr uint64_t kEeRpcServerTag = 0x5250435345525652ull;
+
 struct GuestInvocation
 {
     GuestInvocationKind kind = GuestInvocationKind::Interrupt;
@@ -323,6 +326,9 @@ public:
     [[noreturn]] void invokeCurrentSequence(std::vector<GuestInvocation> invocations);
     [[nodiscard]] bool hasInvocation(GuestInvocationKind kind, uint64_t tag) const;
     [[nodiscard]] uint32_t invocationStackTop();
+    [[nodiscard]] uint32_t invocationStackTopFor(const GuestThread &owner);
+    [[nodiscard]] static bool rpcServerThreadsEnabled();
+    [[nodiscard]] static int rpcServerPriority();
 
     int addIrqHandler(bool dmac,
                       uint32_t cause,

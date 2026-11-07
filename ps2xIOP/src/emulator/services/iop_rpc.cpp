@@ -152,7 +152,7 @@ namespace ps2x::iop::detail
         if (ordinal == 15 || ordinal == 16)
         {
             static unsigned reverseProbe = 0;
-            if (++reverseProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 16u))
+            if (++reverseProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 16u)))
                 std::cerr << "[ff-iop-rpc-out] ordinal=" << ordinal << " a0=0x" << std::hex
                           << cpu.gpr[4] << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6]
                           << std::dec << std::endl;
@@ -184,7 +184,7 @@ namespace ps2x::iop::detail
             const uint32_t receiveSize = m_memory.read32(cpu.gpr[29] + 24u);
             const uint32_t sid = m_memory.read32(cpu.gpr[4] + 36u);
             static uint32_t reverseCallLogs = 0;
-            if (reverseCallLogs++ < (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+            if (reverseCallLogs++ < (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 32u)))
                 std::cerr << "[ff-iop-rpc-call] sid=0x" << std::hex << sid
                       << " src=0x" << cpu.gpr[7] << " recv=0x" << m_memory.read32(cpu.gpr[29] + 20u)
                       << std::dec << " size=" << size << " rsize=" << receiveSize << std::endl;

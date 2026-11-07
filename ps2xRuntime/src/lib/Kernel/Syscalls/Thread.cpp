@@ -237,7 +237,12 @@ namespace ps2_syscalls
             param->initial_priority,
             param->option,
         };
-        setReturnS32(ctx, scheduler(rdram, ctx, runtime).createThread(decoded));
+        const int created = scheduler(rdram, ctx, runtime).createThread(decoded);
+        if (const char *v = std::getenv("PS2X_TRACE_PRIORITY"); v && *v == '1')
+            std::cerr << "[thread] create id=" << created << std::hex << " func=0x" << param->func << " stack=0x" << param->stack
+                      << " size=0x" << param->stack_size << std::dec << " prio=" << param->initial_priority << std::hex
+                      << " ra=0x" << getRegU32(ctx, 31) << std::dec << std::endl;
+        setReturnS32(ctx, created);
     }
 
     void DeleteThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -289,6 +294,9 @@ namespace ps2_syscalls
             target->ownsStack = true;
         }
         const int result = ee.startThread(id, arg, *ctx, false);
+        if (const char *v = std::getenv("PS2X_TRACE_PRIORITY"); v && *v == '1')
+            std::cerr << "[thread] start id=" << id << std::hex << " entry=0x" << target->entry << " arg=0x" << arg << std::dec
+                      << " result=" << result << std::endl;
         setReturnS32(ctx, result);
         ee.transferIfRequested(false);
     }

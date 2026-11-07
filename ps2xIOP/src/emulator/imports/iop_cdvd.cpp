@@ -282,6 +282,12 @@ namespace ps2x::iop::detail
                 cpu.gpr[2] = kCdvdReadyComplete;
                 return true;
 
+            case 14: // sceCdTrayReq(param, *traychk): tray closed, no change since last check
+                if (a1 != 0u)
+                    memory.write32(a1, 0u);
+                cpu.gpr[2] = 1u;
+                return true;
+
             case 28: // sceCdStatus
                 cpu.gpr[2] = kCdvdStatusPause;
                 return true;
@@ -754,7 +760,7 @@ namespace ps2x::iop::detail
         bool readSectors(uint32_t lsn, uint32_t sectors, uint32_t destination)
         {
             static unsigned readProbe = 0;
-            if (++readProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+            if (++readProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 32u)))
                 std::cerr << "[ff-iop-cd] lsn=" << lsn << " sectors=" << sectors
                           << " dest=0x" << std::hex << destination << std::dec << std::endl;
             if (sectors == 0u)

@@ -306,9 +306,21 @@ namespace {
             const uintptr_t start = reinterpret_cast<uintptr_t>(g_watchHost + g_watchGuest);
             if (g_watchFault + 16u > start && g_watchFault < start + g_watchLength)
             {
-                const uint32_t offset = static_cast<uint32_t>((g_watchFault & ~uintptr_t(3)) - reinterpret_cast<uintptr_t>(g_watchHost));
+                // PS2X_WATCH_CHANGES: report the watched word itself, only when its value changes.
+                static const bool changesOnly = std::getenv("PS2X_WATCH_CHANGES") != nullptr;
+                static uint32_t last = 0;
+                uint32_t offset = static_cast<uint32_t>((g_watchFault & ~uintptr_t(3)) - reinterpret_cast<uintptr_t>(g_watchHost));
+                if (changesOnly)
+                    offset = g_watchGuest & ~3u;
                 uint32_t bits = 0;
                 std::memcpy(&bits, g_watchHost + offset, 4);
+                if (changesOnly && bits == last)
+                {
+                    g_watchFault = 0;
+                    VirtualProtect(reinterpret_cast<void *>(g_watchPage), 0x1000, PAGE_READONLY, &old);
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+                last = bits;
                 float value = 0.0f;
                 std::memcpy(&value, &bits, 4);
                 const bool abnormal = !(value == value) || value > 1.0e7f || value < -1.0e7f;

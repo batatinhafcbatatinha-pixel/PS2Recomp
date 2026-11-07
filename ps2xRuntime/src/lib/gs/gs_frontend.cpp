@@ -1407,6 +1407,17 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TRXDIR:
     {
         m_trxdir = static_cast<uint32_t>(value & 0x3);
+        {
+            // PS2X_TRX_TRACE=<n>: log the first n transfers (destination, format, size).
+            static int trxLeft = std::getenv("PS2X_TRX_TRACE") ? std::atoi(std::getenv("PS2X_TRX_TRACE")) : 0;
+            if (trxLeft > 0)
+            {
+                --trxLeft;
+                std::fprintf(stderr, "[gs:trx] dir=%u sbp=%x dbp=%x dbw=%u dpsm=%x pos=%u,%u size=%ux%u\n", m_trxdir,
+                             m_bitbltbuf.sbp, m_bitbltbuf.dbp, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, m_trxpos.dsax,
+                             m_trxpos.dsay, m_trxreg.rrw, m_trxreg.rrh);
+            }
+        }
 
         if (m_backend)
         {
@@ -1697,8 +1708,27 @@ void GS::vertexKick(bool drawing)
 
 void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 {
+    // Opt-in upload diagnostics; snapshots measure acceptance, not GPU completion.
+    static int left = std::getenv("PS2X_TEXUPLOAD_TRACE") ? std::atoi(std::getenv("PS2X_TEXUPLOAD_TRACE")) : 0;
+    const bool trace = left > 0;
+    const GSTransferSnapshot before = trace && m_backend ? m_backend->GetTransferSnapshot() : GSTransferSnapshot{};
     if (m_backend)
         m_backend->UploadImage(data, sizeBytes);
+    if (trace)
+    {
+        --left;
+        uint32_t nonzero = 0;
+        uint64_t hash = 14695981039346656037ull;
+        for (uint32_t i = 0; data && i < sizeBytes; ++i)
+        {
+            nonzero += data[i] != 0;
+            hash = (hash ^ data[i]) * 1099511628211ull;
+        }
+        const GSTransferSnapshot after = m_backend ? m_backend->GetTransferSnapshot() : GSTransferSnapshot{};
+        std::fprintf(stderr, "[gs:upload] dbp=%x dpsm=%x bytes=%u nz=%u hash=%016llx dir=%u->%u copied=%u->%u total=%u\n",
+            m_bitbltbuf.dbp, m_bitbltbuf.dpsm, sizeBytes, nonzero, static_cast<unsigned long long>(hash),
+            before.direction, after.direction, before.copiedPixels, after.copiedPixels, before.totalPixels);
+    }
 }
 
 

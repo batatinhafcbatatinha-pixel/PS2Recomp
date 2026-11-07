@@ -41,7 +41,7 @@ namespace ps2x::iop::detail
             return true;
         case 7: // QueryMaxFreeMemSize
         case 8: // QueryTotalFreeMemSize
-            setV0(m_memory.maxFreeMemory());
+            setV0(m_memory.maxFreeMemory(ordinal == 8));
             return true;
         case 9: // QueryBlockTopAddress
             if (const auto block = m_memory.allocationContaining(a0))
