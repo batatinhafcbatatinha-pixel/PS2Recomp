@@ -35,6 +35,7 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] std::optional<CompletionCallback> takeCompletionCallback() noexcept;
+        [[nodiscard]] uint32_t takePendingReadSectors() noexcept;
 
     private:
         class Impl;

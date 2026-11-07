@@ -232,6 +232,7 @@ namespace ps2x::iop::detail
             case 6: // sceCdRead
                 if (readSectors(a0, a1, a2))
                 {
+                    pendingReadSectors += a1;
                     signalCommandComplete();
                     if (callback.address != 0u)
                     {
@@ -280,6 +281,12 @@ namespace ps2x::iop::detail
 
             case 13: // sceCdDiskReady
                 cpu.gpr[2] = kCdvdReadyComplete;
+                return true;
+
+            case 14: // sceCdTrayReq(param, *traychk): tray closed, no change since last check
+                if (a1 != 0u)
+                    memory.write32(a1, 0u);
+                cpu.gpr[2] = 1u;
                 return true;
 
             case 28: // sceCdStatus
@@ -348,6 +355,14 @@ namespace ps2x::iop::detail
             default:
                 return false;
             }
+        }
+
+        // Sectors read by sceCdRead since the last blocking sceCdSync: the emulator turns them into drive time.
+        uint32_t takePendingReadSectors() noexcept
+        {
+            const uint32_t sectors = pendingReadSectors;
+            pendingReadSectors = 0u;
+            return sectors;
         }
 
         std::optional<CompletionCallback> takeCompletionCallback() noexcept
@@ -754,7 +769,7 @@ namespace ps2x::iop::detail
         bool readSectors(uint32_t lsn, uint32_t sectors, uint32_t destination)
         {
             static unsigned readProbe = 0;
-            if (++readProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+            if (++readProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 32u)))
                 std::cerr << "[ff-iop-cd] lsn=" << lsn << " sectors=" << sectors
                           << " dest=0x" << std::hex << destination << std::dec << std::endl;
             if (sectors == 0u)
@@ -820,6 +835,7 @@ namespace ps2x::iop::detail
         uint32_t mediaMode = 0u;
         uint32_t currentLsn = 0u;
         uint32_t lastError = kCdvdErrorNone;
+        uint32_t pendingReadSectors = 0u;
         uint32_t streamFlag = 0u;
         uint32_t lastReadTimeout = 0u;
         int interruptEventFlagId = 0;
@@ -846,6 +862,11 @@ namespace ps2x::iop::detail
     bool IopCdvd::dispatchImport(uint16_t ordinal, IopCpuState &cpu)
     {
         return m_impl->dispatchImport(ordinal, cpu);
+    }
+
+    uint32_t IopCdvd::takePendingReadSectors() noexcept
+    {
+        return m_impl->takePendingReadSectors();
     }
 
     std::optional<IopCdvd::CompletionCallback> IopCdvd::takeCompletionCallback() noexcept

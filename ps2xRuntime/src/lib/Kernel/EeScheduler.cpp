@@ -88,6 +88,17 @@ namespace
     constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
     constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
 
+    // Lowest free id, like the EE kernel's object tables (ids are small table indices and come back after a
+    // delete). GT4 packs a semaphore id into 8 bits of its lock handles; ever-growing ids broke every lock once
+    // DelayThread's temporary semaphores pushed the counter past 255.
+    template <typename Map>
+    int allocateLowestId(const Map &objects)
+    {
+        for (int candidate = 1; candidate < std::numeric_limits<int>::max(); ++candidate)
+            if (!objects.contains(candidate))
+                return candidate;
+        return 0;
+    }
     template <typename Map>
     int allocatePositiveId(int &nextId, const Map &objects)
     {
@@ -282,6 +293,7 @@ void EeScheduler::run()
                 {
                     SET_GPR_U32(&invocation.context, 29, invocationStackTop());
                 }
+                applyInvocationGsField(invocation);
                 owner->invocations.push_back(std::move(invocation));
             }
         }
@@ -361,6 +373,7 @@ void EeScheduler::run()
             {
                 SET_GPR_U32(&invocation.context, 29, invocationStackTop());
             }
+            applyInvocationGsField(invocation);
             running->invocations.push_back(std::move(invocation));
             continue;
         }
@@ -612,7 +625,8 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // 0..127 like the EE kernel: the SDK's own InitThread creates its top thread at priority 0 (GTA LCS).
+    if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -660,6 +674,7 @@ int EeScheduler::deleteThread(int id, uint32_t &ownedStack)
     {
         ownedStack = it->second.stack;
     }
+    releaseInvocationStacks(id);
     m_threads.erase(it);
     publishSnapshot();
     return KE_OK;
@@ -711,6 +726,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
     m_currentThreadId = 0;
     if (deleteThreadRecord && id != kMainThreadId)
     {
+        releaseInvocationStacks(id);
         m_threads.erase(id);
     }
     if (ownedStack != 0u)
@@ -1018,7 +1034,7 @@ int EeScheduler::createSemaphore(int initCount, int maxCount, uint32_t attr, uin
     {
         return KE_ERROR;
     }
-    const int id = allocatePositiveId(m_nextSemaphoreId, m_semaphores);
+    const int id = allocateLowestId(m_semaphores);
     if (id == 0)
     {
         return KE_ERROR;
@@ -1129,7 +1145,7 @@ void EeScheduler::waitSemaphore(int id)
 int EeScheduler::createEventFlag(uint32_t initialBits, uint32_t attr, uint32_t option)
 {
     assertExecutor();
-    const int id = allocatePositiveId(m_nextEventFlagId, m_eventFlags);
+    const int id = allocateLowestId(m_eventFlags);
     if (id == 0)
     {
         return KE_ERROR;
@@ -1294,6 +1310,18 @@ int EeScheduler::cancelAlarm(int id)
     return KE_OK;
 }
 
+void EeScheduler::applyInvocationGsField(const GuestInvocation &invocation)
+{
+    if (invocation.gsField == 1)
+    {
+        m_runtime.memory().gs().csr.fetch_or(0x2000ull, std::memory_order_acq_rel);
+    }
+    else if (invocation.gsField == 0)
+    {
+        m_runtime.memory().gs().csr.fetch_and(~0x2000ull, std::memory_order_acq_rel);
+    }
+}
+
 void EeScheduler::queueInvocation(GuestInvocation invocation)
 {
     assertExecutor();
@@ -1350,6 +1378,24 @@ bool EeScheduler::hasInvocation(GuestInvocationKind kind, uint64_t tag) const
                        });
 }
 
+// Deleted threads give their interrupt/callback stacks back: GTA LCS creates two new threads for every movie and
+// the fixed async-stack area ran out on the fourth one ("EE invocation stack space exhausted").
+void EeScheduler::releaseInvocationStacks(int id)
+{
+    for (auto it = m_invocationStackTops.begin(); it != m_invocationStackTops.end();)
+    {
+        if (static_cast<uint32_t>(it->first >> 32u) == static_cast<uint32_t>(id))
+        {
+            m_freeInvocationStackTops.push_back(it->second);
+            it = m_invocationStackTops.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
 uint32_t EeScheduler::invocationStackTop()
 {
     assertExecutor();
@@ -1367,6 +1413,13 @@ uint32_t EeScheduler::invocationStackTop()
         return existing->second;
     }
     constexpr uint32_t kInvocationStackSize = 0x4000u;
+    if (!m_freeInvocationStackTops.empty())
+    {
+        const uint32_t reused = m_freeInvocationStackTops.back();
+        m_freeInvocationStackTops.pop_back();
+        m_invocationStackTops.emplace(key, reused);
+        return reused;
+    }
     const uint32_t top = m_runtime.reserveAsyncCallbackStack(kInvocationStackSize, 16u);
     if (top == 0u)
     {
@@ -1475,6 +1528,10 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     {
         GuestInvocation invocation{};
         invocation.kind = GuestInvocationKind::Interrupt;
+        if (!dmac && (cause == 2u || cause == 3u))
+        {
+            invocation.gsField = static_cast<int8_t>(m_vsyncTick & 1u);
+        }
         invocation.context.pc = handler.handler;
         SET_GPR_U32(&invocation.context, 4, cause);
         SET_GPR_U32(&invocation.context, 5, handler.argument);

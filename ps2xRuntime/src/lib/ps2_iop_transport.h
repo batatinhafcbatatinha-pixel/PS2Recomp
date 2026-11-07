@@ -44,6 +44,14 @@ public:
         }
     }
 
+    static void advance(PS2Runtime *runtime, uint64_t eeCycles)
+    {
+        if (runtime)
+        {
+            runtime->advanceIopEeCycles(eeCycles);
+        }
+    }
+
     static void reset(PS2Runtime *runtime)
     {
         if (runtime)
