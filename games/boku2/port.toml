@@ -1,0 +1,3 @@
+# Boku no Natsuyasumi 2: overrides for the generic pipeline (tools/ps2port).
+# Builds and plays with no profile code (title + demo, 07/11); the boot main at 0x20A920 comes from the gaps step.
+name = "Boku no Natsuyasumi 2"

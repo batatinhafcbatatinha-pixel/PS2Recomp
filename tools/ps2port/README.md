@@ -60,7 +60,7 @@ exclude = ["sceSomething"]               # keep the game's own translation
 [gaps]
 starts = ["0x20A920"]                    # extra function starts
 [profile]
-pre = [["{python}", "scripts/build_core_elf.py"]]   # commands before prepare
+pre = [["{python}", "scripts/build_core_elf.py", "{files}"]]   # commands before prepare ({files} = game_files)
 handlers = "handlers.cpp"                # C++ with PortProfileInstall() for what is still game-specific
 ```
 

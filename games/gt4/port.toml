@@ -1,0 +1,10 @@
+# Gran Turismo 4: overrides for the generic pipeline (tools/ps2port).
+# The boot executable only unpacks the game: the real one is CORE.GT4 (compressed), rebuilt as game_files/CORE.ELF.
+name = "Gran Turismo 4"
+elf = "CORE.ELF"
+
+[env]
+PS2X_IOP_USB = "1"   # USBD unloads without a USB host controller and the game then waits on USB storage
+
+[profile]
+pre = [["{python}", "scripts/build_core_elf.py", "{files}"]]

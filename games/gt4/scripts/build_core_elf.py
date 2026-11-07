@@ -4,8 +4,8 @@ CORE.GT4 holds a compressed PS2 EE image: a SHA-512 header followed by
 (target address, size, data) sections. PS2Recomp and Ghidra need a real ELF, so
 this script re-lays those sections out as PT_LOAD segments and section headers.
 
-Reads only D:\\CodexBuilds\\gt4\\game_files\\CORE.GT4; writes the derived ELF to
-D:\\CodexBuilds\\gt4\\decompressed\\CORE.ELF (never versioned).
+Usage: build_core_elf.py <game_files>. Reads <game_files>/CORE.GT4 and writes the derived ELF next to it as
+CORE.ELF (the runtime treats the ELF folder as cdrom0:); never versioned.
 """
 import hashlib
 import struct
@@ -13,11 +13,9 @@ import sys
 import zlib
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from local_tools import build_location, game_files  # noqa: E402
-
-CORE = game_files() / "CORE.GT4"
-OUT = game_files() / "CORE.ELF"  # next to the disc files: the runtime treats the ELF folder as cdrom0:
+FILES = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "game_files"
+CORE = FILES / "CORE.GT4"
+OUT = FILES / "CORE.ELF"
 
 EM_MIPS = 8
 PT_LOAD = 1

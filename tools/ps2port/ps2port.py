@@ -655,7 +655,7 @@ def main():
     args = parser.parse_args()
     port = Port(args.port, args.work)
     for pre in port.toml.get('profile', {}).get('pre', []) if args.step in ('prepare', 'all') else []:
-        run([sys.executable if c == '{python}' else c for c in pre], cwd=port.dir)
+        run([sys.executable if c == '{python}' else str(port.files) if c == '{files}' else c for c in pre], cwd=port.dir)
     steps = PREPARE if args.step == 'prepare' else PREPARE + ['compile'] if args.step == 'all' else [args.step]
     for s in steps:
         log(f'== {s}')
