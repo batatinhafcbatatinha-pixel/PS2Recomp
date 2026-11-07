@@ -239,14 +239,24 @@ namespace
         bool set = false;
         uint32_t base = 0u, end = 0u, stacks = 0u;
     };
+    // Lowest address the boot ELF loads at (set by loadELF before the arena is first used).
+    std::atomic<uint32_t> g_elfLoadBase{0x00100000u};
+
+    // Default for every game: the arena and the callback stacks live below the executable (0x80000..0x100000), RAM
+    // no game image uses, so neither a main stack at the top of RAM (Boku2 asks for 1 MB there, which left no room
+    // for the callback stacks) nor a game allocator that ignores EndOfHeap (GTA LCS/VCS) can collide with them.
+    // PS2X_RUNTIME_ARENA=high keeps the old place above the game's heap limit; an ELF loading below 0x100000 too.
     const RuntimeArenaOverride &runtimeArenaOverride()
     {
         static const RuntimeArenaOverride value = []
         {
             RuntimeArenaOverride o{};
             const char *env = std::getenv("PS2X_RUNTIME_ARENA");
+            const bool high = (env && std::strcmp(env, "high") == 0) || g_elfLoadBase.load() < 0x00100000u;
+            if (!env && !high)
+                env = "80000:100000";
             unsigned base = 0u, end = 0u;
-            if (env && std::sscanf(env, "%x:%x", &base, &end) == 2 && base < end && end <= PS2_RAM_SIZE && end - base >= 0x20000u)
+            if (!high && env && std::sscanf(env, "%x:%x", &base, &end) == 2 && base < end && end <= PS2_RAM_SIZE && end - base >= 0x20000u)
             {
                 o.set = true;
                 o.base = base & ~0xFFFu;
@@ -1286,6 +1296,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
 
         loadedAnySegment = true;
         moduleBase = std::min(moduleBase, ph.vaddr);
+        g_elfLoadBase.store(std::min(g_elfLoadBase.load(), ph.vaddr & 0x1FFFFFFFu));
         const uint64_t segmentVirtualEnd = static_cast<uint64_t>(ph.vaddr) + static_cast<uint64_t>(ph.memsz);
         const uint32_t clampedVirtualEnd =
             (segmentVirtualEnd > std::numeric_limits<uint32_t>::max())
@@ -1499,6 +1510,45 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
     }
 }
 
+// PS2X_OBSERVE_DIR=<dir> (set by tools/ps2port play): every guest address the game reaches without translated code is
+// appended once to <dir>/missing.txt ("<hex> image|outside"); the next tools/ps2port build translates the ones inside
+// the executable natively. For code outside the executable image (overlays, code the game decompresses or loads),
+// the guest RAM is saved once per address (<dir>/ram_<hex>.bin, at most 16 per run) for the overlay step.
+PS2Runtime::RecompiledFunction ps2xHotRecompile(uint8_t *rdram, uint32_t address); // ps2_hot.cpp
+
+static void observeMissingFunction(PS2Memory &memory, uint32_t address)
+{
+    static const char *dir = std::getenv("PS2X_OBSERVE_DIR");
+    if (!dir || !*dir)
+        return;
+    static std::mutex mutex;
+    static std::unordered_set<uint32_t> seen;
+    static int ramDumps = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!seen.insert(address).second)
+        return;
+    const bool inImage = memory.isCodeAddress(address);
+    const std::filesystem::path base(dir);
+    std::error_code ec;
+    std::filesystem::create_directories(base, ec);
+    if (FILE *f = std::fopen((base / "missing.txt").string().c_str(), "a"))
+    {
+        std::fprintf(f, "%08x %s\n", address, inImage ? "image" : "outside");
+        std::fclose(f);
+    }
+    if (!inImage && ramDumps < 16 && memory.getRDRAM())
+    {
+        char name[32];
+        std::snprintf(name, sizeof(name), "ram_%08x.bin", address);
+        if (FILE *f = std::fopen((base / name).string().c_str(), "wb"))
+        {
+            std::fwrite(memory.getRDRAM(), 1, PS2_RAM_SIZE, f);
+            std::fclose(f);
+            ++ramDumps;
+        }
+    }
+}
+
 PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);
@@ -1519,6 +1569,12 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
             if (auto entry = owner->second.find(address); entry != owner->second.end())
                 return entry->second;
         }
+    }
+    observeMissingFunction(m_memory, address);
+    if (RecompiledFunction hot = ps2xHotRecompile(m_memory.getRDRAM(), address))
+    {
+        registerFunction(address, hot);
+        return hot;
     }
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
               << " tableBase=0x" << g_ps2RecompiledFunctionTableBase

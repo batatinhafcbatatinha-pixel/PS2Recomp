@@ -48,7 +48,7 @@ namespace
 
     // Call of Duty is a PC shooter layout: R1 fire, L1 aim, R2 frag, L2 second grenade, X jump, Circle stance,
     // Square reload/use, Triangle switch weapon, L3 sprint, R3 melee (the slots of the game's own binding table,
-    // 0x484120 in SLUS_217.46). Boku no Natsuyasumi 2 is a Japanese release: Circle confirms, Cross cancels.
+    // 0x484120 in SLUS_217.46). Japanese releases: Circle confirms, Cross cancels.
     const std::vector<InputProfile> &inputProfiles()
     {
         static const std::vector<InputProfile> list = {
@@ -59,7 +59,7 @@ namespace
               {KEY_G, PAD_R2}, {KEY_Q, PAD_L2}, {KEY_LEFT_SHIFT, PAD_L3}, {KEY_F, PAD_R3}, {KEY_V, PAD_R3},
               {KEY_ENTER, PAD_START}, {KEY_ESCAPE, PAD_START}, {KEY_TAB, PAD_SELECT}},
              PAD_R1, PAD_L1, PAD_R3, PAD_TRIANGLE, false},
-            {"SCPS_150.26",
+            {"(japanese)",  // chosen by serial prefix in inputProfile()
              {{KEY_UP, PAD_UP}, {KEY_DOWN, PAD_DOWN}, {KEY_LEFT, PAD_LEFT}, {KEY_RIGHT, PAD_RIGHT},
               {KEY_SPACE, PAD_CIRCLE}, {KEY_C, PAD_CIRCLE}, {KEY_X, PAD_CROSS}, {KEY_ESCAPE, PAD_CROSS},
               {KEY_BACKSPACE, PAD_CROSS}, {KEY_Z, PAD_SQUARE}, {KEY_V, PAD_TRIANGLE}, {KEY_Q, PAD_L1}, {KEY_E, PAD_R1},
@@ -85,6 +85,11 @@ namespace
         {
             profile = &inputProfiles().back();
             const char *const id = host_menu::theme ? host_menu::theme->gameId : "";
+            // Japanese releases (SCPS, SLPS, SLPM, SCAJ, SLAJ, SCPM, PAPX serials): Circle confirms, Cross cancels.
+            static const char *const japanese[] = {"SCPS", "SLPS", "SLPM", "SCAJ", "SLAJ", "SCPM", "PAPX"};
+            for (const char *prefix : japanese)
+                if (host_menu::guestElf.find(prefix) != std::string::npos)
+                    profile = &inputProfiles()[1];
             for (const InputProfile &candidate : inputProfiles())
                 if (candidate.gameId[0] && std::strcmp(candidate.gameId, id) == 0)
                     profile = &candidate;

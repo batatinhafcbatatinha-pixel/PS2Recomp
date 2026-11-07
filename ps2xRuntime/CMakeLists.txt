@@ -10,7 +10,7 @@ set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 32 CACHE STRING "Unity build batch size f
 option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2EntryRunner" ON)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
-option(PS2X_ENABLE_CODWAW_SUPPLEMENTS "Include private Final Fronts code supplements and address hooks" ON)
+option(PS2X_ENABLE_CODWAW_SUPPLEMENTS "Include private Final Fronts code supplements and address hooks (games/codwaw-ff sets it)" OFF)
 option(PS2X_REQUIRE_GPU_RASTERIZER "Reject software rasterizer fallback" OFF)
 option(PS2X_GPU_COMPUTE_SCANOUT "Decode and composite display scanout on the GPU" OFF)
 option(PS2X_GPU_TEXTURE_HANDOFF "Present a shared GL texture without RGBA CPU roundtrip" OFF)
@@ -430,6 +430,7 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
+    src/lib/ps2_hot.cpp
     src/lib/ps2_vif1_interpreter.cpp
     src/lib/vu/ps2_vu1_core.cpp
     src/lib/vu/ps2_vu1_upper.cpp
@@ -687,6 +688,9 @@ if(WIN32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
     target_link_libraries(ps2_runtime PRIVATE OpenGL::EGL OpenGL::OpenGL ${CMAKE_DL_LIBS})
+endif()
+if(NOT WIN32)
+    target_link_libraries(ps2_runtime PRIVATE ${CMAKE_DL_LIBS})  # ps2_hot.cpp: dlopen
 endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE

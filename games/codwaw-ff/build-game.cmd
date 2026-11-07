@@ -41,7 +41,7 @@ goto configure
 rem Configuring is only needed the first time; afterwards ninja re-runs CMake itself when needed.
 rem Always reconfigure the extracted-files adapter.
 :configure
-cmake -S "%PS2R%" -B "%~dp0build\game" -DPORT_GAME_ROOT="%~dp0." -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="%~dp0../../tools/port-installer/runtime/defer_runtime.cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS2X_ENABLE_LTCG=OFF -DPS2X_FAST_LINK=ON -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DPS2X_ENABLE_IOP_RPC_TRACE=OFF -DPS2X_GPU_COMPUTE_SCANOUT=ON -DPS2X_GPU_TEXTURE_HANDOFF=ON "-DPS2X_RUNNER_DIR=%RUNNER%" "-DPS2X_CODWAW_PROJECT_DIR=%PROJECT_CM%" "-DPS2X_GAME_CHUNK_DIR=%CHUNKS_CM%" "-DPS2X_GAME_LIB_PREBUILT=%GAMELIB_CM%"
+cmake -S "%PS2R%" -B "%~dp0build\game" -DPORT_GAME_ROOT="%~dp0." -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="%~dp0../../tools/port-installer/runtime/defer_runtime.cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS2X_ENABLE_CODWAW_SUPPLEMENTS=ON -DPS2X_ENABLE_LTCG=OFF -DPS2X_FAST_LINK=ON -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DPS2X_ENABLE_IOP_RPC_TRACE=OFF -DPS2X_GPU_COMPUTE_SCANOUT=ON -DPS2X_GPU_TEXTURE_HANDOFF=ON "-DPS2X_RUNNER_DIR=%RUNNER%" "-DPS2X_CODWAW_PROJECT_DIR=%PROJECT_CM%" "-DPS2X_GAME_CHUNK_DIR=%CHUNKS_CM%" "-DPS2X_GAME_LIB_PREBUILT=%GAMELIB_CM%"
 if errorlevel 1 exit /b 1
 :build
 if /i not "%MODE%"=="full" goto exe

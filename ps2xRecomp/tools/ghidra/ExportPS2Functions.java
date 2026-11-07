@@ -1017,14 +1017,22 @@ public class ExportPS2Functions extends GhidraScript {
 
     @Override
     public void run() throws Exception {
-        File tomlFile = askFile("Choose output TOML config file", "Save");
-        if (tomlFile == null) {
-            return;
-        }
-
-        File csvFile = askFile("Choose output CSV file", "Save");
-        if (csvFile == null) {
-            return;
+        // Headless: ExportPS2Functions.java <toml> <csv>. GUI: prompts for both files.
+        String[] scriptArgs = getScriptArgs();
+        File tomlFile;
+        File csvFile;
+        if (scriptArgs.length >= 2) {
+            tomlFile = new File(scriptArgs[0]);
+            csvFile = new File(scriptArgs[1]);
+        } else {
+            tomlFile = askFile("Choose output TOML config file", "Save");
+            if (tomlFile == null) {
+                return;
+            }
+            csvFile = askFile("Choose output CSV file", "Save");
+            if (csvFile == null) {
+                return;
+            }
         }
 
         FunctionManager fm = currentProgram.getFunctionManager();

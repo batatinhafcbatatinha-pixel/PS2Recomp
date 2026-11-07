@@ -68,6 +68,7 @@ namespace host_menu {
 
     inline const Theme *theme = nullptr;
     inline std::string gameTitle;
+    inline std::string guestElf;  // the window title the runtime opened with: the guest ELF name (any game)
     inline bool open = false;
     inline bool suppressPad = false;  // keeps the pad neutral until the keys that closed the menu are released
     inline bool portuguese = false;
@@ -266,6 +267,7 @@ void main() {
     // Called once the window exists; `windowTitle` carries the guest ELF name.
     inline void initialize(const char *windowTitle) {
         theme = &fallbackTheme();
+        guestElf = windowTitle ? windowTitle : "";
         for (const Theme &candidate : themes())
             if (windowTitle && std::strstr(windowTitle, candidate.gameId)) theme = &candidate;
         gameTitle = theme->title[0] ? theme->title : (windowTitle ? windowTitle : "");

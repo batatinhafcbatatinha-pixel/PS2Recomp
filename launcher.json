@@ -514,5 +514,42 @@
         }
       ]
     }
-  ]
+  ],
+  "generic": {
+    "play": "Play.cmd",
+    "disk_gb": 25,
+    "download_gb": 1,
+    "minutes": "60-240",
+    "tools": [
+      "cmake",
+      "ninja",
+      "ghidra"
+    ],
+    "gb_per_job": 2,
+    "steps": [
+      {
+        "name": "Analyse your game executable (Ghidra) and translate the game (PS2Recomp)",
+        "run": [
+          "{python}",
+          "../../../tools/ps2port/ps2port.py",
+          "prepare",
+          "--port",
+          "{root}"
+        ],
+        "done_if": "build/chunks/chunk_register.cpp",
+        "prepare": true
+      },
+      {
+        "name": "Compile",
+        "run": [
+          "{python}",
+          "../../../tools/ps2port/ps2port.py",
+          "compile",
+          "--port",
+          "{root}"
+        ],
+        "retry_if": "build/native/build.ninja"
+      }
+    ]
+  }
 }

@@ -28,3 +28,5 @@ ps2xRuntime/src/lib/codwaw_*_chunk_*.cpp
 
 # Launcher downloads, portable build tools (Launcher.cmd / port-installer setup)
 /.local/
+
+__pycache__/

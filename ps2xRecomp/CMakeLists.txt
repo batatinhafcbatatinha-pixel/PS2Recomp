@@ -21,6 +21,9 @@ FetchContent_Declare(
     toml11
     GIT_REPOSITORY https://github.com/ToruNiina/toml11.git
     GIT_TAG v4.4.0
+    GIT_SHALLOW TRUE
+    # Its docs/tests submodules are not needed and exceed the Windows path limit in deep folders.
+    GIT_SUBMODULES ""
 )
 FetchContent_MakeAvailable(toml11)
 

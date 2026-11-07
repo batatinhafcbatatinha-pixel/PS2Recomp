@@ -684,6 +684,35 @@
     X(sceVu0UnitMatrix)                       \
     X(sceVu0ViewScreenMatrix)                 \
     X(sceWrite)                               \
+    /* IOP-side client services (Services.cpp, FileIO.cpp, Pad.cpp) */ \
+    X(sceDopen)                               \
+    X(sceDread)                               \
+    X(sceDclose)                              \
+    X(sceGetstat)                             \
+    X(sceMkdir)                               \
+    X(sceDevctl)                              \
+    X(sceSync)                                \
+    X(sceChstat)                              \
+    X(sceRename)                              \
+    X(sceFormat)                              \
+    X(sceMount)                               \
+    X(sceUmount)                              \
+    X(sceSymlink)                             \
+    X(sceReadlink)                            \
+    X(sceFsSetIopBuf)                         \
+    X(sceFsSetIopPrio)                        \
+    X(scePowerOffHandler)                     \
+    X(sceSifSearchModuleByName)               \
+    X(sceSifStopModule)                       \
+    X(sceSifUnloadModule)                     \
+    X(scePad2Init)                            \
+    X(scePad2End)                             \
+    X(scePad2CreateSocket)                    \
+    X(scePad2DeleteSocket)                    \
+    X(scePad2GetState)                        \
+    X(scePad2Read)                            \
+    X(scePad2GetButtonInfo)                   \
+    X(scePad2NoInfo)                          \
     /* Game/middleware */
 
 // Test hooks: override pad input for scePadRead.
