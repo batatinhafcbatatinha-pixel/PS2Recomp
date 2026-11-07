@@ -1072,6 +1072,8 @@ namespace ps2_stubs
 
                 data = playback.videoSequenceSyncBuffer.data();
                 size = playback.videoSequenceSyncBuffer.size();
+                // A new sequence after a sequence_end_code: the stream goes on.
+                playback.sawSequenceEnd = false;
                 if (playback.pictureIntervalQ32 == 0u)
                 {
                     playback.pictureIntervalQ32 = kDefaultPictureIntervalQ32;
@@ -1107,7 +1109,48 @@ namespace ps2_stubs
             }
 
             playback.videoSequenceSyncBuffer.clear();
+            if (playback.sawSequenceEnd && !playback.streamEnded && playback.decoder)
+            {
+                // sequence_end_code: the decoder holds the last reference picture until flushed. Start over on the
+                // next sequence header if the stream has one. GTA VCS feeds its PSS until fewer than 5 bytes remain,
+                // so the 0x000001B9 program end and the CD padding never reach the demuxer and the sequence end is
+                // the only end marker it sees (2026-11-04).
+                playback.decoder->flush(playback.decodedFrames);
+                playback.decoder.reset();
+                playback.waitingForVideoSequenceHeader = true;
+            }
             flushDecoderIfEnded(playback);
+        }
+
+        // The later libmpeg (GTA VCS, 2006) moved the sceMpeg sys fields by 0x14 and turned sceMpeg.frameCount (+8)
+        // into a lag counter that its players test for 0 before uploading the picture. Its sceMpegGetPicture starts
+        // with: lw a3,0x40(a0) ... sw v0,0xC4(a3); sw a1,0xEC(a3); sw a2,0xF8(a3).
+        bool mpegLateLibraryLayout(const uint8_t *rdram)
+        {
+            static const bool late = [rdram]
+            {
+                if (!rdram)
+                    return false;
+                const uint32_t *words = reinterpret_cast<const uint32_t *>(rdram);
+                const size_t end = std::min<size_t>(PS2_RAM_SIZE, 0x01000000u) / 4u - 3u;
+                for (size_t i = 0x100000u / 4u; i < end; ++i)
+                {
+                    if (words[i] == 0xACE200C4u && words[i + 1u] == 0xACE500ECu && words[i + 2u] == 0xACE600F8u)
+                    {
+                        std::cerr << "[mpeg] late libmpeg layout (GetPicture store at 0x" << std::hex << i * 4u
+                                  << std::dec << ")" << std::endl;
+                        return true;
+                    }
+                }
+                return false;
+            }();
+            return late;
+        }
+
+        // All pictures of the video were decoded and no further pack is pending.
+        bool mpegVideoSequenceFinished(const MpegPlaybackState &playback)
+        {
+            return playback.sawSequenceEnd && playback.pssBuffer.size() < 2048u;
         }
 
         void erasePssPrefix(MpegPlaybackState &playback, size_t count)
@@ -2057,13 +2100,17 @@ namespace ps2_stubs
         mpegGuestWrite32(rdram, uVar3 + 0x94, 0xFFFFFFFFu);
         mpegGuestWrite32(rdram, uVar3 + 0x98, 0xFFFFFFFFu);
 
-        mpegGuestWrite32(rdram, 0x1717BCu, param_1);
+        // Library globals at fixed addresses of the game this was decompiled from; elsewhere they land in code.
+        if (!mpegLateLibraryLayout(rdram))
+        {
+            mpegGuestWrite32(rdram, 0x1717BCu, param_1);
 
-        static const uint32_t s_refValues[] = {
-            0x171A50u, 0x171C58u, 0x171CC0u, 0x171D28u, 0x171D90u,
-            0x171AB8u, 0x171B20u, 0x171B88u, 0x171BF0u};
-        for (unsigned i = 0; i < 9u; ++i)
-            mpegGuestWrite32(rdram, 0x171800u + i * 4u, s_refValues[i]);
+            static const uint32_t s_refValues[] = {
+                0x171A50u, 0x171C58u, 0x171CC0u, 0x171D28u, 0x171D90u,
+                0x171AB8u, 0x171B20u, 0x171B88u, 0x171BF0u};
+            for (unsigned i = 0; i < 9u; ++i)
+                mpegGuestWrite32(rdram, 0x171800u + i * 4u, s_refValues[i]);
+        }
 
         uint32_t setDynamicRet = a1_init;
         if (uint8_t *p = getMemPtr(rdram, puVar4 + 8))
@@ -2314,7 +2361,8 @@ namespace ps2_stubs
             if (playback.decodedFrames.empty() &&
                 !g_mpeg_stub_state.currentCdStreamEofSeen &&
                 !playback.streamEnded &&
-                !playback.decoderFailed)
+                !playback.decoderFailed &&
+                !mpegVideoSequenceFinished(playback))
             {
                 if (g_mpeg_stub_state.getPictureWaitTraceCount < 32u)
                 {
@@ -2328,7 +2376,11 @@ namespace ps2_stubs
                 }
                 static uint32_t tracedEmpty = 0;
                 if (std::getenv("PS2X_MPEG_TRACE") && tracedEmpty++ < 40u)
-                    std::cerr << "[mpeg:picture-empty] served=" << playback.picturesServed << std::endl;
+                    std::cerr << "[mpeg:picture-empty] served=" << playback.picturesServed
+                              << " seqEnd=" << playback.sawSequenceEnd << " pss=" << playback.pssBuffer.size()
+                              << " produced=" << g_mpeg_stub_state.cdStreamBytesProduced
+                              << " demuxed=" << g_mpeg_stub_state.cdStreamBytesDemuxed
+                              << " eofPending=" << g_mpeg_stub_state.cdStreamEofPending << std::endl;
                 lock.unlock();
                 runtime->eeScheduler().waitExternal(
                     EeWaitReason::Mpeg,
@@ -2416,11 +2468,26 @@ namespace ps2_stubs
             }
         }
 
+        const bool lateLayout = mpegLateLibraryLayout(rdram);
         mpegGuestWrite32(rdram, mpegAddr + 0x00u, width);
         mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
-        mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
+        mpegGuestWrite32(rdram, mpegAddr + 0x08u, lateLayout ? 0u : frameCount);
 
-        if (uint8_t *base = getMemPtr(rdram, mpegAddr))
+        if (lateLayout)
+        {
+            if (uint8_t *base = getMemPtr(rdram, mpegAddr))
+            {
+                if (uint8_t *inner = getMemPtr(rdram, *reinterpret_cast<uint32_t *>(base + 0x40)))
+                {
+                    *reinterpret_cast<uint32_t *>(inner + 0xc4) = 1;
+                    *reinterpret_cast<uint32_t *>(inner + 0xec) = (getRegU32(ctx, 5) & 0x0FFFFFFFu) | 0x20000000u;
+                    *reinterpret_cast<uint32_t *>(inner + 0xf8) = getRegU32(ctx, 6);
+                    *reinterpret_cast<uint32_t *>(inner + 0xf0) = 0;
+                    *reinterpret_cast<uint32_t *>(inner + 0xf4) = 0;
+                }
+            }
+        }
+        else if (uint8_t *base = getMemPtr(rdram, mpegAddr))
         {
             const uint32_t iVar1 = *reinterpret_cast<uint32_t *>(base + 0x40);
             if (uint8_t *inner = getMemPtr(rdram, iVar1))
@@ -2452,9 +2519,14 @@ namespace ps2_stubs
             {
                 uint64_t sum = 0u;
                 const uint8_t *out = getMemPtr(rdram, imageAddr);
-                const size_t sample = std::min<size_t>(byteLimit, 64u * 1024u);
+                const size_t sample = byteLimit;
+                size_t lit = 0u;
                 for (size_t i = 0; out && i < sample; ++i)
+                {
                     sum += out[i];
+                    lit += (i % 4u) != 3u && out[i] > 48u;
+                }
+                std::cerr << "[mpeg:picture] lit=" << lit << " of " << sample * 3u / 4u << std::endl;
                 std::cerr << "[mpeg:picture] #" << tracedPictures << " " << width << "x" << height << " mb=" << mbCount
                           << " image=0x" << std::hex << imageAddr << std::dec << " avg=" << (sample ? sum / sample : 0u)
                           << " queued=" << getPlaybackState(mpegAddr).decodedFrames.size() << std::endl;
@@ -2517,6 +2589,7 @@ namespace ps2_stubs
             playback.streamEnded;
         const bool ended = producerEnded &&
                            (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
+        const bool videoFinished = mpegVideoSequenceFinished(playback);
         const uint64_t presentationEnd = playback.presentationEndTickQ32;
         const uint64_t currentTickQ32 = runtime != nullptr
                                             ? (runtime->eeScheduler().currentVSyncTick() << 32u)
@@ -2540,7 +2613,7 @@ namespace ps2_stubs
             ++g_mpeg_stub_state.isEndTraceCount;
         }
 
-        setReturnS32(ctx, (ended && playback.decodedFrames.empty() && presentationComplete) ? 1 : 0);
+        setReturnS32(ctx, ((ended || videoFinished) && playback.decodedFrames.empty() && presentationComplete) ? 1 : 0);
     }
 
     void sceMpegIsRefBuffEmpty(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

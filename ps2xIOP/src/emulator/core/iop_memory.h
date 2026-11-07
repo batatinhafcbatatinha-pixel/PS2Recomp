@@ -71,6 +71,8 @@ namespace ps2x::iop::detail
         void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
 
         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
+        // IOP cycle counter of the emulator: AutoDMA MADR reads advance with it.
+        void setCycleSource(const uint64_t *cycles) noexcept { m_cycles = cycles; }
         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
 
         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
@@ -90,6 +92,15 @@ namespace ps2x::iop::detail
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
         std::optional<DmaStart> m_dmaStart;
+        const uint64_t *m_cycles = nullptr;
+        struct AdmaProgress
+        {
+            bool active = false;
+            uint64_t start = 0;
+            uint32_t madr = 0;
+            uint32_t bytes = 0;
+        };
+        AdmaProgress m_adma[2]{};
 
         // Minimal SPU2 voice address model: sound RAM filled by the SPU DMA channels and the next-address (NAX)
         // register of keyed-on voices advanced in real time through the ADPCM blocks (loop flags honoured).

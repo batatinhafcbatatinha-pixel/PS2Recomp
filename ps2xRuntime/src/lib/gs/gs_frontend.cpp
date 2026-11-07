@@ -1423,6 +1423,17 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TRXDIR:
     {
         m_trxdir = static_cast<uint32_t>(value & 0x3);
+        {
+            // PS2X_GS_XFER_TRACE=N: log the first N transfers (then every 256th).
+            static const long traceLimit = std::getenv("PS2X_GS_XFER_TRACE") ? std::atol(std::getenv("PS2X_GS_XFER_TRACE")) : 0;
+            static long traced = 0;
+            if (traceLimit > 0 && (traced < traceLimit || (traced & 255) == 0))
+                std::fprintf(stderr, "[gs:xfer] #%ld dir=%u dbp=%u dbw=%u dpsm=%x dsa=%u,%u sbp=%u rr=%ux%u\n", traced, m_trxdir,
+                             m_bitbltbuf.dbp, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, m_trxpos.dsax, m_trxpos.dsay, m_bitbltbuf.sbp,
+                             m_trxreg.rrw, m_trxreg.rrh);
+            if (traceLimit > 0)
+                ++traced;
+        }
 
         if (m_backend)
         {

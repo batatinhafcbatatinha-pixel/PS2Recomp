@@ -64,6 +64,8 @@ namespace ps2x::iop::detail
         m_interruptMask = 0;
         m_interruptControl = 1;
         m_dmaStart.reset();
+        m_adma[0] = AdmaProgress{};
+        m_adma[1] = AdmaProgress{};
     }
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
@@ -271,6 +273,19 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::readHardware32(uint32_t address) const
     {
+        // SPU2 DMA MADR (core 0 0x1F8010C0, core 1 0x1F801500) during an AutoDMA block: the real register walks
+        // through the buffer as the SPU2 pulls 4-byte stereo samples at 48 kHz (192 IOP cycles per byte). LIBSD's
+        // sceSdBlockTransStatus returns it, and movie players (GTA VCS) use it as their audio clock.
+        static const bool admaInstantRead = std::getenv("PS2X_IOP_ADMA_INSTANT") != nullptr;
+        if ((address == 0x1F8010C0u || address == 0x1F801500u) && m_cycles && !admaInstantRead)
+        {
+            const AdmaProgress &p = m_adma[address == 0x1F801500u ? 1 : 0];
+            if (p.active)
+            {
+                const uint64_t elapsed = (*m_cycles > p.start ? *m_cycles - p.start : 0u) / 192u;
+                return p.madr + (static_cast<uint32_t>(std::min<uint64_t>(elapsed, p.bytes)) & ~3u);
+            }
+        }
         if (IopSpu2::enabled() && address >= Spu2Base && address < Spu2Base + 0x800u)
         {
             spu2Service();
@@ -357,6 +372,8 @@ namespace ps2x::iop::detail
         }
 
         m_hardware[address] = value;
+        if (address == 0x1F8010C0u || address == 0x1F801500u)
+            m_adma[address == 0x1F801500u ? 1 : 0].active = false;
         if (spuModelEnabled() && (address == Spu2Base + 0x1A0u || address == Spu2Base + kSpu2Core1 + 0x1A0u))
         {
             // KON0 (voices 0-15) / KON1 (16-23) are write triggers: act on them and clear the stored word, so the
@@ -398,17 +415,33 @@ namespace ps2x::iop::detail
         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
+        // AutoDMA (core ADMAS at +0x19A, high half of the word at +0x198): the SPU2 pulls the stream at 48 kHz,
+        // 4 bytes per stereo sample, so a block takes real time: IOP clock 36.864 MHz / 192000 B/s = 192 cycles per
+        // byte (768 per word). Completing it at once made the BlockTrans status (the movie players' audio clock,
+        // GTA VCS sceSdRemote 0x8100) flip between the two halves without advancing; the audio ring never drained
+        // and the PSS demux stalled on the legal-screen movie. PS2X_IOP_ADMA_INSTANT=1 restores the old timing.
+        uint32_t admaWord = 0u;
+        if (const auto current = m_hardware.find(0x1F900198u + (secondCore ? 0x400u : 0u)); current != m_hardware.end())
+            admaWord = current->second;
+        static const bool admaInstant = std::getenv("PS2X_IOP_ADMA_INSTANT") != nullptr;
+        const bool autoDma = !admaInstant && ((admaWord >> 16u) & 0x3u) != 0u;
+        {
+            AdmaProgress &p = m_adma[secondCore ? 1 : 0];
+            p.active = autoDma && m_cycles;
+            p.start = m_cycles ? *m_cycles : 0u;
+            const auto madr = m_hardware.find(secondCore ? 0x1F801500u : 0x1F8010C0u);
+            p.madr = madr != m_hardware.end() ? madr->second : 0u;
+            p.bytes = static_cast<uint32_t>(transferWords * 4u);
+        }
         // RAM -> SPU2. The native SPU2 model (IopSpu2) replaces the older register model, so either takes the data.
         const bool toSpu = (value & 1u) != 0u && (spuModelEnabled() || IopSpu2::enabled());
-        // AutoDMA is paced by the SPU2: each 1 KB block (256 stereo samples) completes after 256 output samples,
-        // and that completion is the stream clock of sceSdBlockTrans users.
-        const bool paced = toSpu && IopSpu2::enabled() && m_spu2.admaActive(secondCore ? 1 : 0);
         if (toSpu)
             spuDmaToSoundRam(secondCore, static_cast<uint32_t>(std::min<uint64_t>(transferWords * 4u, kSpuRamSize)));
-        const uint64_t pacedCycles = std::max<uint64_t>(transferWords * 4u / 1024u, 1u) * 256u * IopSpu2::kCyclesPerSample;
+        // AutoDMA completes at the SPU2's pace: 768 IOP cycles per word (one stereo sample), i.e. 256 samples per 1 KB.
+        const bool paced = autoDma || (toSpu && IopSpu2::enabled() && m_spu2.admaActive(secondCore ? 1 : 0));
         m_dmaStart = DmaStart{
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
-            paced ? pacedCycles : std::max<uint64_t>(transferWords * 2u, 64u),
+            paced ? transferWords * 768u : std::max<uint64_t>(transferWords * 2u, 64u),
         };
     }
 

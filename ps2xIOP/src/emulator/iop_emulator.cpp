@@ -217,6 +217,7 @@ namespace ps2x::iop::detail
             nextModuleId = 1;
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
+            memory.setCycleSource(&totalCycles);
             totalInstructions = 0;
             eeCycleCarry = 0;
             activeCpu = nullptr;

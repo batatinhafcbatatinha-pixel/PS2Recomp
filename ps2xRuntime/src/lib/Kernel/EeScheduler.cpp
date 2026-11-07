@@ -626,7 +626,8 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    // 0..127 like the EE kernel: the SDK's own InitThread creates its top thread at priority 0 (GTA LCS).
+    // The EE kernel accepts 0..127: libkernel's InitThread creates its top thread at priority 0 and then moves the
+    // main thread to 1 (GTA VCS's movie player depends on that).
     if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
