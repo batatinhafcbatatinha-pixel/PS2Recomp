@@ -2,7 +2,7 @@
 rem Headless Ghidra (R5900 / EmotionEngine) analysis of SLUS_213.88 + PS2Recomp function export.
 rem Exports the PS2Recomp TOML (stubs + SDK bindings) and the function CSVs.
 setlocal
-if not defined GHIDRA set "GHIDRA=C:\Users\dudua\Downloads\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC"
+if not defined GHIDRA set "GHIDRA=%~dp0..\..\.local\tools\ghidra-12.1.4"
 if not exist "%GHIDRA%\support\analyzeHeadless.bat" (
   echo Ghidra not found at "%GHIDRA%". Set GHIDRA to your Ghidra folder.
   exit /b 1

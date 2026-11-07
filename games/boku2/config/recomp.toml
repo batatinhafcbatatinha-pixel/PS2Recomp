@@ -1,0 +1,77 @@
+# Boku2-specific FunctionManager boundaries; no synthetic label functions.
+[general]
+input = "game_files/SCPS_150.26"
+output = "project/runner"
+ghidra_output = "config/ghidra-functions-only.csv"
+single_file_output = false
+low_memory_mode = true
+output_worker_threads = 1
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true
+stubs = [
+"SetGsCrt@0x002116A0",
+"AddIntcHandler@0x00211780",
+"RemoveIntcHandler@0x002117A0",
+"AddDmacHandler@0x002117B0",
+"AddDmacHandler@0x002117C0",
+"RemoveDmacHandler@0x002117D0",
+"EnableIntc@0x002117E0",
+"DisableIntc@0x002117F0",
+"EnableDmac@0x00211800",
+"DisableDmac@0x00211810",
+"SetAlarm@0x00211820",
+"ReleaseAlarm@0x00211830",
+"iEnableIntc@0x00211840",
+"iDisableIntc@0x00211850",
+"iEnableDmac@0x00211860",
+"iDisableDmac@0x00211870",
+"iSetAlarm@0x00211880",
+"CreateThread@0x002118A0",
+"DeleteThread@0x002118B0",
+"StartThread@0x002118C0",
+"ExitDeleteThread@0x002118E0",
+"TerminateThread@0x002118F0",
+"ChangeThreadPriority@0x00211930",
+"iChangeThreadPriority@0x00211940",
+"RotateThreadReadyQueue@0x00211950",
+"GetThreadId@0x00211990",
+"ReferThreadStatus@0x002119A0",
+"SleepThread@0x002119C0",
+"WakeupThread@0x002119D0",
+"iWakeupThread@0x002119E0",
+"SuspendThread@0x00211A10",
+"ResumeThread@0x00211A30",
+"EndOfHeap@0x00211A80",
+"CreateSema@0x00211AA0",
+"DeleteSema@0x00211AB0",
+"SignalSema@0x00211AC0",
+"iSignalSema@0x00211AD0",
+"WaitSema@0x00211AE0",
+"PollSema@0x00211AF0",
+"iReferSemaStatus@0x00211B20",
+"SetOsdConfigParam@0x00211B40",
+"GetOsdConfigParam@0x00211B50",
+"EnableCache@0x00211CF0",
+"DisableCache@0x00211D00",
+"FlushCache@0x00211D20",
+"iFlushCache@0x00211D50",
+"sceSifStopDma@0x00211D70",
+"GsGetIMR@0x00211DC0",
+"iGsGetIMR@0x00211DD0",
+"GsPutIMR@0x00211DE0",
+"iGsPutIMR@0x00211DF0",
+"SetVSyncFlag@0x00211E10",
+"sceSifDmaStat@0x00211E40",
+"sceSifSetDma@0x00211E60",
+"isceSifSetDma@0x00211E70",
+"sceSifSetDChain@0x00211E80",
+"isceSifSetDChain@0x00211E90",
+"sceSifSetReg@0x00211EA0",
+"sceSifGetReg@0x00211EB0",
+"Deci2Call@0x00211ED0",
+"GetMemorySize@0x00211F00",
+"InitTLB@0x00211F10",
+"SignalSema@0x00233F30",
+]
+skip = []

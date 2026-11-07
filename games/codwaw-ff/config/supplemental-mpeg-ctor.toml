@@ -1,0 +1,7 @@
+[general]
+input = "analysis/mpeg-ctor.elf"
+output = "project/supplemental-mpeg-ctor"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true

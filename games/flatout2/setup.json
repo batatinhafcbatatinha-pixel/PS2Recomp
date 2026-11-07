@@ -1,0 +1,56 @@
+{
+  "game": "FlatOut 2",
+  "disc": "PlayStation 2, USA (SLUS-21251)",
+  "play": "Play-FlatOut2.cmd",
+  "disk_gb": 20,
+  "download_gb": 1,
+  "minutes": "60-180",
+  "tools": [
+    "cmake",
+    "ninja",
+    "ghidra"
+  ],
+  "gb_per_job": 4,
+  "steps": [
+    {
+      "name": "Find the functions of your game executable (Ghidra, can take an hour)",
+      "run": [
+        "cmd",
+        "/c",
+        "ghidra-export.cmd"
+      ],
+      "done_if": "config/ghidra-functions-only.csv",
+      "prepare": true
+    },
+    {
+      "name": "Build the PS2Recomp tools",
+      "run": [
+        "cmd",
+        "/c",
+        "build-recompiler.cmd"
+      ],
+      "done_if": "recompiler/ps2xRecomp/ps2_recomp.exe",
+      "prepare": true
+    },
+    {
+      "name": "Translate the game code",
+      "run": [
+        "{python}",
+        "scripts/prepare_game_code.py"
+      ],
+      "done_if": "project/sdk-handlers.inc",
+      "prepare": true
+    },
+    {
+      "name": "Compile",
+      "run": [
+        "cmd",
+        "/c",
+        "build-native.cmd",
+        "--jobs",
+        "{jobs}"
+      ],
+      "retry_if": "build/native/build.ninja"
+    }
+  ]
+}

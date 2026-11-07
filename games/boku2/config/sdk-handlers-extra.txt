@@ -1,0 +1,3 @@
+# libcdvd sceCdDiskReady(mode): binds cdvdfsv DISKREADY server 0x8000059A (absent without the
+# IOP BIOS module) and returns 2/6; retried forever by thread 4 at boot.
+sceCdDiskReady@0x0021E3C8

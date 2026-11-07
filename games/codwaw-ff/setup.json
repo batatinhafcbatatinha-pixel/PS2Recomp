@@ -1,0 +1,68 @@
+{
+  "game": "Call of Duty: World at War - Final Fronts",
+  "disc": "PlayStation 2, USA/Canada (SLUS-21746)",
+  "play": "Play-CoD.cmd",
+  "disk_gb": 40,
+  "download_gb": 1,
+  "minutes": "120-300",
+  "tools": [
+    "cmake",
+    "ninja",
+    "ghidra"
+  ],
+  "gb_per_job": 2,
+  "steps": [
+    {
+      "name": "Copy and check your executable and video module",
+      "prepare": true,
+      "run": [
+        "{python}",
+        "scripts/prepare_game_code.py",
+        "--disc"
+      ],
+      "done_if": "analysis/disc/MISC/MPEG_DLL.ASR"
+    },
+    {
+      "name": "Find the functions of your game executable (Ghidra, can take an hour or more)",
+      "prepare": true,
+      "run": [
+        "cmd",
+        "/c",
+        "ghidra-export.cmd"
+      ],
+      "done_if": "config/ghidra-functions.csv"
+    },
+    {
+      "name": "Build the PS2Recomp tools",
+      "prepare": true,
+      "run": [
+        "cmd",
+        "/c",
+        "build-recompiler.cmd"
+      ],
+      "done_if": "build/recompiler/ps2xRecomp/ps2_recomp.exe"
+    },
+    {
+      "name": "Translate the game code and its supplements",
+      "prepare": true,
+      "run": [
+        "{python}",
+        "scripts/prepare_game_code.py"
+      ],
+      "done_if": "project/supplemental-mpeg-extra/bindings.inc"
+    },
+    {
+      "name": "Compile",
+      "run": [
+        "cmd",
+        "/c",
+        "build-game.cmd",
+        "full"
+      ],
+      "env": {
+        "BUILD_JOBS": "{jobs}"
+      },
+      "retry_if": "build/game/build.ninja"
+    }
+  ]
+}

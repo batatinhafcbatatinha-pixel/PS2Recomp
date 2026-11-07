@@ -11,10 +11,13 @@ Native PC port profile for PS2Recomp: this game's recompiler configuration, nati
 
 ## Building
 
-From this folder, with your extracted disc in `game_files/` (or a folder named in `build-location.txt`):
-Ghidra export (`ghidra-export*.cmd`), `build-recompiler.cmd`, `python scripts/prepare_game_code.py`, `build-native.cmd`,
-then `Play-FlatOut2.cmd`. The runtime is this PS2Recomp repository (`../..`). `installer.json` lists the files and hashes of the
-supported disc. Generated code, Ghidra exports and builds stay on your PC.
+Easiest: the launcher of this repository (`Launcher.cmd` at the root, see the [main README](../../README.md)) picks this
+game from your disc image, installs the tools, builds it and starts it.
+
+By hand, from this folder, with your extracted disc in `game_files/` (or a folder named in `build-location.txt`): the steps
+in `setup.json` in order (Ghidra export, `build-recompiler.cmd`, `python scripts/prepare_game_code.py`, the compile), then
+`Play-FlatOut2.cmd`. The runtime is this PS2Recomp repository (`../..`). `installer.json` lists the files and hashes of the supported
+disc. Generated code, Ghidra exports and builds stay on your PC.
 
 Development notes (Portuguese): `NOTES.md` / `STATUS.md`.
 

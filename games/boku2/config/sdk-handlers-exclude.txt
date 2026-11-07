@@ -1,0 +1,6 @@
+# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables);
+# in Boku2 0x126428 is an unrelated game function. The guest sceIpuInit runs instead.
+sceIpuInit
+# Runtime stub is an empty no-op; the guest sceGsSetDefDBuffDc calls it to fill the swap-time clear,
+# so Z was never cleared and the background sprite failed depth where the character had been (trail).
+sceGsSetDefClear

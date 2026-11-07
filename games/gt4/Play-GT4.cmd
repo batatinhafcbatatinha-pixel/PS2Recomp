@@ -22,7 +22,7 @@ if not exist "%DATA%\game_files\CORE.ELF" (
   if errorlevel 1 exit /b 1
 )
 if not exist "%DATA%\game_files\.disc\layout.tsv" (
-  python "%~dp0tools\port-installer\prepare_folder.py" --root "%DATA%" --config "%~dp0installer.json"
+  python "%~dp0..\..\tools\port-installer\prepare_folder.py" --root "%DATA%" --config "%~dp0installer.json"
   if errorlevel 1 exit /b 1
 )
 "%BIN_DIR%\ps2EntryRunner.exe" "%DATA%\game_files\CORE.ELF"

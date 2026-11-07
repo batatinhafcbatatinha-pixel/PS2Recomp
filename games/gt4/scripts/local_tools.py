@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Inside the PS2Recomp repository (games/<game>) the runtime is that repository; else the port's submodule.
-INSIDE_RUNTIME = ROOT.parents[1] if (ROOT.parents[1] / 'ps2xRuntime').is_dir() else ROOT / 'third_party/PS2Recomp'
+INSIDE_RUNTIME = ROOT.parents[1] if (ROOT.parents[1] / 'ps2xRuntime').is_dir() else ROOT.parents[1]
 
 
 def build_location():
@@ -45,7 +45,7 @@ def game_files():
 def runtime_dir():
     """The PS2Recomp runtime source: this port's submodule when checked out, else the shared checkout."""
     inside = INSIDE_RUNTIME
-    return inside if (inside / 'CMakeLists.txt').is_file() else ROOT.parent / 'third_party/PS2Recomp'
+    return inside if (inside / 'CMakeLists.txt').is_file() else ROOT.parents[1]
 
 
 def runtime_file(relative):

@@ -1,0 +1,8 @@
+[general]
+input = "analysis/function-139fb0.elf"
+output = "project/supplemental-139fb0"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true
+

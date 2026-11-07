@@ -1,0 +1,3 @@
+# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables at 0x1721e0);
+# found breaking Boku2 (2026-10-28). The guest sceIpuInit runs instead.
+sceIpuInit

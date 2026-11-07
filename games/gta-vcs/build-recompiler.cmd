@@ -1,7 +1,7 @@
 @echo off
 rem Builds ps2_recomp and ps2_analyzer from the third_party/PS2Recomp submodule into build\recompiler.
 setlocal
-set "PS2RECOMP=%~dp0third_party\PS2Recomp"
+set "PS2RECOMP=%~dp0..\.."
 if exist "%~dp0..\..\ps2xRuntime\CMakeLists.txt" set "PS2RECOMP=%~dp0..\.."
 set "VSLANG=1033"
 set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"

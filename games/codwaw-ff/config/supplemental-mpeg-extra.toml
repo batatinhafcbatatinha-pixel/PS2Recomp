@@ -1,0 +1,8 @@
+[general]
+input = "analysis/mpeg-extra.elf"
+output = "project/supplemental-mpeg-extra"
+ghidra_output = "analysis/mpeg-extra-functions.csv"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true

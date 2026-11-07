@@ -17,7 +17,7 @@ if not defined PS2X_PIN if %NUMBER_OF_PROCESSORS% GEQ 12 set "PS2X_PIN=vif:2,gsf
 if not "%~2"=="" set "PS2X_WINDOW_MODE=%~2"
 cd /d "%~dp0"
 if not exist "%~dp0game_files\.disc\layout.tsv" (
-  python "%~dp0tools\port-installer\prepare_folder.py" --root "%~dp0." --config "%~dp0installer.json"
+  python "%~dp0..\..\tools\port-installer\prepare_folder.py" --root "%~dp0." --config "%~dp0installer.json"
   if errorlevel 1 exit /b 1
 )
 "%BIN_DIR%\ps2EntryRunner.exe" "%~dp0game_files\SLUS_212.51"

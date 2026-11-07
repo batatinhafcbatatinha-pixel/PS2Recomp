@@ -10,6 +10,7 @@ from pathlib import Path
 from local_tools import ROOT, game_files
 
 sys.path.insert(0, str(ROOT.parent / 'port-installer'))
+sys.path.insert(0, str(ROOT.parents[1] / 'tools/port-installer'))
 from layout import build_layout  # noqa: E402
 from media import Entry  # noqa: E402
 

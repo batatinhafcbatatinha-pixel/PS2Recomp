@@ -1,0 +1,7 @@
+[general]
+input = "analysis/mpeg-relocated.elf"
+output = "project/supplemental-mpeg"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true

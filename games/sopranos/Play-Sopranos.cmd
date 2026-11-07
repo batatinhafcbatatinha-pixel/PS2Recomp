@@ -18,7 +18,7 @@ if not "%~2"=="" set "PS2X_WINDOW_MODE=%~2"
 cd /d "%~dp0"
 if not exist "%DATA%\game_files\.disc\layout.tsv" (
   rem Original disc LBNs when this folder holds the extraction report, else the installer's layout.
-  python "%~dp0scripts\prepare_layout.py" 2>nul || python "%~dp0tools\port-installer\prepare_folder.py" --root "%DATA%" --config "%~dp0installer.json"
+  python "%~dp0scripts\prepare_layout.py" 2>nul || python "%~dp0..\..\tools\port-installer\prepare_folder.py" --root "%DATA%" --config "%~dp0installer.json"
   if errorlevel 1 exit /b 1
 )
 "%BIN_DIR%\ps2EntryRunner.exe" "%DATA%\game_files\SLUS_213.88"

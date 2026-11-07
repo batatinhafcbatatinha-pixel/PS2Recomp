@@ -25,3 +25,6 @@ android/.gradle/
 .idea/
 # Private Call of Duty: Final Fronts supplements (they include that game's generated code); never published.
 ps2xRuntime/src/lib/codwaw_*_chunk_*.cpp
+
+# Launcher downloads, portable build tools (Launcher.cmd / port-installer setup)
+/.local/

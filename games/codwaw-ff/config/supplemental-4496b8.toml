@@ -1,0 +1,7 @@
+[general]
+input = "analysis/function-4496b8.elf"
+output = "project/supplemental-4496b8"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true

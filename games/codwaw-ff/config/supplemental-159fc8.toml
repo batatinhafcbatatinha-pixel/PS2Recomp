@@ -1,0 +1,9 @@
+[general]
+input = "analysis/function-159fc8.elf"
+output = "project/supplemental-159fc8"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true
+
+

@@ -1,0 +1,8 @@
+[general]
+input = "analysis/code-gaps.elf"
+output = "project/supplemental-gaps"
+ghidra_output = "config/gaps-functions.csv"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true

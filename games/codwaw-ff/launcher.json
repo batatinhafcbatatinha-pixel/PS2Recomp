@@ -1,0 +1,506 @@
+{
+  "recomp": "PS2Recomp",
+  "repo": "batatinhafcbatatinha-pixel/PS2Recomp",
+  "branch": "main",
+  "setup": "tools/port-installer/setup/setup.ps1",
+  "tools_dir": ".local/tools",
+  "exe": "build/game/ps2xRuntime/ps2EntryRunner.exe",
+  "ini": "pc-settings.ini",
+  "section": "opcoes",
+  "ini_format": "plain",
+  "vulkan_dir": null,
+  "deps": {
+    "buildtools_gb": 7,
+    "python_gb": 0.1,
+    "tools": [
+      {
+        "id": "cmake",
+        "name": "CMake 3.31.12",
+        "check": ".local/tools/cmake-3.31.12/bin/cmake.exe",
+        "gb": 0.1
+      },
+      {
+        "id": "ninja",
+        "name": "Ninja 1.13.2",
+        "check": ".local/tools/ninja-1.13.2/ninja.exe",
+        "gb": 0.01
+      },
+      {
+        "id": "jdk",
+        "name": "Java 21 (Temurin) 21.0.13",
+        "check": ".local/tools/jdk-21/bin/java.exe",
+        "gb": 0.35
+      },
+      {
+        "id": "ghidra",
+        "name": "Ghidra + PS2 extension 12.1.4",
+        "check": ".local/tools/ghidra-12.1.4/support/analyzeHeadless.bat",
+        "gb": 1.2
+      }
+    ]
+  },
+  "groups": [
+    {
+      "pt": "Vídeo",
+      "en": "Video",
+      "items": [
+        {
+          "key": "modo",
+          "pt": "Modo de exibição",
+          "en": "Display mode",
+          "default": 0,
+          "help_pt": "Janela, tela cheia sem bordas (troca rápida com Alt+Tab) ou tela cheia exclusiva.",
+          "help_en": "Windowed, borderless fullscreen (quick Alt+Tab) or exclusive fullscreen.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Janela",
+              "en": "Window",
+              "word": "windowed"
+            },
+            {
+              "v": 1,
+              "pt": "Tela cheia sem bordas",
+              "en": "Borderless fullscreen",
+              "word": "borderless"
+            },
+            {
+              "v": 2,
+              "pt": "Tela cheia",
+              "en": "Fullscreen",
+              "word": "fullscreen"
+            }
+          ],
+          "store": "word",
+          "file": "video-settings.cfg"
+        },
+        {
+          "key": "refresh",
+          "pt": "Taxa de atualização",
+          "en": "Refresh rate",
+          "default": 0,
+          "help_pt": "Frequência do monitor na tela cheia exclusiva. Só vale no modo Tela cheia.",
+          "help_en": "Monitor refresh rate in exclusive fullscreen. Applies only in Fullscreen mode.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Máxima",
+              "en": "Highest"
+            }
+          ],
+          "source": "refresh"
+        },
+        {
+          "key": "vsync",
+          "pt": "Sincronização vertical",
+          "en": "Vertical sync",
+          "default": 0,
+          "help_pt": "Espera o monitor para mostrar cada quadro: sem cortes na imagem, um pouco mais de atraso.",
+          "help_en": "Synchronizes frames with the monitor to prevent tearing, with slightly more latency.",
+          "choices": [
+            {
+              "v": 1,
+              "pt": "Ligada",
+              "en": "On"
+            },
+            {
+              "v": 0,
+              "pt": "Desligada",
+              "en": "Off"
+            }
+          ]
+        },
+        {
+          "key": "fps_limit",
+          "pt": "Limite de quadros",
+          "en": "Frame limit",
+          "default": 240,
+          "help_pt": "O jogo anda a 60 quadros como no console; um limite maior mostra cada quadro mais cedo em telas de 120/144 Hz. 30 economiza energia, mas o movimento fica menos suave.",
+          "help_en": "The game runs at 60 frames as on the console; a higher limit shows each frame sooner on 120/144 Hz screens. 30 saves power, but motion is less smooth.",
+          "choices": [
+            {
+              "v": 30,
+              "pt": "30 fps",
+              "en": "30 fps"
+            },
+            {
+              "v": 60,
+              "pt": "60 fps (original)",
+              "en": "60 fps (original)"
+            },
+            {
+              "v": -1,
+              "pt": "A do monitor",
+              "en": "Monitor rate"
+            },
+            {
+              "v": 120,
+              "pt": "120 fps",
+              "en": "120 fps"
+            },
+            {
+              "v": 144,
+              "pt": "144 fps",
+              "en": "144 fps"
+            },
+            {
+              "v": 240,
+              "pt": "240 fps",
+              "en": "240 fps"
+            },
+            {
+              "v": 0,
+              "pt": "Sem limite",
+              "en": "Unlimited"
+            }
+          ]
+        },
+        {
+          "key": "res",
+          "pt": "Resolução",
+          "en": "Resolution",
+          "default": 0,
+          "help_pt": "Resolução em que o jogo é desenhado: maior = imagem mais nítida, mais trabalho para a placa. Automática segue o monitor.",
+          "help_en": "Higher rendering resolutions give a sharper image and increase GPU load. Automatic follows the monitor.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Automática (a do monitor)",
+              "en": "Automatic (the monitor's)",
+              "set": {
+                "res_w": 0,
+                "res_h": 0
+              }
+            },
+            {
+              "v": 1,
+              "pt": "1280x720",
+              "en": "1280x720",
+              "set": {
+                "res_w": 1280,
+                "res_h": 720
+              }
+            },
+            {
+              "v": 2,
+              "pt": "1366x768",
+              "en": "1366x768",
+              "set": {
+                "res_w": 1366,
+                "res_h": 768
+              }
+            },
+            {
+              "v": 3,
+              "pt": "1600x900",
+              "en": "1600x900",
+              "set": {
+                "res_w": 1600,
+                "res_h": 900
+              }
+            },
+            {
+              "v": 4,
+              "pt": "1920x1080",
+              "en": "1920x1080",
+              "set": {
+                "res_w": 1920,
+                "res_h": 1080
+              }
+            },
+            {
+              "v": 5,
+              "pt": "2560x1080 (ultrawide)",
+              "en": "2560x1080 (ultrawide)",
+              "set": {
+                "res_w": 2560,
+                "res_h": 1080
+              }
+            },
+            {
+              "v": 6,
+              "pt": "2560x1440 (2K)",
+              "en": "2560x1440 (2K)",
+              "set": {
+                "res_w": 2560,
+                "res_h": 1440
+              }
+            },
+            {
+              "v": 7,
+              "pt": "3440x1440 (ultrawide)",
+              "en": "3440x1440 (ultrawide)",
+              "set": {
+                "res_w": 3440,
+                "res_h": 1440
+              }
+            },
+            {
+              "v": 8,
+              "pt": "3840x1600 (ultrawide)",
+              "en": "3840x1600 (ultrawide)",
+              "set": {
+                "res_w": 3840,
+                "res_h": 1600
+              }
+            },
+            {
+              "v": 9,
+              "pt": "3840x2160 (4K)",
+              "en": "3840x2160 (4K)",
+              "set": {
+                "res_w": 3840,
+                "res_h": 2160
+              }
+            }
+          ],
+          "restart": true
+        },
+        {
+          "key": "filter",
+          "pt": "Ampliação da imagem",
+          "en": "Upscaling",
+          "default": 1,
+          "help_pt": "Como a imagem é ampliada quando é menor que a tela. AMD FSR 1.0 reconstrói as bordas e aumenta a nitidez; Nítido mostra os pixels do PS2.",
+          "help_en": "How the picture is enlarged when it is smaller than the screen. AMD FSR 1.0 rebuilds edges and sharpens; Sharp shows the PS2's pixels.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Nítido (pixels)",
+              "en": "Sharp (pixels)"
+            },
+            {
+              "v": 1,
+              "pt": "Suave (bilinear)",
+              "en": "Smooth (bilinear)"
+            },
+            {
+              "v": 2,
+              "pt": "AMD FSR 1.0",
+              "en": "AMD FSR 1.0"
+            }
+          ]
+        },
+        {
+          "key": "aspect",
+          "pt": "Proporção",
+          "en": "Aspect ratio",
+          "default": 0,
+          "help_pt": "O jogo é 4:3. Em telas largas, com barras ou esticado.",
+          "help_en": "The game is 4:3. On wide screens: with bars or stretched.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "4:3 (original)",
+              "en": "4:3 (original)"
+            },
+            {
+              "v": 1,
+              "pt": "Esticada",
+              "en": "Stretched"
+            }
+          ]
+        },
+        {
+          "key": "fxaa",
+          "pt": "Suavização",
+          "en": "Anti-aliasing",
+          "default": 0,
+          "help_pt": "FXAA suaviza as bordas serrilhadas com custo quase nulo. SSAA desenha o jogo maior e reduz: mais nítido, muito mais trabalho para a placa (vale na próxima vez que o jogo abrir).",
+          "help_en": "FXAA smooths jagged edges at almost no cost. SSAA draws the game larger and scales it down: sharper, much more work for the graphics card (applies the next time the game starts).",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Desligada",
+              "en": "Off"
+            },
+            {
+              "v": 1,
+              "pt": "FXAA 1",
+              "en": "FXAA 1"
+            },
+            {
+              "v": 2,
+              "pt": "FXAA 2",
+              "en": "FXAA 2"
+            },
+            {
+              "v": 3,
+              "pt": "FXAA 3",
+              "en": "FXAA 3"
+            },
+            {
+              "v": 4,
+              "pt": "SSAA 2x",
+              "en": "SSAA 2x"
+            },
+            {
+              "v": 5,
+              "pt": "SSAA 4x",
+              "en": "SSAA 4x"
+            },
+            {
+              "v": 6,
+              "pt": "SSAA 8x",
+              "en": "SSAA 8x"
+            },
+            {
+              "v": 7,
+              "pt": "SSAA 16x",
+              "en": "SSAA 16x"
+            }
+          ]
+        },
+        {
+          "key": "gpu_pref",
+          "pt": "Placa de vídeo",
+          "en": "Graphics card",
+          "default": 0,
+          "help_pt": "Placa de vídeo usada para desenhar o jogo (preferência gráfica do Windows).",
+          "help_en": "Graphics card used to render the game (Windows graphics preference).",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Padrão do Windows",
+              "en": "Windows default"
+            },
+            {
+              "v": 1,
+              "pt": "Economia de energia",
+              "en": "Power saving"
+            },
+            {
+              "v": 2,
+              "pt": "Alto desempenho",
+              "en": "High performance"
+            }
+          ],
+          "store": "gpu_pref",
+          "restart": true
+        }
+      ]
+    },
+    {
+      "pt": "Sistema",
+      "en": "System",
+      "items": [
+        {
+          "key": "show_fps",
+          "pt": "Mostrar FPS",
+          "en": "Show FPS",
+          "default": 0,
+          "help_pt": "Mostra os quadros por segundo no canto da tela.",
+          "help_en": "Shows frames per second in the corner of the screen.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Não",
+              "en": "No"
+            },
+            {
+              "v": 1,
+              "pt": "Sim",
+              "en": "Yes"
+            }
+          ]
+        },
+        {
+          "key": "vibration",
+          "pt": "Vibração do controle",
+          "en": "Controller vibration",
+          "default": 1,
+          "help_pt": "Liga ou desliga a vibração do controle.",
+          "help_en": "Turns the controller's vibration on or off.",
+          "choices": [
+            {
+              "v": 1,
+              "pt": "Ligada",
+              "en": "On"
+            },
+            {
+              "v": 0,
+              "pt": "Desligada",
+              "en": "Off"
+            }
+          ]
+        },
+        {
+          "key": "modern_layout",
+          "pt": "Layout do controle",
+          "en": "Controller layout",
+          "default": 1,
+          "help_pt": "Moderno: os gatilhos miram e atiram, como nos jogos de hoje. Original: os botões do PS2.",
+          "help_en": "Modern: the triggers aim and fire, as in today's games. Original: the PS2 buttons.",
+          "choices": [
+            {
+              "v": 1,
+              "pt": "Moderno (LT mira, RT atira)",
+              "en": "Modern (LT aim, RT fire)"
+            },
+            {
+              "v": 0,
+              "pt": "Original do PS2",
+              "en": "Original PS2"
+            }
+          ]
+        },
+        {
+          "key": "mouse_look",
+          "pt": "Mouse como câmera",
+          "en": "Mouse look",
+          "default": 1,
+          "help_pt": "O mouse move a câmera, como o analógico direito.",
+          "help_en": "The mouse moves the camera, like the right stick.",
+          "choices": [
+            {
+              "v": 1,
+              "pt": "Ligado",
+              "en": "On"
+            },
+            {
+              "v": 0,
+              "pt": "Desligado",
+              "en": "Off"
+            }
+          ]
+        },
+        {
+          "key": "menu_language",
+          "pt": "Idioma do menu F1",
+          "en": "F1 menu language",
+          "default": -1,
+          "help_pt": "Idioma do menu de configurações dentro do jogo. Automático segue o idioma do Windows.",
+          "help_en": "Language of the in-game settings menu. Automatic follows Windows.",
+          "choices": [
+            {
+              "v": -1,
+              "pt": "Automático",
+              "en": "Automatic"
+            },
+            {
+              "v": 0,
+              "pt": "Português",
+              "en": "Português"
+            },
+            {
+              "v": 1,
+              "pt": "English",
+              "en": "English"
+            }
+          ]
+        },
+        {
+          "key": "volume",
+          "pt": "Volume",
+          "en": "Volume",
+          "default": 100,
+          "help_pt": "Volume geral do jogo.",
+          "help_en": "Overall game volume.",
+          "min": 0,
+          "max": 100,
+          "step": 10
+        }
+      ]
+    }
+  ]
+}

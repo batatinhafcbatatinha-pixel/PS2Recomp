@@ -54,8 +54,8 @@ endif()
 # otherwise the shared checkout next to the game folders (../third_party/PS2Recomp).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../ps2xRuntime/CMakeLists.txt")
     set(VCS_PS2RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../..")  # games/<game> inside PS2Recomp
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/PS2Recomp/CMakeLists.txt")
-    set(VCS_PS2RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/PS2Recomp")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../CMakeLists.txt")
+    set(VCS_PS2RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
 else()
     set(VCS_PS2RECOMP_DIR "${WORK_ROOT}/third_party/PS2Recomp")
 endif()
@@ -129,7 +129,7 @@ else()
 endif()
 
 # Shared data installer: extracted files back all native EE/IOP optical reads.
-set(PORT_INSTALLER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/port-installer" CACHE PATH "Shared installer checkout")
+set(PORT_INSTALLER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/port-installer" CACHE PATH "Shared installer checkout")
 include("${PORT_INSTALLER_DIR}/runtime/extracted_files.cmake")
 
 # IOP modules recompiled statically (ps2xIOP/tools/irx_aot.py); each file registers itself with the IOP.

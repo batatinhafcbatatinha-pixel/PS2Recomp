@@ -1,0 +1,6 @@
+# SDK functions the analyzer missed, identified by hand: one 'name@0xADDR' per line (# comments).
+# Bound to the runtime's native handler by scripts/gen_sdk_handlers.py, like the analyzer matches.
+# Examples (Boku2): sceCdDiskReady@0x0021E3C8 binds cdvdfsv DISKREADY server 0x8000059A.
+# libmpeg sceMpegIsEnd (return mp->sys->isEnd): the native sceMpegCreate never fills that guest struct, so the
+# guest copy reported "ended" and FUN_001cdb28 never called sceMpegGetPicture (intro FMV stalled by backpressure).
+sceMpegIsEnd@0x002B56F0
