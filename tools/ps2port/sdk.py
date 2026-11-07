@@ -5,8 +5,9 @@ handler really implements it (it is not a TODO stub) and the function talks to t
 memory card, MPEG, file I/O, threads/semaphores of the kernel). EE-only library code (GS/GIF packet builders, IPU
 setup, the SDK thread start-up) keeps the game's own translated code, which is exact by construction.
 
-Signatures (sdk_signatures.json) find SDK functions the analyzer does not: the instruction words of the function with
-address fields masked (J/JAL targets, LUI and %lo immediates), learned from games where the function is known. A
+Signatures (sdk_signatures.json) find SDK functions the analyzer does not: a hash of the function's instruction words with
+address fields masked (J/JAL targets, LUI and %lo immediates), learned from games where the function is known; no
+instruction bytes are stored. A
 signature binds only when it matches exactly once. Short functions are found relative to an anchor function of the
 same library object (link order inside an object file does not change), checked against their masked words.
 """
@@ -69,17 +70,20 @@ def function_words(elf, start, limit=512):
     return out
 
 
+def masked_bytes(words):
+    return b''.join(mask_word(w)[0].to_bytes(4, 'little') for w in words)
+
+
 def signature(words):
-    pairs = [mask_word(w) for w in words]
-    return [f'{v:08x}/{m:08x}' for v, m in pairs]
+    """No code is stored: the number of words, the masked first word (to find candidates) and a hash of all of them."""
+    import hashlib
+    return {'n': len(words), 'first': f'{mask_word(words[0])[0]:08x}', 'sha1': hashlib.sha1(masked_bytes(words)).hexdigest()}
 
 
 def matches_at(elf, addr, sig):
-    for i, item in enumerate(sig):
-        v, m = (int(x, 16) for x in item.split('/'))
-        if elf.word(addr + 4 * i) & m != v:
-            return False
-    return True
+    import hashlib
+    words = [elf.word(addr + 4 * i) for i in range(sig['n'])]
+    return f'{mask_word(words[0])[0]:08x}' == sig['first'] and hashlib.sha1(masked_bytes(words)).hexdigest() == sig['sha1']
 
 
 def load_db():
@@ -99,7 +103,7 @@ def find_by_signature(elf, known, db=None):
     for entry in db['functions']:
         if entry['name'] in known or entry['name'] in found:
             continue
-        sig = entry['words']
+        sig = entry['sig']
         if entry.get('anchor'):
             base = known.get(entry['anchor']['name']) or found.get(entry['anchor']['name'])
             if base is not None:
@@ -107,12 +111,12 @@ def find_by_signature(elf, known, db=None):
                 if matches_at(elf, cand, sig):
                     found[entry['name']] = cand
                 continue
-        if len(sig) < 8:
+        if sig['n'] < 8:
             continue
-        v0, m0 = (int(x, 16) for x in sig[0].split('/'))
+        first = int(sig['first'], 16)
         hits = []
         for a, w in words.items():
-            if w & m0 == v0 and matches_at(elf, a, sig):
+            if mask_word(w)[0] == first and matches_at(elf, a, sig):
                 hits.append(a)
                 if len(hits) > 1:
                     break
@@ -128,7 +132,7 @@ def learn(elf, named, analyzer_known):
     out = []
     for name, addr in named.items():
         words = function_words(elf, addr)
-        entry = {'name': name, 'words': signature(words), 'learned_from': elf.path.name}
+        entry = {'name': name, 'sig': signature(words), 'learned_from': elf.path.name}
         before = [(a, n) for a, n in anchors if a < addr and addr - a < 0x4000]
         if before:
             a, n = before[-1]

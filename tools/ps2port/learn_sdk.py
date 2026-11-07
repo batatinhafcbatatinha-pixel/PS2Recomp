@@ -2,7 +2,7 @@
 
 usage: learn_sdk.py <ELF> name@0xADDR [name@0xADDR ...]
 Runs the PS2Recomp analyzer on the ELF for the anchors (functions it already identifies), then stores each given
-function's masked words (see sdk.py). Existing entries with the same name and words are kept once.
+function's signature (a hash of its masked words, see sdk.py). Existing entries with the same name and words are kept once.
 """
 import json
 import subprocess
@@ -35,10 +35,10 @@ def main():
         n, a = m.split('@')
         known.setdefault(n, int(a, 16))
     db = sdk.load_db()
-    have = {(e['name'], tuple(e['words'])) for e in db['functions']}
+    have = {(e['name'], e['sig']['sha1']) for e in db['functions']}
     added = 0
     for entry in sdk.learn(elf, named, known):
-        key = (entry['name'], tuple(entry['words']))
+        key = (entry['name'], entry['sig']['sha1'])
         if key in have:
             continue
         db['functions'].append(entry)
