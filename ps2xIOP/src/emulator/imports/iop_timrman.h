@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace ps2x::iop::detail
 {
@@ -17,6 +18,9 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         void serviceDue(uint64_t currentCycle, IopGuestExecutor &executor);
         [[nodiscard]] uint64_t nextEventCycle(uint64_t fallback) const noexcept;
+        // thbase SetAlarm/CancelAlarm (+ i-variants): one-shot handlers that re-arm with their return value.
+        [[nodiscard]] bool dispatchAlarmImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle,
+                                               uint32_t clockLow, uint32_t clockHigh);
 
     private:
         struct Callback
@@ -60,6 +64,14 @@ namespace ps2x::iop::detail
         static void schedule(Timer &timer, uint64_t currentCycle) noexcept;
         static void stop(Timer &timer, uint64_t currentCycle) noexcept;
 
+        struct Alarm
+        {
+            uint32_t handler = 0u;
+            uint32_t argument = 0u;
+            uint32_t gp = 0u;
+            uint64_t dueCycle = UINT64_MAX;
+        };
+        std::vector<Alarm> m_alarms;
         std::array<Timer, 6> m_timers{};
         uint32_t m_holdMode = 0u;
         bool m_servicing = false;

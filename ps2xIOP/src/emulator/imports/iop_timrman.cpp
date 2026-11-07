@@ -45,6 +45,7 @@ namespace ps2x::iop::detail
 
     void IopTimrman::reset() noexcept
     {
+        m_alarms.clear();
         for (size_t i = 0u; i < m_timers.size(); ++i)
         {
             m_timers[i] = {};
@@ -414,6 +415,47 @@ namespace ps2x::iop::detail
         }
     }
 
+    bool IopTimrman::dispatchAlarmImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle,
+                                         uint32_t clockLow, uint32_t clockHigh)
+    {
+        constexpr uint32_t kFoundHandler = static_cast<uint32_t>(-104);
+        constexpr uint32_t kNotFoundHandler = static_cast<uint32_t>(-105);
+        const uint32_t handler = cpu.gpr[5], argument = cpu.gpr[6];
+        switch (ordinal)
+        {
+        case 35: // SetAlarm(clock*, handler, arg)
+        case 37: // iSetAlarm
+        {
+            for (const Alarm &alarm : m_alarms)
+                if (alarm.handler == handler && alarm.argument == argument)
+                {
+                    cpu.gpr[2] = kFoundHandler;
+                    return true;
+                }
+            const uint64_t delay = (static_cast<uint64_t>(clockHigh) << 32u) | clockLow;
+            m_alarms.push_back(Alarm{handler, argument, cpu.gpr[28], currentCycle + std::max<uint64_t>(delay, 1u)});
+            cpu.gpr[2] = 0u;
+            return true;
+        }
+        case 36: // CancelAlarm(handler, arg)
+        case 38: // iCancelAlarm
+        {
+            const uint32_t h = cpu.gpr[4], a = cpu.gpr[5];
+            for (auto it = m_alarms.begin(); it != m_alarms.end(); ++it)
+                if (it->handler == h && it->argument == a)
+                {
+                    m_alarms.erase(it);
+                    cpu.gpr[2] = 0u;
+                    return true;
+                }
+            cpu.gpr[2] = kNotFoundHandler;
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
     void IopTimrman::serviceDue(uint64_t currentCycle, IopGuestExecutor &executor)
     {
         if (m_servicing)
@@ -424,6 +466,30 @@ namespace ps2x::iop::detail
             bool &flag;
             ~ServiceGuard() { flag = false; }
         } guard{m_servicing};
+
+        // Alarms: the handler returns the next interval in system clocks (0 = done).
+        for (size_t i = 0; i < m_alarms.size();)
+        {
+            if (m_alarms[i].dueCycle > currentCycle)
+            {
+                ++i;
+                continue;
+            }
+            const Alarm alarm = m_alarms[i];
+            m_alarms.erase(m_alarms.begin() + static_cast<std::ptrdiff_t>(i));
+            const uint32_t next = executor.executeGuestFunctionWithBudget(alarm.handler, alarm.argument, 0u, 0u, 0u,
+                                                                          alarm.gp, 100000u);
+            if (next != 0u)
+            {
+                bool cancelledOrRearmed = false;
+                for (const Alarm &other : m_alarms)
+                    if (other.handler == alarm.handler && other.argument == alarm.argument)
+                        cancelledOrRearmed = true;
+                if (!cancelledOrRearmed)
+                    m_alarms.push_back(Alarm{alarm.handler, alarm.argument, alarm.gp, currentCycle + next});
+            }
+            i = 0; // the list may have changed inside the handler
+        }
 
         for (Timer &timer : m_timers)
         {
@@ -471,6 +537,8 @@ namespace ps2x::iop::detail
             next = std::min(next, timer.compareCycle);
             next = std::min(next, timer.overflowCycle);
         }
+        for (const Alarm &alarm : m_alarms)
+            next = std::min(next, alarm.dueCycle);
         return next;
     }
 }

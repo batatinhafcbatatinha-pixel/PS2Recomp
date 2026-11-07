@@ -352,6 +352,15 @@ namespace ps2x::iop::detail
             if (iequals(call.library, "loadcore") && loadcore.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
 
+            if ((iequals(call.library, "thbase") || iequals(call.library, "threadman")) && call.ordinal >= 35u &&
+                call.ordinal <= 38u)
+            {
+                const uint32_t clock = cpu.gpr[4];
+                const uint32_t lo = (call.ordinal == 35u || call.ordinal == 37u) ? memory.read32(clock) : 0u;
+                const uint32_t hi = (call.ordinal == 35u || call.ordinal == 37u) ? memory.read32(clock + 4u) : 0u;
+                if (timrman.dispatchAlarmImport(call.ordinal, cpu, totalCycles, lo, hi))
+                    return ImportDisposition::Handled;
+            }
             if (iequals(call.library, "thbase") || iequals(call.library, "threadman"))
             {
                 return kernel.dispatchThreadImport(call.ordinal, cpu, totalCycles)
