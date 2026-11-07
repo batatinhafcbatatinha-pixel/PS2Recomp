@@ -1578,16 +1578,6 @@ void PS2Memory::write128(uint32_t address, __m128i value)
     }
 }
 
-// DMA address registers (MADR/TADR/ASR and a DMAtag's ADDR) select scratchpad with bit 31 and keep
-// only the 14-bit offset (GT4 writes 0x80000000 | offset). Map that form to the CPU scratchpad window;
-// a larger value with bit 31 is a sloppy KSEG0 pointer and keeps the old RAM meaning.
-static inline uint32_t ps2DmaAddress(uint32_t addr)
-{
-    if ((addr & 0x80000000u) != 0u && (addr & 0x7FFFFFFFu) < PS2_SCRATCHPAD_SIZE)
-        return PS2_SCRATCHPAD_BASE | (addr & 0x7FFFFFFFu);
-    return addr;
-}
-
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
     if ((address & 0xFFFFF000u) == 0x10003000u)
