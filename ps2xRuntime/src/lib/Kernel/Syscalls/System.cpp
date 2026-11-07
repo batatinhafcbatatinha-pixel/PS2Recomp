@@ -1,6 +1,9 @@
 #include "Common.h"
 #include "System.h"
 
+// ps2_runtime.cpp: true when the runtime arena sits above the game heap (PS2X_RUNTIME_ARENA=high or a low ELF).
+bool ps2xRuntimeArenaHigh();
+
 namespace ps2_syscalls
 {
     void GsSetCrt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -471,6 +474,9 @@ namespace ps2_syscalls
 
     // 0x3C SetupThread
     // args: $a0 = gp, $a1 = stack, $a2 = stack_size, $a3 = args, $t0 = root_func
+    // Bottom of the main thread's stack when SetupThread put it at the top of RAM (0: not known).
+    uint32_t g_mainStackBottom = 0u;
+
     void SetupThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t gp = getRegU32(ctx, 4);
@@ -536,6 +542,8 @@ namespace ps2_syscalls
         {
             const uint32_t stackBase = (stack == 0xFFFFFFFFu) ? (stackSize < PS2_RAM_SIZE ? PS2_RAM_SIZE - stackSize : 0u) : stack;
             runtime->reserveGuestStackRegion(stackBase, stackBase + stackSize);
+            if (stack == 0xFFFFFFFFu)
+                g_mainStackBottom = stackBase;
         }
         std::cerr << "[ee:setup-thread] stack=0x" << std::hex << stack << " size=0x" << stackSize << " sp=0x" << sp
                   << std::dec << std::endl;
@@ -544,7 +552,7 @@ namespace ps2_syscalls
     }
 
     // 0x3D SetupHeap: returns heap base/start pointer
-    // End of the game's heap (EndOfHeap); the runtime's arena starts at this address.
+    // End of the game's heap (EndOfHeap).
     uint32_t g_gameHeapEnd = 0x01F00000u;
 
     void SetupHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -554,8 +562,10 @@ namespace ps2_syscalls
 
         const uint32_t heapBase = (heapBaseRaw + 0xFu) & ~0xFu;
 
-        // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM".
-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
+        // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM": as on the real kernel, the heap
+        // then ends where the main thread's stack at the top of RAM begins (MotorStorm AE sizes its allocator from that
+        // EndOfHeap). Only when the runtime keeps its arena up there (PS2X_RUNTIME_ARENA=high) is it capped below it.
+        const uint32_t kDefaultGuestHeapEnd = (ps2xRuntimeArenaHigh() || g_mainStackBottom == 0u) ? 0x01F00000u : g_mainStackBottom;
         uint32_t heapLimit = kDefaultGuestHeapEnd;
 
         if (heapSize != 0u && heapSize != 0xFFFFFFFFu)

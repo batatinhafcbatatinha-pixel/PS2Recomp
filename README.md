@@ -34,12 +34,23 @@ Windows 10/11 x64. About 20-40 GB free and one to several hours for the first bu
 | MotorStorm: Arctic Edge | USA (SCUS-97654) | not playable yet |
 | The Sopranos: Road to Respect | USA v1.01 (SLUS-21388) | not playable yet |
 
-Only these exact discs are supported (checked by SHA-256, see each `games/<game>/installer.json`). Details per game:
+These discs have a profile (checked by SHA-256, see each `games/<game>/installer.json`). Details per game:
 [`games/`](games/README.md). Saves go to `mc0/` and `mc1/` in the game folder.
+
+### Any other game
+
+Choose any other PlayStation 2 disc the same way: the launcher offers to build it with the generic pipeline
+([`tools/ps2port`](tools/ps2port/README.md)), the same steps for every game, no game-specific code. It may not work
+yet, or stop somewhere; while it runs, code the analysis missed is translated and compiled on the spot (a short
+pause the first time) and goes into the next build. These ports live in `.local/ports/<serial>/`.
 
 ## Differences from upstream
 
 - `games/`: nine game profiles (recompiler config, native handlers, build and play scripts)
+- `tools/ps2port`: one pipeline for any game (Ghidra export, gap functions by general rules, SDK functions by learned signatures, IOP modules incl. IOPRP images, VU1 from captures, RAM-aware build)
+- missing guest code recorded while playing (`PS2X_OBSERVE_DIR`) and translated + compiled at run time (`ps2_hot.cpp`)
+- IOP-side client services shared by all games (loadfile, libfs, directory listing, pad2)
+- runtime arena below the executable by default (no clash with a stack or heap at the top of RAM)
 - launcher + one-click install/build/play (`Launcher.cmd`, [port-installer](https://github.com/batatinhafcbatatinha-pixel/port-installer) submodule in `tools/port-installer`)
 - runs from the extracted disc folder (no ISO at run time), sector layout kept
 - hardware GS renderer (OpenGL 4.6): internal resolution, GPU detile and scanout, mipmaps, shared-texture present

@@ -1516,6 +1516,11 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 // the guest RAM is saved once per address (<dir>/ram_<hex>.bin, at most 16 per run) for the overlay step.
 PS2Runtime::RecompiledFunction ps2xHotRecompile(uint8_t *rdram, uint32_t address); // ps2_hot.cpp
 
+bool ps2xRuntimeArenaHigh()
+{
+    return !runtimeArenaOverride().set;
+}
+
 static void observeMissingFunction(PS2Memory &memory, uint32_t address)
 {
     static const char *dir = std::getenv("PS2X_OBSERVE_DIR");
