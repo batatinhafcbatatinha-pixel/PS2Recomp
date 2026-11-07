@@ -259,7 +259,7 @@ namespace ps2_syscalls
         {
             runtime->guestFree(ownedStack);
         }
-        setReturnS32(ctx, result == KE_OK ? id : result);
+        setReturnS32(ctx, result);
     }
 
     void StartThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -324,14 +324,14 @@ namespace ps2_syscalls
         {
             runtime->guestFree(ownedStack);
         }
-        setReturnS32(ctx, result == KE_OK ? id : result);
+        setReturnS32(ctx, result);
     }
 
     void SuspendThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
         const int result = ee.suspendThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result == KE_OK ? id : result);
+        setReturnS32(ctx, result);
         ee.transferIfRequested(false);
     }
 
@@ -339,7 +339,7 @@ namespace ps2_syscalls
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
         const int result = ee.resumeThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result == KE_OK ? id : result);
+        setReturnS32(ctx, result);
         ee.transferIfRequested(false);
     }
 
