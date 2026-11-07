@@ -40,6 +40,18 @@ def main():
     for entry in sdk.learn(elf, named, known):
         key = (entry['name'], entry['sig']['sha1'])
         if key in have:
+            # Same function, maybe in another library layout: keep this game's anchor too.
+            for old in db['functions']:
+                if (old['name'], old['sig']['sha1']) != key:
+                    continue
+                anchors = sdk.entry_anchors(old)
+                for anchor in entry.get('anchors', []):
+                    if anchor not in anchors:
+                        anchors.append(anchor)
+                        added += 1
+                old.pop('anchor', None)
+                if anchors:
+                    old['anchors'] = anchors
             continue
         db['functions'].append(entry)
         have.add(key)

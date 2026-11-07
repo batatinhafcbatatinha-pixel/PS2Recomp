@@ -8,10 +8,16 @@
     "sha1": "e8d7365129bc6d7e98d326254dee8bb88f9f987b"
    },
    "learned_from": "SCPS_150.26",
-   "anchor": {
-    "name": "sceCdInit",
-    "offset": 736
-   }
+   "anchors": [
+    {
+     "name": "sceCdInit",
+     "offset": 736
+    },
+    {
+     "name": "sceCdMmode",
+     "offset": -504
+    }
+   ]
   },
   {
    "name": "sceCdSearchFile",
@@ -20,7 +26,21 @@
     "first": "27bdfff0",
     "sha1": "e1e028210078668942189d5d8a2c4d8d4b00a4fa"
    },
-   "learned_from": "SLUS_212.51"
+   "learned_from": "SLUS_212.51",
+   "anchors": [
+    {
+     "name": "sceCdNcmdDiskReady",
+     "offset": -376
+    },
+    {
+     "name": "sceCdSync",
+     "offset": -376
+    },
+    {
+     "name": "sceCdNcmdDiskReady",
+     "offset": -400
+    }
+   ]
   },
   {
    "name": "sceChstat",
@@ -30,10 +50,12 @@
     "sha1": "9cb915b65ba4c357263c9c2ca20ae2be663ff83e"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 4648
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 4648
+    }
+   ]
   },
   {
    "name": "sceDclose",
@@ -43,10 +65,16 @@
     "sha1": "3360900f1fef58567bd8706df92d22cd386f3ef2"
    },
    "learned_from": "SLUS_214.23",
-   "anchor": {
-    "name": "sceRead",
-    "offset": 1288
-   }
+   "anchors": [
+    {
+     "name": "sceRead",
+     "offset": 1288
+    },
+    {
+     "name": "sceSifInitIopHeap",
+     "offset": -752
+    }
+   ]
   },
   {
    "name": "sceDclose",
@@ -56,10 +84,12 @@
     "sha1": "5ce1c79ecade344dd97c275805299536b1aff78d"
    },
    "learned_from": "SLUS_213.88",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 3432
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 3432
+    }
+   ]
   },
   {
    "name": "sceDevctl",
@@ -69,10 +99,12 @@
     "sha1": "152174ac300d952ec0ff9fb745dd35314a5fbb56"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceWrite",
-    "offset": 1232
-   }
+   "anchors": [
+    {
+     "name": "sceWrite",
+     "offset": 1232
+    }
+   ]
   },
   {
    "name": "sceDopen",
@@ -82,10 +114,16 @@
     "sha1": "c8d7740c5ac507780468801de47bb5ddc89c3ed8"
    },
    "learned_from": "SLUS_214.23",
-   "anchor": {
-    "name": "sceRead",
-    "offset": 1088
-   }
+   "anchors": [
+    {
+     "name": "sceRead",
+     "offset": 1088
+    },
+    {
+     "name": "sceSifInitIopHeap",
+     "offset": -952
+    }
+   ]
   },
   {
    "name": "sceDread",
@@ -95,10 +133,16 @@
     "sha1": "8bcd3c18eca235edc60ec39017e6969101f0c151"
    },
    "learned_from": "SLUS_214.23",
-   "anchor": {
-    "name": "sceRead",
-    "offset": 1648
-   }
+   "anchors": [
+    {
+     "name": "sceRead",
+     "offset": 1648
+    },
+    {
+     "name": "sceSifInitIopHeap",
+     "offset": -392
+    }
+   ]
   },
   {
    "name": "sceDread",
@@ -108,10 +152,12 @@
     "sha1": "19f3c43ee26634f65992b8e0a1b3ba537dcafccb"
    },
    "learned_from": "SLUS_213.88",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 3792
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 3792
+    }
+   ]
   },
   {
    "name": "sceFormat",
@@ -121,10 +167,12 @@
     "sha1": "2ee3f907f7a22ffb753b3da8270c590abc0d5b41"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 2328
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 2328
+    }
+   ]
   },
   {
    "name": "sceFsSetIopBuf",
@@ -134,10 +182,12 @@
     "sha1": "54e6e7e7a6fe9f94696b62fe75dda246f428ea38"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceFsReset",
-    "offset": 56
-   }
+   "anchors": [
+    {
+     "name": "sceFsReset",
+     "offset": 56
+    }
+   ]
   },
   {
    "name": "sceFsSetIopPrio",
@@ -147,10 +197,12 @@
     "sha1": "0bde39ecd06a7ffea408ccf152c0ab3f6804a8bb"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceFsReset",
-    "offset": 376
-   }
+   "anchors": [
+    {
+     "name": "sceFsReset",
+     "offset": 376
+    }
+   ]
   },
   {
    "name": "sceGetstat",
@@ -160,10 +212,12 @@
     "sha1": "29db251ccd4a8ef18dbbef3e339d3aba7dee0bb8"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceWrite",
-    "offset": 752
-   }
+   "anchors": [
+    {
+     "name": "sceWrite",
+     "offset": 752
+    }
+   ]
   },
   {
    "name": "sceMkdir",
@@ -173,10 +227,12 @@
     "sha1": "5fb3c0d259f772d7037ca43bd35a07ff67607f43"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 1856
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 1856
+    }
+   ]
   },
   {
    "name": "sceMount",
@@ -186,10 +242,12 @@
     "sha1": "982847951ecceb969c0244d56c7add5d27151162"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 6224
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 6224
+    }
+   ]
   },
   {
    "name": "sceMpegDelete",
@@ -199,10 +257,16 @@
     "sha1": "a4a8cdc2599d57d408a7e1dda502fd046153899e"
    },
    "learned_from": "SLUS_215.90",
-   "anchor": {
-    "name": "sceMpegInit",
-    "offset": 176
-   }
+   "anchors": [
+    {
+     "name": "sceMpegInit",
+     "offset": 176
+    },
+    {
+     "name": "sceMpegGetPicture",
+     "offset": -16
+    }
+   ]
   },
   {
    "name": "sceMpegIsEnd",
@@ -212,10 +276,20 @@
     "sha1": "f5c2bc61f6e168d8e16c4f57ebfb0f678d15868b"
    },
    "learned_from": "SLUS_218.15",
-   "anchor": {
-    "name": "sceMpegReset",
-    "offset": 128
-   }
+   "anchors": [
+    {
+     "name": "sceMpegReset",
+     "offset": 128
+    },
+    {
+     "name": "sceMpegAddCallback",
+     "offset": -40
+    },
+    {
+     "name": "sceMpegAddCallback",
+     "offset": -24
+    }
+   ]
   },
   {
    "name": "sceMpegIsRefBuffEmpty",
@@ -225,10 +299,16 @@
     "sha1": "3434d6db9d6291c3cbf753e7f22635002a8c3c9d"
    },
    "learned_from": "SLUS_214.23",
-   "anchor": {
-    "name": "sceMpegReset",
-    "offset": 144
-   }
+   "anchors": [
+    {
+     "name": "sceMpegReset",
+     "offset": 144
+    },
+    {
+     "name": "sceMpegAddCallback",
+     "offset": -24
+    }
+   ]
   },
   {
    "name": "scePad2CreateSocket",
@@ -238,10 +318,12 @@
     "sha1": "74e20a347a1ae539a66a253d46bc5eaf05836e3c"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 280
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 280
+    }
+   ]
   },
   {
    "name": "scePad2DeleteSocket",
@@ -251,10 +333,12 @@
     "sha1": "fd21dd8ba977fe7b9652633dbe16bcae1cd72ef1"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 544
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 544
+    }
+   ]
   },
   {
    "name": "scePad2End",
@@ -264,10 +348,12 @@
     "sha1": "40335d5fafb6da7cb671c09a91e3f31462cb96f3"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 176
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 176
+    }
+   ]
   },
   {
    "name": "scePad2GetButtonInfo",
@@ -277,10 +363,12 @@
     "sha1": "1f61a205bda42cae5d8c0b7883f46591bb5f6be9"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 1176
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 1176
+    }
+   ]
   },
   {
    "name": "scePad2GetState",
@@ -290,10 +378,12 @@
     "sha1": "760998a059d24c47f58902bc893a54aae428ac10"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 856
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 856
+    }
+   ]
   },
   {
    "name": "scePad2Init",
@@ -303,10 +393,12 @@
     "sha1": "4d82e28a33f93bdd8d852641b17bb998c78e4d56"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 112
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 112
+    }
+   ]
   },
   {
    "name": "scePad2Read",
@@ -316,10 +408,12 @@
     "sha1": "96012af26c782c5416dc954effea77cc6a350020"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "sceDevVif0Reset",
-    "offset": 632
-   }
+   "anchors": [
+    {
+     "name": "sceDevVif0Reset",
+     "offset": 632
+    }
+   ]
   },
   {
    "name": "scePowerOffHandler",
@@ -329,10 +423,12 @@
     "sha1": "f147f915b8172434e00951e58ac54875a829ccec"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "_sceFsSemInit",
-    "offset": 152
-   }
+   "anchors": [
+    {
+     "name": "_sceFsSemInit",
+     "offset": 152
+    }
+   ]
   },
   {
    "name": "sceReadlink",
@@ -342,10 +438,12 @@
     "sha1": "ddb3cb6b2998e5071a8a354a075ab580786bb023"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 8656
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 8656
+    }
+   ]
   },
   {
    "name": "sceRename",
@@ -355,10 +453,12 @@
     "sha1": "29b29e32ce71e7eaba6c2416810c4ccdcff2a1bf"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 5240
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 5240
+    }
+   ]
   },
   {
    "name": "sceSifFreeIopHeap",
@@ -368,10 +468,12 @@
     "sha1": "0f749cfe44ec343a9b432fb93a06f86169d287d3"
    },
    "learned_from": "SLUS_214.23",
-   "anchor": {
-    "name": "sceSifAllocIopHeap",
-    "offset": 112
-   }
+   "anchors": [
+    {
+     "name": "sceSifAllocIopHeap",
+     "offset": 112
+    }
+   ]
   },
   {
    "name": "sceSifGetSreg",
@@ -381,10 +483,16 @@
     "sha1": "f17faf3a611157355539f328e83eb27d052ff2dd"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceTtyInit",
-    "offset": 5240
-   }
+   "anchors": [
+    {
+     "name": "sceTtyInit",
+     "offset": 5240
+    },
+    {
+     "name": "sceSifInitCmd",
+     "offset": -72
+    }
+   ]
   },
   {
    "name": "sceSifSearchModuleByName",
@@ -394,10 +502,16 @@
     "sha1": "e16fe7b60ad0d07b6d9cf6e82ace6a6282166b89"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "_sceSifLoadModuleBuffer",
-    "offset": 1184
-   }
+   "anchors": [
+    {
+     "name": "_sceSifLoadModuleBuffer",
+     "offset": 1184
+    },
+    {
+     "name": "sceSifLoadFileReset",
+     "offset": 56
+    }
+   ]
   },
   {
    "name": "sceSifSetSreg",
@@ -407,10 +521,16 @@
     "sha1": "47760f568f1cf6a164f3df6775d057dbdc4b4d74"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceTtyInit",
-    "offset": 5264
-   }
+   "anchors": [
+    {
+     "name": "sceTtyInit",
+     "offset": 5264
+    },
+    {
+     "name": "sceSifInitCmd",
+     "offset": -48
+    }
+   ]
   },
   {
    "name": "sceSifStopModule",
@@ -420,10 +540,12 @@
     "sha1": "87163cef3e03d7b1fbc4120db9fa9e980cbcec25"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "_sceSifLoadModuleBuffer",
-    "offset": 520
-   }
+   "anchors": [
+    {
+     "name": "_sceSifLoadModuleBuffer",
+     "offset": 520
+    }
+   ]
   },
   {
    "name": "sceSifUnloadModule",
@@ -433,10 +555,12 @@
     "sha1": "032c78ee9474ee4a074e2ea69a8136dcefb54c9b"
    },
    "learned_from": "SLUS_212.51",
-   "anchor": {
-    "name": "_sceSifLoadModuleBuffer",
-    "offset": 1040
-   }
+   "anchors": [
+    {
+     "name": "_sceSifLoadModuleBuffer",
+     "offset": 1040
+    }
+   ]
   },
   {
    "name": "sceSymlink",
@@ -446,10 +570,12 @@
     "sha1": "65edf1fdc28b5214b57e575e8c9fff1bd49c1e1d"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 8152
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 8152
+    }
+   ]
   },
   {
    "name": "sceSync",
@@ -459,10 +585,12 @@
     "sha1": "db1dbe4d8a6bb21e7a11ee41a8e535b821e7a48b"
    },
    "learned_from": "CORE.ELF",
-   "anchor": {
-    "name": "sceIoctl",
-    "offset": 5792
-   }
+   "anchors": [
+    {
+     "name": "sceIoctl",
+     "offset": 5792
+    }
+   ]
   }
  ]
 }

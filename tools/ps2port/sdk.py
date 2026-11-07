@@ -9,7 +9,9 @@ Signatures (sdk_signatures.json) find SDK functions the analyzer does not: a has
 address fields masked (J/JAL targets, LUI and %lo immediates), learned from games where the function is known; no
 instruction bytes are stored. A
 signature binds only when it matches exactly once. Short functions are found relative to an anchor function of the
-same library object (link order inside an object file does not change), checked against their masked words.
+same library area, checked against their masked words. The layout differs between SDK releases and link orders (the
+same sceCdSearchFile wrapper sits 0x478 bytes before sceCdInit in FlatOut 2 and elsewhere in GTA LCS), so an entry
+keeps every anchor it was learned with and each one is tried.
 """
 import json
 import re
@@ -86,6 +88,10 @@ def matches_at(elf, addr, sig):
     return f'{mask_word(words[0])[0]:08x}' == sig['first'] and hashlib.sha1(masked_bytes(words)).hexdigest() == sig['sha1']
 
 
+def entry_anchors(entry):
+    return entry.get('anchors') or ([entry['anchor']] if entry.get('anchor') else [])
+
+
 def load_db():
     return json.loads(SIGNATURES.read_text(encoding='utf-8')) if SIGNATURES.is_file() else {'functions': []}
 
@@ -104,15 +110,17 @@ def find_by_signature(elf, known, db=None):
         if entry['name'] in known or entry['name'] in found:
             continue
         sig = entry['sig']
-        if entry.get('anchor'):
-            base = known.get(entry['anchor']['name']) or found.get(entry['anchor']['name'])
-            if base is not None:
-                cand = base + entry['anchor']['offset']
-                if matches_at(elf, cand, sig):
-                    found[entry['name']] = cand
-                continue
-        if sig['n'] < 8:
+        hit = None
+        for anchor in entry_anchors(entry):
+            base = known.get(anchor['name']) or found.get(anchor['name'])
+            if base is not None and matches_at(elf, base + anchor['offset'], sig):
+                hit = base + anchor['offset']
+                break
+        if hit is not None:
+            found[entry['name']] = hit
             continue
+        if sig['n'] < 8:
+            continue  # too short to be unique on its own: only its anchors can place it
         first = int(sig['first'], 16)
         hits = []
         for a, w in words.items():
@@ -127,16 +135,17 @@ def find_by_signature(elf, known, db=None):
 
 def learn(elf, named, analyzer_known):
     """New signature entries for named = {name: addr} (functions identified in one game). The nearest analyzer-known
-    function before each one becomes its anchor."""
-    anchors = sorted((a, n) for n, a in analyzer_known.items())
+    function of the same library area (before or after it) becomes its anchor: a short function (under 8 words) is
+    only ever found through its anchor, and a wrapper is often placed before the functions the analyzer knows
+    (FlatOut 2's sceCdSearchFile sits 0x478 bytes before sceCdInit)."""
     out = []
     for name, addr in named.items():
         words = function_words(elf, addr)
         entry = {'name': name, 'sig': signature(words), 'learned_from': elf.path.name}
-        before = [(a, n) for a, n in anchors if a < addr and addr - a < 0x4000]
-        if before:
-            a, n = before[-1]
-            entry['anchor'] = {'name': n, 'offset': addr - a}
+        close = sorted((abs(a - addr), a, n) for n, a in analyzer_known.items() if a != addr and abs(a - addr) < 0x4000)
+        if close:
+            _, a, n = close[0]
+            entry['anchors'] = [{'name': n, 'offset': addr - a}]
         out.append(entry)
     return out
 
