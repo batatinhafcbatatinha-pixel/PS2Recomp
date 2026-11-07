@@ -1,7 +1,7 @@
 {
   "game": "Ben 10: Alien Force",
   "disc": "PlayStation 2, USA (SLUS-21815)",
-  "play": "Play-Ben10.cmd",
+  "play": "Play.cmd",
   "disk_gb": 30,
   "download_gb": 1,
   "minutes": "60-180",
@@ -10,46 +10,29 @@
     "ninja",
     "ghidra"
   ],
-  "gb_per_job": 4,
+  "gb_per_job": 2,
   "max_jobs": 2,
   "steps": [
     {
-      "name": "Find the functions of your game executable (Ghidra, can take an hour)",
-      "run": [
-        "cmd",
-        "/c",
-        "ghidra-export.cmd"
-      ],
-      "done_if": "config/ghidra-functions-only.csv",
-      "prepare": true
-    },
-    {
-      "name": "Build the PS2Recomp tools",
-      "run": [
-        "cmd",
-        "/c",
-        "build-recompiler.cmd"
-      ],
-      "done_if": "build/recompiler/ps2xRecomp/ps2_recomp.exe",
-      "prepare": true
-    },
-    {
-      "name": "Translate the game code",
+      "name": "Analyse your game executable (Ghidra) and translate the game (PS2Recomp)",
       "run": [
         "{python}",
-        "scripts/prepare_game_code.py"
+        "../../tools/ps2port/ps2port.py",
+        "prepare",
+        "--port",
+        "{root}"
       ],
-      "done_if": "project/sdk-handlers.inc",
+      "done_if": "build/chunks/chunk_register.cpp",
       "prepare": true
     },
     {
       "name": "Compile",
       "run": [
-        "cmd",
-        "/c",
-        "build-native.cmd",
-        "--jobs",
-        "{jobs}"
+        "{python}",
+        "../../tools/ps2port/ps2port.py",
+        "compile",
+        "--port",
+        "{root}"
       ],
       "retry_if": "build/native/build.ninja"
     }

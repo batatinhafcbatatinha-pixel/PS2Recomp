@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "Ben 10: Alien Force",
+  "revision": "PS2",
+  "filesystem": "iso9660",
+  "destination": "game_files",
+  "required_files": {
+    "SLUS_218.15": "92004adcf85e877199be5b5ca017c640e95795017c0ca3c8d4ecbde52567cb61"
+  },
+  "required_paths": [],
+  "expected_files": {
+    "DATA.PAK": 2325063680,
+    "MODULES/CDVDSTM.IRX": 33521,
+    "MODULES/IOMGR.IRX": 27832,
+    "MODULES/IOPRP310.IMG": 278353,
+    "MODULES/LIBSD.IRX": 30085,
+    "MODULES/MCMAN.IRX": 96181,
+    "MODULES/MCSERV.IRX": 7385,
+    "MODULES/PADMAN.IRX": 45925,
+    "MODULES/SDRDRV.IRX": 9161,
+    "MODULES/SIO2MAN.IRX": 6641,
+    "SLUS_218.15": 3890444,
+    "SYSTEM.CNF": 57
+  }
+}

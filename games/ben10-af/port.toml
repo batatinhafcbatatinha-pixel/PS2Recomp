@@ -1,0 +1,5 @@
+# Ben 10: Alien Force: overrides for the generic pipeline (tools/ps2port).
+name = "Ben 10: Alien Force"
+
+[profile]
+handlers = "handlers.cpp"   # 60 fps mode (BEN10_30FPS=1 keeps the disc's 30 fps)
