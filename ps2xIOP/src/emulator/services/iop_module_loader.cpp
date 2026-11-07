@@ -1,3 +1,4 @@
+#include <functional>
 #include "iop_module_loader.h"
 
 #include "../core/iop_memory.h"
@@ -322,8 +323,23 @@ namespace ps2x::iop::detail
 
     bool IopModuleLoader::readElfFromGuest(IopHost &host, uint32_t guestAddress, std::vector<uint8_t> &bytes)
     {
+        return readElf([&](uint32_t offset, void *destination, size_t size)
+                       { return host.readGuest(guestAddress + offset, destination, size); },
+                       bytes);
+    }
+
+    // sceSifLoadModuleBuffer takes an IOP address: the EE copies the IRX into IOP heap with SIF DMA first (FlatOut 2).
+    bool IopModuleLoader::readElfFromIop(const IopMemory &memory, uint32_t iopAddress, std::vector<uint8_t> &bytes)
+    {
+        return readElf([&](uint32_t offset, void *destination, size_t size)
+                       { return memory.readRam(iopAddress + offset, destination, size); },
+                       bytes);
+    }
+
+    bool IopModuleLoader::readElf(const std::function<bool(uint32_t, void *, size_t)> &read, std::vector<uint8_t> &bytes)
+    {
         Elf32Ehdr header{};
-        if (!host.readGuest(guestAddress, &header, sizeof(header)) || !validElfHeader(header))
+        if (!read(0u, &header, sizeof(header)) || !validElfHeader(header))
             return false;
 
         uint64_t required = sizeof(header);
@@ -334,7 +350,7 @@ namespace ps2x::iop::detail
             return false; // Should we log an error here? TODO check later
 
         bytes.resize(static_cast<size_t>(required));
-        if (!host.readGuest(guestAddress, bytes.data(), bytes.size()))
+        if (!read(0u, bytes.data(), bytes.size()))
             return false;
 
         if (header.shnum != 0u && header.shentsize >= sizeof(Elf32Shdr))
@@ -364,7 +380,7 @@ namespace ps2x::iop::detail
             return false;
 
         bytes.resize(static_cast<size_t>(required));
-        return host.readGuest(guestAddress, bytes.data(), bytes.size());
+        return read(0u, bytes.data(), bytes.size());
     }
 
     IopImageLoadResult IopModuleLoader::load(std::span<const uint8_t> image, IopMemory &memory, uint32_t moduleCursor)
@@ -431,8 +447,9 @@ namespace ps2x::iop::detail
         int64_t delta = 0;
         if (relocate)
         {
-            base = alignUp(moduleCursor, 0x100u);
-            if (base + span >= IopMemory::HeapBase)
+            // Modules come from the same first-fit arena as AllocSysMemory blocks.
+            base = memory.allocate(span, 0x100u);
+            if (base == 0u)
             {
                 result.error = IopImageLoadError::ArenaExhausted;
                 return result;

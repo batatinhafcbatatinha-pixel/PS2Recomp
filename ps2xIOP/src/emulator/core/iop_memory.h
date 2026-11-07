@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iop_spu2.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -22,6 +24,7 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
+        static constexpr uint32_t ArenaBase = 0x00010000u; // modules and sysmem blocks share one arena
         static constexpr uint32_t HeapBase = 0x00120000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
 
@@ -57,7 +60,7 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt);
         [[nodiscard]] bool freeAllocation(uint32_t address);
-        [[nodiscard]] uint32_t maxFreeMemory() const;
+        [[nodiscard]] uint32_t maxFreeMemory(bool total = false) const;
         [[nodiscard]] std::optional<Allocation> allocationContaining(uint32_t address) const;
 
         [[nodiscard]] uint32_t interruptStatus() const noexcept { return m_interruptStatus; }
@@ -80,12 +83,38 @@ namespace ps2x::iop::detail
         std::vector<uint8_t> m_ram;
         std::vector<uint8_t> m_owned;
         std::vector<uint8_t> m_scratch;
-        std::unordered_map<uint32_t, uint32_t> m_hardware;
+        mutable std::unordered_map<uint32_t, uint32_t> m_hardware;  // mutable: the SPU2 model updates ENDX on reads
         std::vector<Allocation> m_allocations;
         uint32_t m_heapCursor = HeapBase;
         uint32_t m_interruptStatus = 0;
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
         std::optional<DmaStart> m_dmaStart;
+
+        // Minimal SPU2 voice address model: sound RAM filled by the SPU DMA channels and the next-address (NAX)
+        // register of keyed-on voices advanced in real time through the ADPCM blocks (loop flags honoured).
+        // Streamers (The Sopranos STREAM.IRX) poll NAX through sceSdGetAddr to know what was played.
+        struct SpuVoice
+        {
+            bool on = false;
+            uint32_t nax = 0;   // byte address in sound RAM
+            uint32_t lsax = 0;
+            double samples = 0.0;
+            int64_t lastNs = 0;
+        };
+        void spuKeyOn(int core, uint32_t mask) const;
+        void spuAdvance(int core, int voice) const;
+        void spuDmaToSoundRam(bool secondCore, uint32_t bytes);
+        mutable std::vector<uint8_t> m_spuRam;
+        mutable SpuVoice m_spuVoices[2][24];
+    public:
+        // Native SPU2 (iop_spu2.h); clocked by the emulator cycle counter.
+        void setSpuCycleSource(const uint64_t *cycles) noexcept { m_spuCycles = cycles; }
+        void spu2Service() const;
+        bool takeSpu2Irq();
+    private:
+        mutable IopSpu2 m_spu2;
+        const uint64_t *m_spuCycles = nullptr;
+        mutable uint32_t m_spuIrqLatch = 0;
     };
 }

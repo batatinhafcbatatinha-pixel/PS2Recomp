@@ -32,6 +32,8 @@ namespace ps2x::iop
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
         void onSifTransfer(const SifTransfer &transfer);
+        // EE -> IOP SIF command (sceSifSendCmd on the EE): SET_SREG, or the handler an IRX registered for the id.
+        [[nodiscard]] bool receiveSifCommand(uint32_t commandId, const void *packet, size_t size);
 
         // Physical IOP RAM access shared by the emulator, SIF DMA, and HLE services. Addresses are IOP addresses.
         [[nodiscard]] uint32_t allocateMemory(uint32_t size, uint32_t alignment = 16u);

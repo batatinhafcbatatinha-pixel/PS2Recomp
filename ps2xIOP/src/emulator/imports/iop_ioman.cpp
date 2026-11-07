@@ -6,6 +6,7 @@
 
 #include "ps2x/iop/iop_host.h"
 
+#include <cstdio>
 #include <algorithm>
 #include <vector>
 
@@ -51,7 +52,11 @@ namespace ps2x::iop::detail
             {
                 if (handle != 0u)
                     m_host.closeHostFile(handle);
-                m_host.log(LogLevel::Warning, "[IOP ioman] open failed: " + name);
+                {
+                    char where[64];
+                    std::snprintf(where, sizeof where, " (name@0x%X ra=0x%X)", a0, cpu.gpr[31]);
+                    m_host.log(LogLevel::Warning, "[IOP ioman] open failed: " + name + where);
+                }
                 setV0(static_cast<uint32_t>(-2)); // ENOENT
                 return true;
             }

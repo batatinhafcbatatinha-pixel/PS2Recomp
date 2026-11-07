@@ -78,4 +78,14 @@ namespace ps2_stubs
     PadDebugSnapshot getPadDebugSnapshot();
     void setPadOverrideState(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry);
     void clearPadOverrideState();
+
+    // libpad2 (scePad2*), native; games bind them by address (see Pad.cpp).
+    void scePad2Init(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2End(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2CreateSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2DeleteSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2GetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2GetButtonInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void scePad2NoInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 }

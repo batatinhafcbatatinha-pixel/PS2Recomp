@@ -25,6 +25,10 @@ namespace ps2x::iop::detail
         m_servers.clear();
         m_nextDmaId = 1u;
         m_sifInitialized = false;
+        m_commandHandlers.clear();
+        m_sregs = {};
+        m_commandBuffers = 0u;
+        m_nextCommandBuffer = 0u;
     }
 
     bool IopRpcBridge::dispatchSifManImport(uint16_t ordinal, IopCpuState &cpu)
@@ -152,7 +156,7 @@ namespace ps2x::iop::detail
         if (ordinal == 15 || ordinal == 16)
         {
             static unsigned reverseProbe = 0;
-            if (++reverseProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 16u))
+            if (++reverseProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 16u)))
                 std::cerr << "[ff-iop-rpc-out] ordinal=" << ordinal << " a0=0x" << std::hex
                           << cpu.gpr[4] << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6]
                           << std::dec << std::endl;
@@ -163,14 +167,25 @@ namespace ps2x::iop::detail
         };
         switch (ordinal)
         {
+        case 6: // sceSifGetSreg
+            setV0(m_sregs[cpu.gpr[4] & 31u]);
+            return true;
+        case 7: // sceSifSetSreg: returns the previous value
+            setV0(m_sregs[cpu.gpr[4] & 31u]);
+            m_sregs[cpu.gpr[4] & 31u] = cpu.gpr[5];
+            return true;
+        case 10: // sceSifAddCmdHandler(cid, handler, data)
+            m_commandHandlers[cpu.gpr[4]] = {cpu.gpr[5], cpu.gpr[6], cpu.gpr[28]};
+            setV0(0u);
+            return true;
+        case 11: // sceSifRemoveCmdHandler
+            m_commandHandlers.erase(cpu.gpr[4]);
+            setV0(0u);
+            return true;
         case 4: // InitCmd
         case 5:
-        case 6:
-        case 7:
         case 8:
         case 9:
-        case 10:
-        case 11:
         case 14: // InitRpc
             setV0(0);
             return true;
@@ -184,7 +199,7 @@ namespace ps2x::iop::detail
             const uint32_t receiveSize = m_memory.read32(cpu.gpr[29] + 24u);
             const uint32_t sid = m_memory.read32(cpu.gpr[4] + 36u);
             static uint32_t reverseCallLogs = 0;
-            if (reverseCallLogs++ < (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+            if (reverseCallLogs++ < (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 32u)))
                 std::cerr << "[ff-iop-rpc-call] sid=0x" << std::hex << sid
                       << " src=0x" << cpu.gpr[7] << " recv=0x" << m_memory.read32(cpu.gpr[29] + 20u)
                       << std::dec << " size=" << size << " rsize=" << receiveSize << std::endl;
@@ -384,6 +399,34 @@ namespace ps2x::iop::detail
         result.signalNowaitCompletion = true;
         result.signalCompletion = true;
         return result;
+    }
+
+    std::optional<IopRpcBridge::CommandCall> IopRpcBridge::receiveEeCommand(uint32_t commandId, const void *packet, size_t size)
+    {
+        constexpr size_t kMaxPacket = 128u;
+        constexpr uint32_t kRing = 32u;
+        if (!packet || size < 16u || size > kMaxPacket)
+            return std::nullopt;
+        const auto *words = static_cast<const uint32_t *>(packet);
+        if (commandId == 0x80000001u) // SIF_CMD_SET_SREG {header, index, value}
+        {
+            if (size >= 24u)
+                m_sregs[words[4] & 31u] = words[5];
+            return std::nullopt;
+        }
+        const auto handler = m_commandHandlers.find(commandId);
+        if (handler == m_commandHandlers.end() || handler->second.function == 0u)
+            return std::nullopt;
+        if (m_commandBuffers == 0u)
+        {
+            m_commandBuffers = m_memory.allocate(kMaxPacket * kRing, 16u);
+            if (m_commandBuffers == 0u)
+                return std::nullopt;
+        }
+        const uint32_t address = m_commandBuffers + kMaxPacket * (m_nextCommandBuffer++ % kRing);
+        if (!m_memory.writeRam(address, packet, size))
+            return std::nullopt;
+        return CommandCall{handler->second.function, handler->second.gp, address, handler->second.data};
     }
 
     void IopRpcBridge::onSifTransfer(const SifTransfer &transfer)

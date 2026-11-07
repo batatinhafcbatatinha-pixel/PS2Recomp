@@ -288,8 +288,10 @@ namespace ps2_syscalls
             }
             target->ownsStack = true;
         }
+        // The EE kernel returns the thread id on success (FlatOut 2 compares it with the CreateThread id and,
+        // on a mismatch, deletes the power-off semaphore its just-started thread waits on -> console power-off).
         const int result = ee.startThread(id, arg, *ctx, false);
-        setReturnS32(ctx, result);
+        setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
 

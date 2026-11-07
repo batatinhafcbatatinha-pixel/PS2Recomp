@@ -888,4 +888,163 @@ namespace ps2_stubs
         g_padOverrideEnabled = false;
         g_padOverrideState = PadInputState{};
     }
+
+    // ---- libpad2 (scePad2*), native ------------------------------------------------------------------------------
+    // libpad2 games (FlatOut 2) talk to DBCMAN/DS2U on the IOP through a button "profile". Here the EE library itself
+    // is native: a socket is a port, Read returns the DualShock 2 elements in profile order and GetButtonInfo decodes
+    // them. Data layout written by scePad2Read (18 bytes):
+    //   [0..1]  elements 0..15, one bit each, active low (Select, L3, R3, Start, Up, Right, Down, Left,
+    //           L2, R2, L1, R1, Triangle, Circle, Cross, Square)
+    //   [2..5]  elements 16..19: right X, right Y, left X, left Y (0x80 = centre)
+    //   [6..17] elements 20..31: pressure of Right, Left, Up, Down, Triangle, Circle, Cross, Square, L1, R1, L2, R2
+    namespace
+    {
+        constexpr int kPad2MaxSockets = 8;
+        constexpr uint32_t kPad2DataSize = 18u;
+        int g_pad2SocketPort[kPad2MaxSockets] = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+        bool pad2HostInput(int port, PS2Runtime *runtime, PadInputState &state)
+        {
+            {
+                std::lock_guard<std::mutex> lock(g_padOverrideMutex);
+                if (g_padOverrideEnabled && port == 0)
+                {
+                    state = g_padOverrideState;
+                    return true;
+                }
+            }
+            uint8_t backendData[32]{};
+            if (runtime && runtime->padBackend().readState(port, 0, backendData, sizeof(backendData)))
+            {
+                state.buttons = static_cast<uint16_t>(backendData[2] | (backendData[3] << 8));
+                state.rx = backendData[4];
+                state.ry = backendData[5];
+                state.lx = backendData[6];
+                state.ly = backendData[7];
+                return true;
+            }
+            if (port != 0)
+                return false; // the keyboard and the first gamepad belong to port 0
+            applyGamepadState(state);
+            applyKeyboardState(state, true);
+            return true;
+        }
+
+        int pad2SocketPort(int socket)
+        {
+            return socket >= 0 && socket < kPad2MaxSockets ? g_pad2SocketPort[socket] : -1;
+        }
+    }
+
+    void scePad2Init(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 1);
+    }
+
+    void scePad2End(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        for (int &port : g_pad2SocketPort)
+            port = -1;
+        setReturnS32(ctx, 1);
+    }
+
+    // scePad2CreateSocket(scePad2SocketParam *param, void *dmaBuffer): param = {option, port, slot, number}
+    void scePad2CreateSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        const uint8_t *param = getMemPtr(rdram, getRegU32(ctx, 4));
+        int port = 0;
+        if (param)
+            std::memcpy(&port, param + 4, sizeof(port));
+        if (port < 0 || port >= static_cast<int>(kPadPortCount))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        for (int socket = 0; socket < kPad2MaxSockets; ++socket)
+            if (g_pad2SocketPort[socket] < 0 || g_pad2SocketPort[socket] == port)
+            {
+                g_pad2SocketPort[socket] = port;
+                std::fprintf(stderr, "[pad2] CreateSocket port=%d -> socket %d\n", port, socket);
+                setReturnS32(ctx, socket);
+                return;
+            }
+        setReturnS32(ctx, -1);
+    }
+
+    void scePad2DeleteSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        if (pad2SocketPort(socket) >= 0)
+            g_pad2SocketPort[socket] = -1;
+        setReturnS32(ctx, 1);
+    }
+
+    // scePad2GetState(socket): 1 = stable (a controller is linked), 0 = no link.
+    void scePad2GetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        const int port = pad2SocketPort(static_cast<int>(getRegU32(ctx, 4)));
+        PadInputState state;
+        setReturnS32(ctx, port >= 0 && pad2HostInput(port, runtime, state) ? 1 : 0);
+    }
+
+    // scePad2Read(socket, data): returns the number of bytes written, -1 without a controller.
+    void scePad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int port = pad2SocketPort(static_cast<int>(getRegU32(ctx, 4)));
+        uint8_t *data = getMemPtr(rdram, getRegU32(ctx, 5));
+        PadInputState state;
+        if (port < 0 || !data || !pad2HostInput(port, runtime, state))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        data[0] = static_cast<uint8_t>(state.buttons & 0xFFu);
+        data[1] = static_cast<uint8_t>(state.buttons >> 8);
+        data[2] = state.rx;
+        data[3] = state.ry;
+        data[4] = state.lx;
+        data[5] = state.ly;
+        static constexpr uint16_t kPressureOrder[12] = {kPadBtnRight, kPadBtnLeft, kPadBtnUp, kPadBtnDown,
+                                                        kPadBtnTriangle, kPadBtnCircle, kPadBtnCross, kPadBtnSquare,
+                                                        kPadBtnL1, kPadBtnR1, kPadBtnL2, kPadBtnR2};
+        for (int i = 0; i < 12; ++i)
+            data[6 + i] = (state.buttons & kPressureOrder[i]) == 0u ? 0xFFu : 0u;
+        setReturnS32(ctx, static_cast<int32_t>(kPad2DataSize));
+    }
+
+    // scePad2GetButtonInfo(socket, data, element): 1/0 for buttons (pressed/released), 0..255 for analog elements.
+    // Elements the DualShock 2 does not have read as 0 (not -1: games treat any non-zero value as "pressed").
+    void scePad2GetButtonInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        const uint8_t *data = getMemPtr(rdram, getRegU32(ctx, 5));
+        const int element = static_cast<int>(getRegU32(ctx, 6));
+        if (!data || element < 0)
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        if (element < 16)
+            setReturnS32(ctx, ((data[element >> 3] >> (element & 7)) & 1u) == 0u ? 1 : 0);
+        else if (element < 32)
+            setReturnS32(ctx, data[2 + (element - 16)]);
+        else
+            setReturnS32(ctx, 0);
+    }
+
+    // Other libpad2 queries that go to DBCMAN (actuator/profile info): report "nothing".
+    void scePad2NoInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 0);
+    }
 }

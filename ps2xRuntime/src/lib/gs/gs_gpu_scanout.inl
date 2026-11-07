@@ -25,6 +25,8 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
         const uint32_t magh = uint32_t((display >> 23) & 0xFu);
         source.width = (dw + 1u) / (magh + 1u);
         source.height = dh + 1u;
+        if ((request.smode2 & 3u) == 3u && source.height > 1u)
+            source.height /= 2u; // field mode: DH counts half-lines (see gs_hw_backend.cpp)
         if (source.width < 64u || source.height < 64u) {
             source.width = 640u;
             source.height = 448u;

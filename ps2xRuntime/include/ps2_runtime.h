@@ -487,6 +487,11 @@ private:
     [[nodiscard]] bool canBindIopRpc(uint32_t sid) const noexcept;
     [[nodiscard]] ps2x::iop::RpcResult handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request);
     void notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer);
+public:
+    // EE -> IOP SIF command (sceSifSendCmd): SET_SREG or the command handler a loaded IRX registered.
+    bool sendIopSifCommand(uint8_t *rdram, uint32_t commandId, const void *packet, size_t size);
+
+private:
     void advanceIopEeCycles(uint64_t eeCycles) noexcept;
     void resetIop();
 

@@ -529,6 +529,22 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.preferredDestFbp = m_preferredDisplayDestFbp;
     request.hasPreferredSource = m_hasPreferredDisplaySource;
     request.forceReadback = g_gsForceReadback.exchange(false, std::memory_order_relaxed);
+    // PS2X_GS_DISPLAY_LOG=1: the display registers whenever they change (first 32 changes).
+    static const bool displayLog = std::getenv("PS2X_GS_DISPLAY_LOG") != nullptr;
+    if (displayLog)
+    {
+        static uint64_t last[6] = {};
+        static int changes = 0;
+        const uint64_t now[6] = {request.pmode, request.smode2, request.dispfb1, request.display1, request.dispfb2, request.display2};
+        if (std::memcmp(last, now, sizeof(now)) != 0 && changes < 32)
+        {
+            ++changes;
+            std::memcpy(last, now, sizeof(now));
+            std::fprintf(stderr, "[gs-display] pmode=%llx smode2=%llx dispfb1=%llx display1=%llx dispfb2=%llx display2=%llx\n",
+                         (unsigned long long)now[0], (unsigned long long)now[1], (unsigned long long)now[2],
+                         (unsigned long long)now[3], (unsigned long long)now[4], (unsigned long long)now[5]);
+        }
+    }
     return request;
 }
 

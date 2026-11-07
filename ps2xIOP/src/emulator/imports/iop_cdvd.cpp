@@ -12,6 +12,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -280,6 +281,33 @@ namespace ps2x::iop::detail
 
             case 13: // sceCdDiskReady
                 cpu.gpr[2] = kCdvdReadyComplete;
+                return true;
+
+            case 24: // sceCdReadClock: sceCdCLOCK {stat, second, minute, hour, pad, day, month, year}, BCD, host local time
+            {
+                if (a0 != 0u)
+                {
+                    const std::time_t now = std::time(nullptr);
+                    std::tm local{};
+#ifdef _WIN32
+                    localtime_s(&local, &now);
+#else
+                    localtime_r(&now, &local);
+#endif
+                    const auto bcd = [](int value) { return static_cast<uint8_t>(((value / 10) << 4) | (value % 10)); };
+                    const uint8_t clock[8] = {0u, bcd(local.tm_sec), bcd(local.tm_min), bcd(local.tm_hour), 0u,
+                                              bcd(local.tm_mday), bcd(local.tm_mon + 1), bcd(local.tm_year % 100)};
+                    for (uint32_t i = 0; i < 8u; ++i)
+                        memory.write8(a0 + i, clock[i]);
+                }
+                cpu.gpr[2] = 1u;
+                return true;
+            }
+
+            case 14: // sceCdTrayReq(param, *traychk): tray closed, no change since last check
+                if (a1 != 0u)
+                    memory.write32(a1, 0u);
+                cpu.gpr[2] = 1u;
                 return true;
 
             case 28: // sceCdStatus
@@ -754,7 +782,7 @@ namespace ps2x::iop::detail
         bool readSectors(uint32_t lsn, uint32_t sectors, uint32_t destination)
         {
             static unsigned readProbe = 0;
-            if (++readProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 32u))
+            if (++readProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 32u)))
                 std::cerr << "[ff-iop-cd] lsn=" << lsn << " sectors=" << sectors
                           << " dest=0x" << std::hex << destination << std::dec << std::endl;
             if (sectors == 0u)

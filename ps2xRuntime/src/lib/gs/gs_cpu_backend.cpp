@@ -318,7 +318,7 @@ namespace
                                      ((a >= 0x40u) ? 0x8000u : 0u));
     }
 
-    void decodeDisplaySize(uint64_t display64, uint32_t &outWidth, uint32_t &outHeight)
+    void decodeDisplaySize(uint64_t display64, uint32_t &outWidth, uint32_t &outHeight, bool halfLines = false)
     {
         const uint32_t dw = static_cast<uint32_t>((display64 >> 32) & 0x0FFFu);
         const uint32_t dh = static_cast<uint32_t>((display64 >> 44) & 0x07FFu);
@@ -326,6 +326,8 @@ namespace
 
         outWidth = (dw + 1u) / (magh + 1u);
         outHeight = dh + 1u;
+        if (halfLines && outHeight > 1u)
+            outHeight /= 2u;
         if (outWidth < 64u || outHeight < 64u)
         {
             outWidth = kDefaultDisplayWidth;
@@ -1949,8 +1951,10 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);
     const GSDisplayReadOrigin origin2 = decodeDisplayReadOrigin(request.dispfb2);
     uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
-    decodeDisplaySize(request.display1, width1, height1);
-    decodeDisplaySize(request.display2, width2, height2);
+    // Interlaced field mode (SMODE2 INT=1, FFMD=1): DH counts half-lines (see gs_hw_backend.cpp).
+    const bool halfLines = (request.smode2 & 3ull) == 3ull;
+    decodeDisplaySize(request.display1, width1, height1, halfLines);
+    decodeDisplaySize(request.display2, width2, height2, halfLines);
     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
     const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
     if (!valid1 && !valid2)

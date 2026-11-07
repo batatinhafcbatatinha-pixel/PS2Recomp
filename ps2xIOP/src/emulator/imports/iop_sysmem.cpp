@@ -4,10 +4,22 @@
 #include "../core/iop_memory.h"
 #include "ps2x/iop/iop_host.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace ps2x::iop::detail
 {
+    namespace
+    {
+        std::string hex(uint32_t v)
+        {
+            char b[16];
+            std::snprintf(b, sizeof b, "%x", v);
+            return b;
+        }
+    }
+
     IopSysmem::IopSysmem(IopHost &host, IopMemory &memory) noexcept
         : m_host(host), m_memory(memory)
     {
@@ -27,10 +39,16 @@ namespace ps2x::iop::detail
         {
         case 4: // AllocSysMemory
         {
+            // sysmem hands out 256-byte blocks; drivers rely on it (USBD's OHCI HCCA must be 256-byte aligned).
             const uint32_t address = a0 == 2u
-                                         ? m_memory.allocate(a1, 16u, a2)
-                                         : m_memory.allocate(a1, 16u);
+                                         ? m_memory.allocate(a1, 256u, a2)
+                                         : m_memory.allocate(a1, 256u);
             setV0(address);
+            static const bool trace = std::getenv("PS2X_TRACE_IOPMEM") != nullptr;
+            if (trace)
+                m_host.log(LogLevel::Info, "[iop-mem] alloc mode=" + std::to_string(a0) + " size=0x" + hex(a1) +
+                                               " -> 0x" + hex(address) + " ra=0x" + hex(cpu.gpr[31]) +
+                                               " maxFree=0x" + hex(m_memory.maxFreeMemory()));
             return true;
         }
         case 5: // FreeSysMemory
@@ -41,7 +59,10 @@ namespace ps2x::iop::detail
             return true;
         case 7: // QueryMaxFreeMemSize
         case 8: // QueryTotalFreeMemSize
-            setV0(m_memory.maxFreeMemory());
+            setV0(m_memory.maxFreeMemory(ordinal == 8));
+            if (std::getenv("PS2X_TRACE_IOPMEM"))
+                m_host.log(LogLevel::Info, "[iop-mem] query" + std::to_string(ordinal) + " -> 0x" + hex(cpu.gpr[2]) +
+                                               " ra=0x" + hex(cpu.gpr[31]));
             return true;
         case 9: // QueryBlockTopAddress
             if (const auto block = m_memory.allocationContaining(a0))

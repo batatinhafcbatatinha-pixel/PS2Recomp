@@ -3098,6 +3098,10 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         const uint32_t vdiv = static_cast<uint32_t>((display >> 27) & 0x3u) + 1u;
         w = (static_cast<uint32_t>((display >> 32) & 0xFFFu) + 1u) / hdiv;
         h = (static_cast<uint32_t>((display >> 44) & 0x7FFu) + 1u) / vdiv;
+        // Interlaced field mode (SMODE2 INT=1, FFMD=1): DH counts half-lines, the picture has (DH+1)/2 lines
+        // (as PCSX2). FlatOut 2 sets DH=895: 896 shown rows, the bottom 448 of them VRAM garbage.
+        if ((request.smode2 & 3ull) == 3ull && h > 1u)
+            h /= 2u;
         return enabled && display != 0u && w != 0u && h != 0u;
     };
     // GOW_GS_HW_DISPLOG=1: the display registers each time they change (picture size and placement per mode)

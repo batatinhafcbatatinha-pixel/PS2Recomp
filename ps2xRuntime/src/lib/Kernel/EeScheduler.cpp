@@ -37,6 +37,7 @@ static bool insideHandler(const GuestThread *thread)
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -88,6 +89,17 @@ namespace
     constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
     constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
 
+    // Lowest free id, like the EE kernel's object tables (ids are small table indices and come back after a
+    // delete). GT4 packs a semaphore id into 8 bits of its lock handles; ever-growing ids broke every lock once
+    // DelayThread's temporary semaphores pushed the counter past 255.
+    template <typename Map>
+    int allocateLowestId(const Map &objects)
+    {
+        for (int candidate = 1; candidate < std::numeric_limits<int>::max(); ++candidate)
+            if (!objects.contains(candidate))
+                return candidate;
+        return 0;
+    }
     template <typename Map>
     int allocatePositiveId(int &nextId, const Map &objects)
     {
@@ -612,7 +624,8 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // 0..127 like the EE kernel: the SDK's own InitThread creates its top thread at priority 0 (GTA LCS).
+    if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -1018,7 +1031,7 @@ int EeScheduler::createSemaphore(int initCount, int maxCount, uint32_t attr, uin
     {
         return KE_ERROR;
     }
-    const int id = allocatePositiveId(m_nextSemaphoreId, m_semaphores);
+    const int id = allocateLowestId(m_semaphores);
     if (id == 0)
     {
         return KE_ERROR;
@@ -1129,7 +1142,7 @@ void EeScheduler::waitSemaphore(int id)
 int EeScheduler::createEventFlag(uint32_t initialBits, uint32_t attr, uint32_t option)
 {
     assertExecutor();
-    const int id = allocatePositiveId(m_nextEventFlagId, m_eventFlags);
+    const int id = allocateLowestId(m_eventFlags);
     if (id == 0)
     {
         return KE_ERROR;
@@ -2157,6 +2170,42 @@ void EeScheduler::processEvent(const EeEvent &event)
             queueInvocation(std::move(invocation));
         }
         dispatchIrq(false, 2u);
+        {
+            // GS VSINT: CSR bit 3 latches every vblank; INTC cause 0 (GS) fires when IMR.VSMSK (bit 11) is clear.
+            // FlatOut 2 makes its frame token only from this interrupt. PS2X_GS_VSINT=0 disables.
+            static const bool vsint = [] { const char *e = std::getenv("PS2X_GS_VSINT"); return !(e && e[0] == '0'); }();
+            if (vsint)
+            {
+                auto &gs = m_runtime.memory().gs();
+                gs.csr.fetch_or(0x8ull, std::memory_order_acq_rel);
+                if ((gs.imr & 0x800ull) == 0u)
+                    dispatchIrq(false, 0u);
+                // PS2X_GS_VSINT_LOG=<hex guest addr>: every 60 vblanks, print the delivery state of cause 0 and
+                // eight guest words from that address (diagnostics for frame tokens made by the GS handler).
+                static const uint32_t logAddr = [] { const char *e = std::getenv("PS2X_GS_VSINT_LOG"); return e ? static_cast<uint32_t>(std::strtoul(e, nullptr, 16)) : 0u; }();
+                if (logAddr != 0u && m_vsyncTick % 60u == 0u)
+                {
+                    uint32_t handlers = 0u, enabledHandlers = 0u;
+                    for (const auto &[id, handler] : m_intcHandlers)
+                    {
+                        (void)id;
+                        if (handler.cause == 0u)
+                        {
+                            ++handlers;
+                            enabledHandlers += handler.enabled ? 1u : 0u;
+                        }
+                    }
+                    uint32_t words[8] = {};
+                    const uint32_t physical = logAddr & 0x1FFFFFFFu;
+                    if (m_rdram && physical + sizeof(words) <= PS2_RAM_SIZE)
+                        std::memcpy(words, m_rdram + physical, sizeof(words));
+                    std::fprintf(stderr, "[vsint] tick=%llu imr=%llx csr=%llx intcMask=%x cause0 handlers=%u enabled=%u words=%x %x %x %x %x %x %x %x\n",
+                                 static_cast<unsigned long long>(m_vsyncTick), static_cast<unsigned long long>(gs.imr),
+                                 static_cast<unsigned long long>(gs.csr.load()), m_enabledIntcMask, handlers, enabledHandlers,
+                                 words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
+                }
+            }
+        }
         break;
     case EeEventType::ExternalWake:
         completeExternalWait(event.id, event.value, KE_OK);
