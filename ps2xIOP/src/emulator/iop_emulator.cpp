@@ -16,8 +16,13 @@
 #include "imports/iop_timrman.h"
 #include "imports/iop_vblank.h"
 #include "iop_emulator_const.h"
+#include "ps2x/iop/iop_aot.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <cctype>
 #include <map>
 #include <optional>
@@ -79,7 +84,86 @@ namespace ps2x::iop::detail
             uint32_t entry = 0;
             uint32_t gp = 0;
             bool resident = false;
+            const AotModuleInfo *aot = nullptr;
         };
+
+        // Statically recompiled modules currently loaded: [base, base + codeSize) -> native function.
+        struct AotRange
+        {
+            uint32_t base = 0;
+            uint32_t end = 0;
+            AotModuleFn fn = nullptr;
+        };
+        std::vector<AotRange> aotRanges;
+        AotMemory aotMemory{};
+        uint64_t aotInstructions = 0;
+
+        static uint8_t aotRead8(void *self, uint32_t a) { return static_cast<IopMemory *>(self)->read8(a); }
+        static uint16_t aotRead16(void *self, uint32_t a) { return static_cast<IopMemory *>(self)->read16(a); }
+        static uint32_t aotRead32(void *self, uint32_t a) { return static_cast<IopMemory *>(self)->read32(a); }
+        static void aotWrite8(void *self, uint32_t a, uint8_t v) { static_cast<IopMemory *>(self)->write8(a, v); }
+        static void aotWrite16(void *self, uint32_t a, uint16_t v) { static_cast<IopMemory *>(self)->write16(a, v); }
+        static void aotWrite32(void *self, uint32_t a, uint32_t v) { static_cast<IopMemory *>(self)->write32(a, v); }
+
+        static bool aotEnabled()
+        {
+            static const bool enabled = [] { const char *e = std::getenv("PS2X_IOP_AOT"); return !(e && e[0] == '0'); }();
+            return enabled;
+        }
+
+        // Runs native code for cpu.pc when it lies in a recompiled module. Returns executed instructions (0 = not run).
+        uint32_t runAot(CpuState &cpu)
+        {
+            if (aotRanges.empty() || cpu.branchPending)
+                return 0u;
+            const uint32_t pc = cpu.pc;
+            const AotRange *range = nullptr;
+            for (const AotRange &r : aotRanges)
+                if (pc >= r.base && pc < r.end)
+                {
+                    range = &r;
+                    break;
+                }
+            if (!range)
+                return 0u;
+            if (!aotMemory.self)
+            {
+                aotMemory.self = &memory;
+                aotMemory.ram = memory.ram().data();
+                aotMemory.read8 = aotRead8;
+                aotMemory.read16 = aotRead16;
+                aotMemory.read32 = aotRead32;
+                aotMemory.write8 = aotWrite8;
+                aotMemory.write16 = aotWrite16;
+                aotMemory.write32 = aotWrite32;
+            }
+            AotState state;
+            std::memcpy(state.gpr, cpu.gpr.data(), sizeof(state.gpr));
+            state.hi = cpu.hi;
+            state.lo = cpu.lo;
+            state.pc = pc;
+            state.pendingLoad = cpu.pendingLoad;
+            state.pendingLoadReg = cpu.pendingLoadReg;
+            state.pendingLoadValue = cpu.pendingLoadValue;
+            state.branchPending = false;
+            state.branchTarget = 0u;
+            const uint32_t executed = range->fn(state, aotMemory, range->base, 256u);
+            if (executed == 0u)
+                return 0u;
+            std::memcpy(cpu.gpr.data(), state.gpr, sizeof(state.gpr));
+            cpu.gpr[0] = 0u;
+            cpu.hi = state.hi;
+            cpu.lo = state.lo;
+            cpu.pc = state.pc;
+            cpu.pendingLoad = state.pendingLoad;
+            cpu.pendingLoadReg = state.pendingLoadReg;
+            cpu.pendingLoadValue = state.pendingLoadValue;
+            cpu.branchPending = state.branchPending;
+            cpu.branchTarget = state.branchTarget;
+            cpu.exception = false;
+            aotInstructions += executed;
+            return executed;
+        }
 
         struct GuestCallback
         {
@@ -130,6 +214,7 @@ namespace ps2x::iop::detail
             nextModuleId = 1;
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
+            memory.setCycleSource(&totalCycles);
             totalInstructions = 0;
             eeCycleCarry = 0;
             activeCpu = nullptr;
@@ -394,6 +479,14 @@ namespace ps2x::iop::detail
                 return !cpu.stopped;
             }
 
+            if (const uint32_t executed = runAot(cpu))
+            {
+                schedulePendingDma();
+                totalInstructions += executed;
+                totalCycles += executed;
+                return !cpu.stopped;
+            }
+
             const bool running = cpuCore.executeInstruction(cpu);
             schedulePendingDma();
             ++totalInstructions;
@@ -562,8 +655,11 @@ namespace ps2x::iop::detail
             try
             {
                 const uint64_t target = totalCycles + cycles;
+                memory.setSpuCycleSource(&totalCycles);
                 while (totalCycles < target)
                 {
+                    if (memory.takeSpu2Irq())
+                        (void)intrman.dispatchInterrupt(9, *this); // SPU2 IRQ (IRQA hit)
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     timrman.serviceDue(totalCycles, *this);
@@ -576,11 +672,21 @@ namespace ps2x::iop::detail
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         nextWake = timrman.nextEventCycle(nextWake);
+                        // The SPU2 can raise its IRQ at any sample: idle in steps of 256 samples at most.
+                        nextWake = std::min<uint64_t>(nextWake, totalCycles + 768u * 256u);
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
                         continue;
                     }
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
+                    // PS2X_IOP_PCSAMPLE=<n>: every n-th timeslice, log which IOP thread ran and where it stopped
+                    // (finds IOP threads that spin instead of waiting).
+                    static const uint64_t pcSample = std::getenv("PS2X_IOP_PCSAMPLE") ? std::strtoull(std::getenv("PS2X_IOP_PCSAMPLE"), nullptr, 0) : 0u;
+                    static uint64_t slices = 0u;
+                    if (pcSample && ++slices % pcSample == 0u)
+                        std::cerr << "[iop-pc] thread=" << next->id << std::hex << " entry=0x" << next->entry << " pc=0x" << next->cpu.pc
+                                  << " ra=0x" << next->cpu.gpr[31] << " a0=0x" << next->cpu.gpr[4] << " v0=0x" << next->cpu.gpr[2]
+                                  << std::dec << " cycle=" << totalCycles << std::endl;
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
                     if (totalCycles == before)
                         ++totalCycles;
@@ -617,6 +723,51 @@ namespace ps2x::iop::detail
             module.size = loaded.size;
             module.entry = loaded.entry;
             module.gp = loaded.gp;
+            if (aotEnabled())
+            {
+                const uint64_t hash = aotImageHash(image.data(), static_cast<uint32_t>(image.size()));
+                module.aot = findAotModule(hash, static_cast<uint32_t>(image.size()));
+                // PS2X_IOP_AOT_ONLY / PS2X_IOP_AOT_SKIP: comma lists of module name parts (bisecting).
+                auto listed = [&](const char *var) {
+                    const char *e = std::getenv(var);
+                    if (!e || !*e) return -1;
+                    std::string list(e), upper = module.name;
+                    for (char &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    size_t start = 0;
+                    while (start <= list.size()) {
+                        size_t comma = list.find(',', start);
+                        std::string item = list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                        for (char &c : item) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                        if (!item.empty() && upper.find(item) != std::string::npos) return 1;
+                        if (comma == std::string::npos) break;
+                        start = comma + 1;
+                    }
+                    return 0;
+                };
+                if (listed("PS2X_IOP_AOT_ONLY") == 0 || listed("PS2X_IOP_AOT_SKIP") == 1)
+                    module.aot = nullptr;
+                std::ostringstream aotLog;
+                aotLog << "[IOP] AOT " << module.name << " hash=0x" << std::hex << hash << " size=0x" << image.size()
+                       << (module.aot ? " native" : " interpreted");
+                log(LogLevel::Info, aotLog.str());
+                // PS2X_IOP_AOT_DUMP=<dir>: save every interpreted IRX image for tools/irx_aot.py
+                if (!module.aot)
+                    if (const char *dir = std::getenv("PS2X_IOP_AOT_DUMP"); dir && *dir)
+                    {
+                        std::ostringstream file;
+                        std::string base = module.name;
+                        for (char &c : base)
+                            if (c == ';' || c == ':' || c == '\\' || c == '/') c = '_';
+                        file << dir << "/" << base << "-" << std::hex << hash << ".irx";
+                        if (FILE *f = std::fopen(file.str().c_str(), "wb"))
+                        {
+                            std::fwrite(image.data(), 1, image.size(), f);
+                            std::fclose(f);
+                        }
+                    }
+                if (module.aot)
+                    aotRanges.push_back({module.base, module.base + module.aot->codeSize, module.aot->fn});
+            }
 
             uint32_t args = 0u;
             if (arguments && argumentSize)
@@ -675,6 +826,7 @@ namespace ps2x::iop::detail
             kernel.terminateThreadsInRange(it->second.base, it->second.size);
             rpc.removeServersInRange(it->second.base, it->second.size);
             imports.eraseRange(it->second.base, it->second.size);
+            std::erase_if(aotRanges, [&](const AotRange &r) { return r.base == it->second.base; });
             modules.erase(it);
             kernel.cleanupDeadThreads();
             if (result)

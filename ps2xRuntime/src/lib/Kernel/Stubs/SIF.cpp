@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "SIF.h"
 #include "../Syscalls/RPC.h"
+#include "Syscalls/Helpers/State.h"
 #include "../../ps2_iop_transport.h"
 #include "runtime/ps2_address.h"
 #include "runtime/ee_scheduler.h"
@@ -20,6 +21,41 @@ namespace ps2_stubs
     void sceSifLoadModule(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         ps2_syscalls::SifLoadModule(rdram, ctx, runtime);
+    }
+
+    // LOADFILE's search-by-name: the SDK binds RPC 0x80000006, which the IOP here never serves, so answer from the
+    // modules the runtime loaded. The IRX file name stands in for the module name (CDSTREAM.IRX -> "cdstream").
+    void sceSifSearchModuleByName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        constexpr int32_t kUnknownModule = -202; // KE_UNKNOWN_MODULE
+        auto lower = [](std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text;
+        };
+        const std::string wanted = lower(readPs2CStringBounded(rdram, runtime, getRegU32(ctx, 4), 64));
+        int32_t found = kUnknownModule;
+        if (!wanted.empty())
+        {
+            std::lock_guard<std::mutex> lock(g_sif_module_mutex);
+            for (const auto &[id, record] : g_sif_modules_by_id)
+            {
+                if (!record.loaded)
+                    continue;
+                std::string base = lower(record.path);
+                const size_t slash = base.find_last_of("\\/:");
+                base = base.substr(slash == std::string::npos ? 0 : slash + 1);
+                base = base.substr(0, base.find_first_of(".;"));
+                if (!base.empty() && (base == wanted || wanted.find(base) != std::string::npos || base.find(wanted) != std::string::npos))
+                {
+                    found = id;
+                    break;
+                }
+            }
+        }
+        RUNTIME_LOG("[SIF module] search name=\"" << wanted << "\" -> " << found << std::endl);
+        setReturnS32(ctx, found);
     }
 
     void sceSifSendCmd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

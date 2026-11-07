@@ -88,6 +88,17 @@ namespace
     constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
     constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
 
+    // Lowest free id, like the EE kernel's object tables (ids are small table indices and come back after a
+    // delete). GT4 packs a semaphore id into 8 bits of its lock handles; ever-growing ids broke every lock once
+    // DelayThread's temporary semaphores pushed the counter past 255.
+    template <typename Map>
+    int allocateLowestId(const Map &objects)
+    {
+        for (int candidate = 1; candidate < std::numeric_limits<int>::max(); ++candidate)
+            if (!objects.contains(candidate))
+                return candidate;
+        return 0;
+    }
     template <typename Map>
     int allocatePositiveId(int &nextId, const Map &objects)
     {
@@ -612,7 +623,9 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // The EE kernel accepts 0..127: libkernel's InitThread creates its top thread at priority 0 and then moves the
+    // main thread to 1 (GTA VCS's movie player depends on that).
+    if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -1018,7 +1031,7 @@ int EeScheduler::createSemaphore(int initCount, int maxCount, uint32_t attr, uin
     {
         return KE_ERROR;
     }
-    const int id = allocatePositiveId(m_nextSemaphoreId, m_semaphores);
+    const int id = allocateLowestId(m_semaphores);
     if (id == 0)
     {
         return KE_ERROR;
@@ -1129,7 +1142,7 @@ void EeScheduler::waitSemaphore(int id)
 int EeScheduler::createEventFlag(uint32_t initialBits, uint32_t attr, uint32_t option)
 {
     assertExecutor();
-    const int id = allocatePositiveId(m_nextEventFlagId, m_eventFlags);
+    const int id = allocateLowestId(m_eventFlags);
     if (id == 0)
     {
         return KE_ERROR;
