@@ -49,6 +49,7 @@ The translated code is very literal, with each MIPS instruction mapping to a C++
 * CMake 3.20+
 * C++20 compiler (currently tested mainly with MSVC)
 * SSE4/AVX host support for some vector paths
+* macOS (branch `macos`, arm64 and x86_64): Xcode Command Line Tools and `brew install cmake ninja pkg-config ffmpeg`. OpenGL stops at 4.1 there, so games use the software GS (`PS2X_GS=cpu`). Experimental: built and tested in CI, but no game has run on a real Mac.
 
 ### Build
 
