@@ -119,11 +119,13 @@ def vc_env():
     if not vcvars.is_file():
         return None
     out = subprocess.run(f'"{vcvars}" >nul && set', shell=True, capture_output=True, text=True).stdout
-    env = dict(os.environ)
+    # Windows names are case-insensitive: cmd prints "Path=" when the parent spelt it so (Explorer, PowerShell, the
+    # launcher), which must replace "PATH", not sit next to it.
+    env = {k.upper(): v for k, v in os.environ.items()}
     for line in out.splitlines():
         if '=' in line:
             k, v = line.split('=', 1)
-            env[k] = v
+            env[k.upper()] = v
     env['VSLANG'] = '1033'
     return env
 
@@ -553,7 +555,7 @@ def game_env(port, args):
     if not layout.is_file():
         inst = Path(args.installer) if args.installer else port.dir / 'installer.json'
         run([sys.executable, REPO / 'tools/port-installer/prepare_folder.py', '--root', port.dir, '--config', inst])
-    env = dict(os.environ)
+    env = {k.upper(): v for k, v in os.environ.items()} if os.name == 'nt' else dict(os.environ)
     for k, v in port.toml.get('env', {}).items():
         env.setdefault(k, str(v))
     env.setdefault('PS2X_GS', 'hw')
