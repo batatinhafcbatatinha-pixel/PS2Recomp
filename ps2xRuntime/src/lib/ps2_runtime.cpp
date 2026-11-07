@@ -1434,6 +1434,10 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
         paths.cdRoot = paths.elfDirectory;
         paths.mcRoot = paths.elfDirectory / "mc0";
     }
+    // PS2X_MC_ROOT=<dir>: memory card 0 somewhere else than next to the disc files (tools/ps2port keeps saves in
+    // <port>/mc0, out of game_files).
+    if (const char *mc = std::getenv("PS2X_MC_ROOT"); mc && *mc)
+        paths.mcRoot = std::filesystem::path(mc);
 
     setIoPaths(paths);
 }
