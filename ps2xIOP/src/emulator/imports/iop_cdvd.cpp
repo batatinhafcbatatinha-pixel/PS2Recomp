@@ -233,6 +233,7 @@ namespace ps2x::iop::detail
             case 6: // sceCdRead
                 if (readSectors(a0, a1, a2))
                 {
+                    pendingReadSectors += a1;
                     signalCommandComplete();
                     if (callback.address != 0u)
                     {
@@ -376,6 +377,14 @@ namespace ps2x::iop::detail
             default:
                 return false;
             }
+        }
+
+        // Sectors read by sceCdRead since the last blocking sceCdSync: the emulator turns them into drive time.
+        uint32_t takePendingReadSectors() noexcept
+        {
+            const uint32_t sectors = pendingReadSectors;
+            pendingReadSectors = 0u;
+            return sectors;
         }
 
         std::optional<CompletionCallback> takeCompletionCallback() noexcept
@@ -848,6 +857,7 @@ namespace ps2x::iop::detail
         uint32_t mediaMode = 0u;
         uint32_t currentLsn = 0u;
         uint32_t lastError = kCdvdErrorNone;
+        uint32_t pendingReadSectors = 0u;
         uint32_t streamFlag = 0u;
         uint32_t lastReadTimeout = 0u;
         int interruptEventFlagId = 0;
@@ -874,6 +884,11 @@ namespace ps2x::iop::detail
     bool IopCdvd::dispatchImport(uint16_t ordinal, IopCpuState &cpu)
     {
         return m_impl->dispatchImport(ordinal, cpu);
+    }
+
+    uint32_t IopCdvd::takePendingReadSectors() noexcept
+    {
+        return m_impl->takePendingReadSectors();
     }
 
     std::optional<IopCdvd::CompletionCallback> IopCdvd::takeCompletionCallback() noexcept

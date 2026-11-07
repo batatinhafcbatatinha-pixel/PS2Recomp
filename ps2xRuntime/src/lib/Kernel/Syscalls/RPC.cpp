@@ -548,6 +548,36 @@ namespace ps2_syscalls
             request.endFunction = endFunction;
             request.endParameter = endParameter;
 
+            // Rockstar CDSTREAM.IRX (sid 0x65686577, GTA LCS/VCS): fn 3 blocks in WaitSema on the channel until the
+            // request has been read and DMA'd to the EE. IOP RPC servers run synchronously here, so that WaitSema
+            // cannot block and fn 3 returned in the middle of multi-piece reads (LCS relocated a model chunk whose
+            // second 16-sector piece had not arrived yet). Emulate the wait: advance the IOP and poll fn 2 (status:
+            // 0xFF queued, 0xFA reading) until the channel is idle. PS2X_CDSTREAM_NOWAIT=1 disables it.
+            static const bool cdstreamNoWait = [] { const char *e = std::getenv("PS2X_CDSTREAM_NOWAIT"); return e && *e == '1'; }();
+            if (sid == 0x65686577u && rpcNum == 3u && sendBuf != 0u && receiveBuffer != 0u && !cdstreamNoWait)
+            {
+                ps2x::iop::RpcRequest poll = request;
+                poll.function = 2u;
+                poll.endFunction = 0u;
+                for (unsigned attempt = 0; attempt < 20000u; ++attempt)
+                {
+                    (void)PS2IopTransport::handleRpc(runtime, rdram, ctx, poll);
+                    const uint32_t status = *reinterpret_cast<uint32_t *>(getMemPtr(rdram, receiveBuffer));
+                    if (status != 0xFAu && status != 0xFFu)
+                        break;
+                    PS2IopTransport::advance(runtime, 294912u); // ~1 ms of EE time
+                }
+            }
+            // PS2X_IOP_TRACE: the request words before the call (send and receive buffers can be the same).
+            if ([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() &&
+                sendBuf && sendSize && sendSize <= 64u && rpcNum != 2u)
+            {
+                const auto *words = reinterpret_cast<const uint32_t *>(getMemPtr(rdram, sendBuf));
+                std::cerr << "[ff-rpc-send] sid=0x" << std::hex << sid << " fn=0x" << rpcNum << ":";
+                for (unsigned word = 0; word < sendSize / 4u; ++word)
+                    std::cerr << ' ' << words[word];
+                std::cerr << std::dec << std::endl;
+            }
             iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
             static unsigned ffRpcProbe = 0;
             if (++ffRpcProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 64u)))

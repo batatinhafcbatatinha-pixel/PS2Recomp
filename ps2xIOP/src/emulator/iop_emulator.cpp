@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 #include "iop_emulator.h"
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
@@ -334,12 +336,35 @@ namespace ps2x::iop::detail
             if (iequals(call.library, "sysmem") && sysmem.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
 
+            const bool blockingCdSync = iequals(call.library, "cdvdman") && call.ordinal == 11u && cpu.gpr[4] == 0u;
             if (iequals(call.library, "cdvdman") && cdvd.dispatchImport(call.ordinal, cpu))
             {
+                // Reads complete instantly here, but drivers poll a busy channel: CDSTREAM's request loop
+                // (GTA LCS 0x18F788) resends until the channel reports busy, so with no drive time it re-reads the
+                // same block forever. A blocking sceCdSync after reads holds the thread for DVD-like time
+                // (2 ms + 0.15 ms/sector). PS2X_IOP_CD_INSTANT=1 restores instant reads.
+                if (blockingCdSync)
+                {
+                    static const bool instant = [] { const char *e = std::getenv("PS2X_IOP_CD_INSTANT"); return e && *e == '1'; }();
+                    const uint32_t sectors = cdvd.takePendingReadSectors();
+                    if (sectors != 0u && !instant)
+                    {
+                        constexpr uint64_t kIopHz = 36'864'000ull;
+                        const uint64_t us = 2000ull + 150ull * sectors;
+                        kernel.delayCurrentUntil(totalCycles + us * kIopHz / 1'000'000ull, cpu);
+                    }
+                }
                 if (const auto callback = cdvd.takeCompletionCallback())
                 {
+                    // A read's completion callback also comes after drive time: CDSTREAM (GTA LCS) waits on it and
+                    // reads again, so with a 128-cycle completion it kept the IOP at ~100% and starved the threads
+                    // that answer the EE (the game sat on the loading screen).
+                    uint64_t delay = kCdvdCompletionCycles;
+                    static const bool instantCb = [] { const char *e = std::getenv("PS2X_IOP_CD_INSTANT"); return e && *e == '1'; }();
+                    if (call.ordinal == 6u && !instantCb)
+                        delay = (2000ull + 150ull * cpu.gpr[5]) * 36'864'000ull / 1'000'000ull;
                     pendingGuestCallbacks.emplace(
-                        totalCycles + kCdvdCompletionCycles,
+                        totalCycles + delay,
                         ScheduledGuestCallback{
                             callback->address,
                             callback->gp,

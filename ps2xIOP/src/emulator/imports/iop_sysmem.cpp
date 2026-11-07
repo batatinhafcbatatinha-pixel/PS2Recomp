@@ -49,6 +49,14 @@ namespace ps2x::iop::detail
                 m_host.log(LogLevel::Info, "[iop-mem] alloc mode=" + std::to_string(a0) + " size=0x" + hex(a1) +
                                                " -> 0x" + hex(address) + " ra=0x" + hex(cpu.gpr[31]) +
                                                " maxFree=0x" + hex(m_memory.maxFreeMemory()));
+            // A failed allocation is logged (first 16): GTA LCS's CDSTREAM then read a sound bank to address 0.
+            static unsigned failures = 0;
+            if (address == 0u && failures++ < 16u)
+                m_host.log(LogLevel::Info, "[IOP sysmem] AllocSysMemory(type=" + std::to_string(a0) + ", size=0x" +
+                                               [&] { char b[16]; std::snprintf(b, sizeof(b), "%x", a1); return std::string(b); }() +
+                                               ") failed, max free 0x" +
+                                               [&] { char b[16]; std::snprintf(b, sizeof(b), "%x", m_memory.maxFreeMemory(false)); return std::string(b); }() +
+                                               " ra=0x" + [&] { char b[16]; std::snprintf(b, sizeof(b), "%x", cpu.gpr[31]); return std::string(b); }());
             return true;
         }
         case 5: // FreeSysMemory

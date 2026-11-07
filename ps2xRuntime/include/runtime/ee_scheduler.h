@@ -98,6 +98,10 @@ struct GuestInvocation
     GuestInvocationKind kind = GuestInvocationKind::Interrupt;
     uint64_t sequence = 0;
     uint64_t tag = 0;
+    // VBlank interrupts: GS_CSR.FIELD of the tick that raised them (-1 = none). Applied when the handler starts, so
+    // handlers queued back to back (several VBlanks processed in one burst) still see alternating fields (GTA LCS
+    // uploads each movie frame as two fields and only releases it after seeing FIELD 0 then 1).
+    int8_t gsField = -1;
     R5900Context context{};
     std::function<void(const R5900Context &, R5900Context &)> onComplete;
 };
@@ -323,6 +327,7 @@ public:
     [[noreturn]] void invokeCurrentSequence(std::vector<GuestInvocation> invocations);
     [[nodiscard]] bool hasInvocation(GuestInvocationKind kind, uint64_t tag) const;
     [[nodiscard]] uint32_t invocationStackTop();
+    void releaseInvocationStacks(int id);
 
     int addIrqHandler(bool dmac,
                       uint32_t cause,
@@ -335,6 +340,7 @@ public:
     int setIrqHandlerEnabled(bool dmac, int id, bool enabled);
     int setIrqCauseEnabled(bool dmac, uint32_t cause, bool enabled);
     void dispatchIrq(bool dmac, uint32_t cause);
+    void applyInvocationGsField(const GuestInvocation &invocation);
     void setVSyncFlag(uint32_t flagAddress, uint32_t tickAddress);
     [[nodiscard]] uint64_t currentVSyncTick() const noexcept;
     uint32_t setGsVSyncCallback(uint32_t callback, uint32_t gp, uint32_t sp);
@@ -452,6 +458,7 @@ private:
     uint32_t m_gsVSyncCallbackGp = 0;
     uint32_t m_gsVSyncCallbackSp = 0;
     std::unordered_map<uint64_t, uint32_t> m_invocationStackTops;
+    std::vector<uint32_t> m_freeInvocationStackTops;
     std::atomic<uint64_t> m_nextDeadlineCycle{0};
 
     mutable std::mutex m_snapshotMutex;
