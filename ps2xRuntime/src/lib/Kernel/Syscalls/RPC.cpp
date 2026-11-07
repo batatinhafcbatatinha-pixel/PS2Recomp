@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <vector>
 #include "Common.h"
 #include "RPC.h"
 #include "../../ps2_iop_transport.h"
@@ -546,7 +547,7 @@ namespace ps2_syscalls
 
             iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
             static unsigned ffRpcProbe = 0;
-            if (++ffRpcProbe <= (std::getenv("PS2X_IOP_TRACE") ? 1000000u : 64u))
+            if (++ffRpcProbe <= (([] { static const bool on = std::getenv("PS2X_IOP_TRACE") != nullptr; return on; }() ? 1000000u : 64u)))
             {
                 std::cerr << "[ff-rpc] sid=0x" << std::hex << sid
                           << " fn=0x" << rpcNum << " cb=0x" << endFunction
@@ -736,9 +737,11 @@ namespace ps2_syscalls
         uint32_t cfunc = 0;
         uint32_t cbuf = 0;
         uint32_t qd = 0;
-        readStackU32(rdram, sp, 0x10, cfunc);
-        readStackU32(rdram, sp, 0x14, cbuf);
-        readStackU32(rdram, sp, 0x18, qd);
+        // EE EABI passes arguments 5-7 in t0-t2.
+        (void)sp;
+        cfunc = getRegU32(ctx, 8);
+        cbuf = getRegU32(ctx, 9);
+        qd = getRegU32(ctx, 10);
 
         t_SifRpcServerData *sd = reinterpret_cast<t_SifRpcServerData *>(getMemPtr(rdram, sdPtr));
         if (!sd)
@@ -998,15 +1001,22 @@ namespace ps2_syscalls
         uint32_t packetSize = getRegU32(ctx, 6);
         uint32_t srcExtra = getRegU32(ctx, 7);
 
-        uint32_t sp = getRegU32(ctx, 29);
-        uint32_t destExtra = 0;
-        uint32_t sizeExtra = 0;
-        readStackU32(rdram, sp, 0x10, destExtra);
-        readStackU32(rdram, sp, 0x14, sizeExtra);
+        // EE EABI: arguments 5 and 6 travel in t0/t1, not on the stack.
+        uint32_t destExtra = getRegU32(ctx, 8);
+        uint32_t sizeExtra = getRegU32(ctx, 9);
 
-        if (sizeExtra > 0 && srcExtra && destExtra)
+        // The extra data goes to the IOP (destExtra is an IOP address), like the SIF DMA of the real command.
+        if (sizeExtra > 0 && srcExtra && destExtra && runtime)
         {
-            rpcCopyToRdram(rdram, destExtra, srcExtra, sizeExtra);
+            std::vector<uint8_t> extra(sizeExtra);
+            const uint8_t *source = getConstMemPtr(rdram, srcExtra);
+            if (source && (srcExtra & 0x1FFFFFFFu) + sizeExtra <= PS2_RAM_SIZE)
+            {
+                std::memcpy(extra.data(), source, sizeExtra);
+                // IOP RAM (2 MB) is mirrored up to 8 MB: games pass mirrored destinations (0x2C9800, 0x9C5D90).
+                const uint32_t iopDest = (destExtra & 0x1FFFFFFFu) < 0x800000u ? (destExtra & 0x1FFFFFu) : destExtra;
+                (void)runtime->writeIopMemory(iopDest, extra.data(), extra.size());
+            }
         }
 
         static int logCount = 0;
@@ -1017,6 +1027,22 @@ namespace ps2_syscalls
                                                  << " psize=0x" << packetSize
                                                  << " extra=0x" << destExtra << std::dec << std::endl);
             ++logCount;
+        }
+
+        // Deliver to the IOP like the SIF command DMA does: the header carries size, extra destination and id.
+        if (runtime && packetAddr && packetSize >= 16u && packetSize <= 128u)
+        {
+            uint8_t packet[128];
+            const uint8_t *source = getConstMemPtr(rdram, packetAddr);
+            if (source)
+            {
+                std::memcpy(packet, source, packetSize);
+                const uint32_t sizeWord = packetSize | (sizeExtra << 8u);
+                std::memcpy(packet + 0u, &sizeWord, 4u);
+                std::memcpy(packet + 4u, &destExtra, 4u);
+                std::memcpy(packet + 8u, &cid, 4u);
+                (void)runtime->sendIopSifCommand(rdram, cid, packet, packetSize);
+            }
         }
 
         // Return non-zero on success.

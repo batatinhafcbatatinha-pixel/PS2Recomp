@@ -9,6 +9,7 @@ add_library(ps2_iop STATIC
     src/iop_module_manager.cpp
     src/iop_subsystem.cpp
     src/emulator/iop_emulator.cpp
+    src/emulator/iop_aot.cpp
     src/emulator/core/iop_cpu.cpp
     src/emulator/core/iop_kernel.cpp
     src/emulator/core/iop_memory.cpp

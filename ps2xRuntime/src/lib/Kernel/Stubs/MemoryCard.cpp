@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "Common.h"
 #include "MemoryCard.h"
 
@@ -155,14 +156,18 @@ namespace ps2_stubs
 
         void ensureMcRootExists(int32_t port)
         {
-            // Asked on every card poll, from the game thread.
-            static std::array<bool, 8> ready{};
+            // Asked on every card poll, from the game thread. Remember the path, not just the port: the root moves
+            // from <cwd>/mc0 to <elf dir>/mc0 once the runtime knows the ELF, and a per-port flag set by the first
+            // call left the real root uncreated (FlatOut 2: every Mkdir failed with "no entry", "Save failed!").
+            static std::array<std::filesystem::path, 8> ready{};
             const size_t slot = static_cast<size_t>(port) % ready.size();
-            if (ready[slot])
+            const std::filesystem::path root = getMcRootPath(port);
+            if (ready[slot] == root)
                 return;
             std::error_code ec;
-            std::filesystem::create_directories(getMcRootPath(port), ec);
-            ready[slot] = !ec;
+            std::filesystem::create_directories(root, ec);
+            if (!ec)
+                ready[slot] = root;
         }
 
         std::vector<std::string> splitMcPathComponents(const std::string &value)
@@ -907,6 +912,15 @@ namespace ps2_stubs
                 freeBlocks = state.formatted ? kMcFreeClusters : 0;
                 format = state.formatted ? kMcFormatted : kMcUnformatted;
                 result = state.formatted ? kMcResultSucceed : kMcResultNoFormat;
+                // Real hardware: the first GetInfo after a card appears reports -1 ("new/changed card") once;
+                // GT4 only fills its free/format cache on that event. PS2X_MC_FIRST_CHANGED=0 disables.
+                static bool changePending[2] = {true, true};
+                static const bool firstChanged = [] { const char *e = std::getenv("PS2X_MC_FIRST_CHANGED"); return !(e && e[0] == '0'); }();
+                if (firstChanged && port >= 0 && port < 2 && changePending[port] && result == kMcResultSucceed)
+                {
+                    changePending[port] = false;
+                    result = -1;
+                }
             }
 
             setMcCommandResultLocked(kMcCmdGetInfo, result);

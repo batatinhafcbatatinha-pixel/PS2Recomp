@@ -22,6 +22,7 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
+        static constexpr uint32_t ArenaBase = 0x00010000u; // modules and sysmem blocks share one arena
         static constexpr uint32_t HeapBase = 0x00120000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
 
@@ -57,7 +58,7 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt);
         [[nodiscard]] bool freeAllocation(uint32_t address);
-        [[nodiscard]] uint32_t maxFreeMemory() const;
+        [[nodiscard]] uint32_t maxFreeMemory(bool total = false) const;
         [[nodiscard]] std::optional<Allocation> allocationContaining(uint32_t address) const;
 
         [[nodiscard]] uint32_t interruptStatus() const noexcept { return m_interruptStatus; }

@@ -235,6 +235,17 @@ namespace ps2_stubs
         if (!rdram || !runtime || !packet || packetSize < 16u || packetSize > 112u)
             return false;
 
+        if (commandId == 0x80000001u) // SIF_CMD_SET_SREG from the IOP: {header, index, value}
+        {
+            if (packetSize < 24u)
+                return false;
+            uint32_t words[6];
+            std::memcpy(words, packet, sizeof(words));
+            std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
+            g_sifSregs[words[4]] = words[5];
+            return true;
+        }
+
         SifCmdHandler registered{};
         {
             std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);

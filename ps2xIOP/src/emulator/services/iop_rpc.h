@@ -5,6 +5,7 @@
 #include "ps2x/iop/iop_types.h"
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <unordered_map>
 
@@ -56,6 +57,10 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] bool hasServer(uint32_t sid) const noexcept;
         [[nodiscard]] size_t serverCount() const noexcept { return m_servers.size(); }
+        // EE -> IOP SIF command: SET_SREG updates the IOP software registers; other ids go to the handler an IRX
+        // registered with sceSifAddCmdHandler. Returns the handler call to run (packet copied to IOP RAM), if any.
+        struct CommandCall { uint32_t function = 0u; uint32_t gp = 0u; uint32_t packet = 0u; uint32_t data = 0u; };
+        [[nodiscard]] std::optional<CommandCall> receiveEeCommand(uint32_t commandId, const void *packet, size_t size);
 
     private:
         struct RpcServer
@@ -82,5 +87,10 @@ namespace ps2x::iop::detail
         [[nodiscard]] std::optional<DmaCallback> takeDmaCallback() noexcept { auto c = m_dmaCallback; m_dmaCallback.reset(); return c; }
     private:
         bool m_sifInitialized = false;
+        struct CommandHandler { uint32_t function = 0u; uint32_t data = 0u; uint32_t gp = 0u; };
+        std::unordered_map<uint32_t, CommandHandler> m_commandHandlers;
+        std::array<uint32_t, 32> m_sregs{};
+        uint32_t m_commandBuffers = 0u; // IOP RAM ring for incoming command packets
+        uint32_t m_nextCommandBuffer = 0u;
     };
 }

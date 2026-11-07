@@ -13,6 +13,17 @@ namespace ps2x::iop::detail
         constexpr int kDmaSpu0Irq = 0x24;
         constexpr int kDmaSpu1Irq = 0x28;
 
+        // OHCI USB host controller (IOP 0x1F801600): enough for USBD to initialize a controller with no device
+        // attached, as on a PS2 with nothing in its USB ports. Without it the reset handshake times out and USBD,
+        // with every USB class driver after it, unloads (Gran Turismo 4 then waits forever on USB storage).
+        constexpr uint32_t kOhciRevision = 0x1F801600u;
+        constexpr uint32_t kOhciCommandStatus = 0x1F801608u;
+        constexpr uint32_t kOhciInterruptStatus = 0x1F80160Cu;
+        constexpr uint32_t kOhciRhDescriptorA = 0x1F801648u;
+        constexpr uint32_t kOhciRhStatus = 0x1F801650u;
+        constexpr uint32_t kOhciRhPort1 = 0x1F801654u;
+        constexpr uint32_t kOhciRhPort2 = 0x1F801658u;
+
         uint32_t alignUp(uint32_t value, uint32_t alignment)
         {
             return (value + alignment - 1u) & ~(alignment - 1u);
@@ -41,7 +52,9 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
     {
-        return address & 0x1FFFFFFFu;
+        // The 2 MB of IOP RAM repeat up to 8 MB (games pass mirrored SIF DMA destinations such as 0x9C5D90).
+        const uint32_t phys = address & 0x1FFFFFFFu;
+        return phys < 0x800000u ? (phys & (RamSize - 1u)) : phys;
     }
 
     uint8_t IopMemory::read8(uint32_t address) const
@@ -224,6 +237,10 @@ namespace ps2x::iop::detail
             return m_interruptMask;
         case 0x1F801078u:
             return m_interruptControl;
+        case kOhciRevision:
+            return 0x10u; // OHCI 1.0
+        case kOhciRhDescriptorA:
+            return 2u; // two downstream ports
         default:
             return 0u;
         }
@@ -242,6 +259,25 @@ namespace ps2x::iop::detail
         case 0x1F801078u:
             m_interruptControl = value & 1u;
             return;
+        case kOhciRevision:
+            return; // read-only
+        case kOhciCommandStatus:
+            // HostControllerReset completes at once; the other command bits are cleared by the controller too.
+            m_hardware[address] = value & ~0x0Fu;
+            return;
+        case kOhciInterruptStatus:
+        {
+            const auto current = m_hardware.find(address);
+            m_hardware[address] = (current != m_hardware.end() ? current->second : 0u) & ~value; // write 1 to clear
+            return;
+        }
+        case kOhciRhDescriptorA:
+            m_hardware[address] = (value & ~0xFFu) | 2u;
+            return;
+        case kOhciRhStatus:
+        case kOhciRhPort1:
+        case kOhciRhPort2:
+            return; // no device connected: status stays 0
         default:
             break;
         }
@@ -289,7 +325,7 @@ namespace ps2x::iop::detail
         if (fixed)
         {
             const uint32_t address = *fixed;
-            if (address < HeapBase || address + size > HeapLimit)
+            if (address < ArenaBase || address + size > HeapLimit)
                 return 0u;
             for (const auto &block : m_allocations)
                 if (address < block.address + block.size && block.address < address + size)
@@ -299,21 +335,18 @@ namespace ps2x::iop::detail
             return address;
         }
 
-        uint32_t candidate = alignUp(m_heapCursor, alignment);
-        for (;;)
+        // One first-fit arena for modules and sysmem blocks (like the real sysmem): freed blocks are reused.
+        std::vector<Allocation> sorted(m_allocations.begin(), m_allocations.end());
+        std::sort(sorted.begin(), sorted.end(), [](const Allocation &a, const Allocation &b)
+                  { return a.address < b.address; });
+        uint32_t candidate = alignUp(ArenaBase, alignment);
+        for (const auto &block : sorted)
         {
-            bool overlap = false;
-            for (const auto &block : m_allocations)
-            {
-                if (candidate < block.address + block.size && block.address < candidate + size)
-                {
-                    candidate = alignUp(block.address + block.size, alignment);
-                    overlap = true;
-                    break;
-                }
-            }
-            if (!overlap)
+            if (block.address + block.size <= candidate)
+                continue;
+            if (block.address >= candidate && block.address - candidate >= size)
                 break;
+            candidate = std::max(candidate, alignUp(block.address + block.size, alignment));
         }
         if (candidate > HeapLimit || size > HeapLimit - candidate)
             return 0u;
@@ -337,9 +370,32 @@ namespace ps2x::iop::detail
         return true;
     }
 
-    uint32_t IopMemory::maxFreeMemory() const
+    uint32_t IopMemory::maxFreeMemory(bool total) const
     {
-        return m_heapCursor < HeapLimit ? HeapLimit - m_heapCursor : 0u;
+        std::vector<Allocation> sorted(m_allocations.begin(), m_allocations.end());
+        std::sort(sorted.begin(), sorted.end(), [](const Allocation &a, const Allocation &b)
+                  { return a.address < b.address; });
+        uint32_t cursor = ArenaBase, best = 0u, sum = 0u;
+        for (const auto &block : sorted)
+        {
+            if (block.address + block.size <= cursor || block.address >= HeapLimit)
+            {
+                cursor = std::max(cursor, std::min(block.address + block.size, HeapLimit));
+                continue;
+            }
+            if (block.address > cursor)
+            {
+                best = std::max(best, block.address - cursor);
+                sum += block.address - cursor;
+            }
+            cursor = std::max(cursor, block.address + block.size);
+        }
+        if (cursor < HeapLimit)
+        {
+            best = std::max(best, HeapLimit - cursor);
+            sum += HeapLimit - cursor;
+        }
+        return total ? sum : best;
     }
 
     std::optional<IopMemory::Allocation> IopMemory::allocationContaining(uint32_t address) const

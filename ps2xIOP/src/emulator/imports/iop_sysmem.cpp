@@ -27,9 +27,10 @@ namespace ps2x::iop::detail
         {
         case 4: // AllocSysMemory
         {
+            // sysmem hands out 256-byte blocks; drivers rely on it (USBD's OHCI HCCA must be 256-byte aligned).
             const uint32_t address = a0 == 2u
-                                         ? m_memory.allocate(a1, 16u, a2)
-                                         : m_memory.allocate(a1, 16u);
+                                         ? m_memory.allocate(a1, 256u, a2)
+                                         : m_memory.allocate(a1, 256u);
             setV0(address);
             return true;
         }
@@ -41,7 +42,7 @@ namespace ps2x::iop::detail
             return true;
         case 7: // QueryMaxFreeMemSize
         case 8: // QueryTotalFreeMemSize
-            setV0(m_memory.maxFreeMemory());
+            setV0(m_memory.maxFreeMemory(ordinal == 8));
             return true;
         case 9: // QueryBlockTopAddress
             if (const auto block = m_memory.allocationContaining(a0))
