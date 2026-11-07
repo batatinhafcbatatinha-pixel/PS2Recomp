@@ -1,7 +1,0 @@
-# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables at 0x1721e0);
-# found breaking Boku2 (2026-10-28). The guest sceIpuInit runs instead.
-sceIpuInit
-# Runtime InitThread only returns the main thread id. The guest libkernel InitThread also creates the kernel top
-# thread and runs ChangeThreadPriority(main, 1); VCS's movie loop yields to its prio-1 decoder thread with
-# RotateThreadReadyQueue(1), so with main left at prio 0 the decoder starved after 2 frames (2026-11-04).
-InitThread
