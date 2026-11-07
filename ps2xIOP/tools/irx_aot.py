@@ -1,0 +1,369 @@
+#!/usr/bin/env python3
+"""Static recompiler for IOP modules (IRX, MIPS R3000A) -> C++ for ps2xIOP's AOT path (include/ps2x/iop/iop_aot.h).
+
+usage: irx_aot.py OUT_DIR MODULE.IRX [MODULE.IRX ...]
+Writes OUT_DIR/aot_<name>.cpp per module (compile them into the game executable; each registers itself).
+
+Model: every instruction offset of the executable sections is a case of one switch, so any entry point
+works (jump tables, callbacks, returns). Relocated fields (R_MIPS_26/HI16/LO16) become expressions of the
+load base, so the code does not depend on where the IOP allocator puts the module. Semantics follow
+ps2xIOP's interpreter (src/emulator/core/iop_cpu.cpp): load delay slots, branch delay slots, jalr rd=0 -> ra,
+division by zero results. Instructions that may trap or touch cop0 hand control back to the interpreter.
+"""
+import os
+import struct
+import sys
+
+SHT_REL = 9
+SHF_EXECINSTR = 4
+R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16 = 2, 4, 5, 6
+IMPORT_MAGIC, EXPORT_MAGIC = 0x41E00000, 0x41C00000
+
+
+def fnv64(data):
+    h = 0xCBF29CE484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def parse(path):
+    d = open(path, 'rb').read()
+    if d[:4] != b'\x7fELF':
+        raise SystemExit(f'{path}: not an ELF')
+    shoff, = struct.unpack_from('<I', d, 0x20)
+    shentsize, shnum = struct.unpack_from('<HH', d, 0x2E)
+    secs = [struct.unpack_from('<10I', d, shoff + i * shentsize) for i in range(shnum)]
+    # (name, type, flags, addr, offset, size, link, info, align, entsize)
+    phoff, = struct.unpack_from('<I', d, 0x1C)
+    phentsize, phnum = struct.unpack_from('<HH', d, 0x2A)
+    image = None
+    for i in range(phnum):
+        p_type, p_off, p_vaddr, _, p_filesz, p_memsz, _, _ = struct.unpack_from('<8I', d, phoff + i * phentsize)
+        if p_type == 1:
+            image = (p_off, p_vaddr, p_filesz)
+    if image is None:
+        raise SystemExit(f'{path}: no PT_LOAD')
+    code = []
+    for s in secs:
+        if s[2] & SHF_EXECINSTR and s[5]:
+            code.append((s[3], s[3] + s[5]))
+    relocs = {}
+    for s in secs:
+        if s[1] != SHT_REL:
+            continue
+        for k in range(s[5] // 8):
+            r_off, r_info = struct.unpack_from('<II', d, s[4] + k * 8)
+            relocs[r_off] = r_info & 0xFF
+    return d, image, code, relocs
+
+
+def word_at(d, image, vaddr):
+    off, base, size = image
+    if not base <= vaddr < base + size:
+        return None
+    return struct.unpack_from('<I', d, off + vaddr - base)[0]
+
+
+def table_ranges(d, image, code):
+    """Import/export stub tables live inside .text: no entry points there."""
+    skip = []
+    for lo, hi in code:
+        a = lo
+        while a < hi:
+            w = word_at(d, image, a)
+            if w == IMPORT_MAGIC:
+                b = a + 20
+                while b + 8 <= hi and word_at(d, image, b) not in (0, None):
+                    b += 8
+                skip.append((a, b + 8))
+                a = b + 8
+                continue
+            if w == EXPORT_MAGIC:
+                b = a + 20
+                while b + 4 <= hi and word_at(d, image, b) not in (0, None):
+                    b += 4
+                skip.append((a, b + 4))
+                a = b + 4
+                continue
+            a += 4
+    return skip
+
+
+def hi_lo_values(d, image, relocs):
+    """AHL constant for every HI16/LO16 relocated instruction (MIPS ABI pairing)."""
+    out = {}
+    pending = []
+    # Relocation-table order, as the IOP loader pairs them: a HI16 belongs to the next LO16 *entry*, not to the next
+    # LO16 by address (GTA LCS CDSTREAM 0x4508 `lui s3` paired by address with 0x4524's -0x6780 instead of 0x452C's
+    # 0x6B44 -> s3 64 KB low, the SFX bank was read to IOP address 0 and the game hung on the legal screen).
+    for off in relocs:
+        t = relocs[off]
+        w = word_at(d, image, off)
+        if w is None:
+            continue
+        if t == R_MIPS_HI16:
+            pending.append(off)
+        elif t == R_MIPS_LO16:
+            lo = w & 0xFFFF
+            lo_s = lo - 0x10000 if lo & 0x8000 else lo
+            for h in pending:
+                ahl = ((word_at(d, image, h) & 0xFFFF) << 16) + lo_s
+                out[h] = ('hi', ahl & 0xFFFFFFFF)
+            # the relocated low half only depends on (lo + base): later LO16s of the same HI work too
+            out[off] = ('lo', lo)
+            pending = []
+    return out
+
+
+LOADS = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26}
+
+
+def is_load(w):
+    op = w >> 26
+    return op in LOADS
+
+
+def gen_module(path, out_dir):
+    d, image, code, relocs = parse(path)
+    name = os.path.splitext(os.path.basename(path))[0].lower().replace('-', '_').replace('.', '_')
+    skip = table_ranges(d, image, code)
+    hilo = hi_lo_values(d, image, relocs)
+    code_end = max(hi for _, hi in code)
+    in_skip = lambda a: any(lo <= a < hi for lo, hi in skip)
+
+    L = []
+    emit = L.append
+    emit('// Generated by ps2xIOP/tools/irx_aot.py from ' + os.path.basename(path) + ' -- do not edit.')
+    emit('#include "ps2x/iop/iop_aot.h"')
+    emit('#include <cstdint>')
+    emit('#include <cstring>')
+    emit('#include <limits>')
+    emit('namespace {')
+    emit('using ps2x::iop::AotState; using ps2x::iop::AotMemory;')
+    emit('static inline uint32_t R32(const AotMemory &m, uint32_t a) { const uint32_t p = a & 0x1FFFFFFFu; '
+         'if (p < 0x200000u - 3u && !(p & 3u)) { uint32_t v; std::memcpy(&v, m.ram + p, 4); return v; } return m.read32(m.self, a); }')
+    emit('static inline uint16_t R16(const AotMemory &m, uint32_t a) { const uint32_t p = a & 0x1FFFFFFFu; '
+         'if (p < 0x200000u - 1u && !(p & 1u)) { uint16_t v; std::memcpy(&v, m.ram + p, 2); return v; } return m.read16(m.self, a); }')
+    emit('static inline uint8_t R8(const AotMemory &m, uint32_t a) { const uint32_t p = a & 0x1FFFFFFFu; '
+         'if (p < 0x200000u) return m.ram[p]; return m.read8(m.self, a); }')
+    emit(f'static uint32_t aot_{name}(AotState &s, const AotMemory &m, const uint32_t base, const uint32_t budget)')
+    emit('{')
+    emit('    uint32_t *const r = s.gpr;')
+    emit('    uint32_t n = 0, bt = 0, pc = s.pc, preg = s.pendingLoadReg, pval = s.pendingLoadValue;')
+    emit('    bool taken = false, pend = s.pendingLoad;')
+    emit('    for (;;)')
+    emit('    {')
+    emit('        switch ((pc - base) >> 2)')
+    emit('        {')
+
+    def imm_expr(off, w, signed):
+        """Immediate of a LO16-relocated or plain instruction."""
+        if off in hilo and hilo[off][0] == 'lo':
+            ahl = hilo[off][1]
+            return f'(uint32_t)(int32_t)(int16_t)(uint16_t)((0x{ahl:X}u + base) & 0xFFFFu)' if signed else \
+                   f'(uint32_t)(uint16_t)((0x{ahl:X}u + base) & 0xFFFFu)'
+        imm = w & 0xFFFF
+        if signed:
+            v = imm - 0x10000 if imm & 0x8000 else imm
+            return f'0x{v & 0xFFFFFFFF:X}u'
+        return f'0x{imm:X}u'
+
+    def target26(off, w):
+        if relocs.get(off) == R_MIPS_26:
+            return f'(base + 0x{(w & 0x3FFFFFF) << 2:X}u)'
+        return f'((base + 0x{off + 4:X}u) & 0xF0000000u) | 0x{(w & 0x3FFFFFF) << 2:X}u'
+
+    prev_branch = False
+    for lo, hi in code:
+        a = lo
+        while a < hi:
+            w = word_at(d, image, a)
+            cur_is_delay = prev_branch
+            if in_skip(a) or w is None:
+                emit(f'        case 0x{a >> 2:X}: pc = base + 0x{a:X}u; goto out;')
+                prev_branch = False
+                a += 4
+                continue
+            op, rs, rt, rd, sa, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, (w >> 6) & 31, w & 63
+            pcx = f'(base + 0x{a:X}u)'
+            body = []
+            wr = 0          # register written (for the load-delay commit rule)
+            load = None     # (reg, value expr) scheduled load
+            branch = None   # ('cond', expr) / ('jump', target expr)
+            fallback = False
+
+            def W(reg, expr):
+                nonlocal wr
+                wr = reg
+                if reg:
+                    body.append(f'r[{reg}] = {expr};')
+
+            simm = imm_expr(a, w, True)
+            zimm = imm_expr(a, w, False)
+            if op == 0:
+                if fn == 0x00: W(rd, f'r[{rt}] << {sa}')
+                elif fn == 0x02: W(rd, f'r[{rt}] >> {sa}')
+                elif fn == 0x03: W(rd, f'(uint32_t)((int32_t)r[{rt}] >> {sa})')
+                elif fn == 0x04: W(rd, f'r[{rt}] << (r[{rs}] & 31u)')
+                elif fn == 0x06: W(rd, f'r[{rt}] >> (r[{rs}] & 31u)')
+                elif fn == 0x07: W(rd, f'(uint32_t)((int32_t)r[{rt}] >> (r[{rs}] & 31u))')
+                elif fn == 0x08: branch = ('jump', f'r[{rs}]')
+                elif fn == 0x09:
+                    body.append(f'bt = r[{rs}];')
+                    W(rd if rd else 31, f'base + 0x{a + 8:X}u')
+                    branch = ('jump', 'bt')
+                elif fn == 0x10: W(rd, 's.hi')
+                elif fn == 0x11: body.append(f's.hi = r[{rs}];')
+                elif fn == 0x12: W(rd, 's.lo')
+                elif fn == 0x13: body.append(f's.lo = r[{rs}];')
+                elif fn == 0x18: body.append(f'{{ const int64_t t = (int64_t)(int32_t)r[{rs}] * (int64_t)(int32_t)r[{rt}]; s.lo = (uint32_t)t; s.hi = (uint32_t)((uint64_t)t >> 32); }}')
+                elif fn == 0x19: body.append(f'{{ const uint64_t t = (uint64_t)r[{rs}] * r[{rt}]; s.lo = (uint32_t)t; s.hi = (uint32_t)(t >> 32); }}')
+                elif fn == 0x1A: body.append(f'{{ const int32_t x = (int32_t)r[{rs}], y = (int32_t)r[{rt}]; if (y == 0) {{ s.lo = x >= 0 ? 0xFFFFFFFFu : 1u; s.hi = (uint32_t)x; }} '
+                                             f'else if (x == std::numeric_limits<int32_t>::min() && y == -1) {{ s.lo = (uint32_t)x; s.hi = 0u; }} else {{ s.lo = (uint32_t)(x / y); s.hi = (uint32_t)(x % y); }} }}')
+                elif fn == 0x1B: body.append(f'if (r[{rt}] == 0u) {{ s.lo = 0xFFFFFFFFu; s.hi = r[{rs}]; }} else {{ s.lo = r[{rs}] / r[{rt}]; s.hi = r[{rs}] % r[{rt}]; }}')
+                elif fn == 0x20:
+                    body.append(f'{{ const int64_t t = (int64_t)(int32_t)r[{rs}] + (int32_t)r[{rt}]; if (t != (int32_t)t) {{ FALLBACK }} }}')
+                    W(rd, f'r[{rs}] + r[{rt}]')
+                elif fn == 0x21: W(rd, f'r[{rs}] + r[{rt}]')
+                elif fn == 0x22:
+                    body.append(f'{{ const int64_t t = (int64_t)(int32_t)r[{rs}] - (int32_t)r[{rt}]; if (t != (int32_t)t) {{ FALLBACK }} }}')
+                    W(rd, f'r[{rs}] - r[{rt}]')
+                elif fn == 0x23: W(rd, f'r[{rs}] - r[{rt}]')
+                elif fn == 0x24: W(rd, f'r[{rs}] & r[{rt}]')
+                elif fn == 0x25: W(rd, f'r[{rs}] | r[{rt}]')
+                elif fn == 0x26: W(rd, f'r[{rs}] ^ r[{rt}]')
+                elif fn == 0x27: W(rd, f'~(r[{rs}] | r[{rt}])')
+                elif fn == 0x2A: W(rd, f'(int32_t)r[{rs}] < (int32_t)r[{rt}] ? 1u : 0u')
+                elif fn == 0x2B: W(rd, f'r[{rs}] < r[{rt}] ? 1u : 0u')
+                else: fallback = True
+            elif op == 1:
+                cond = {0x00: f'(int32_t)r[{rs}] < 0', 0x01: f'(int32_t)r[{rs}] >= 0',
+                        0x10: f'(int32_t)r[{rs}] < 0', 0x11: f'(int32_t)r[{rs}] >= 0'}.get(rt)
+                if cond is None:
+                    fallback = True
+                else:
+                    body.append(f'taken = {cond};')
+                    if rt & 0x10:
+                        W(31, f'base + 0x{a + 8:X}u')
+                    branch = ('cond', f'base + 0x{(a + 4 + ((w & 0xFFFF) - 0x10000 if w & 0x8000 else w & 0xFFFF) * 4) & 0xFFFFFFFF:X}u')
+            elif op == 2: branch = ('jump', target26(a, w))
+            elif op == 3:
+                W(31, f'base + 0x{a + 8:X}u')
+                branch = ('jump', target26(a, w))
+            elif op in (4, 5, 6, 7):
+                cond = {4: f'r[{rs}] == r[{rt}]', 5: f'r[{rs}] != r[{rt}]', 6: f'(int32_t)r[{rs}] <= 0', 7: f'(int32_t)r[{rs}] > 0'}[op]
+                body.append(f'taken = {cond};')
+                branch = ('cond', f'base + 0x{(a + 4 + ((w & 0xFFFF) - 0x10000 if w & 0x8000 else w & 0xFFFF) * 4) & 0xFFFFFFFF:X}u')
+            elif op == 8:
+                body.append(f'{{ const int64_t t = (int64_t)(int32_t)r[{rs}] + (int32_t){simm}; if (t != (int32_t)t) {{ FALLBACK }} }}')
+                W(rt, f'r[{rs}] + {simm}')
+            elif op == 9: W(rt, f'r[{rs}] + {simm}')
+            elif op == 0xA: W(rt, f'(int32_t)r[{rs}] < (int32_t){simm} ? 1u : 0u')
+            elif op == 0xB: W(rt, f'r[{rs}] < {simm} ? 1u : 0u')
+            elif op == 0xC: W(rt, f'r[{rs}] & {zimm}')
+            elif op == 0xD: W(rt, f'r[{rs}] | {zimm}')
+            elif op == 0xE: W(rt, f'r[{rs}] ^ {zimm}')
+            elif op == 0xF:
+                if a in hilo and hilo[a][0] == 'hi':
+                    W(rt, f'((0x{hilo[a][1]:X}u + base + 0x8000u) >> 16) << 16')
+                elif relocs.get(a) == R_MIPS_HI16:
+                    fallback = True  # unpaired HI16: let the interpreter use the relocated word
+                else:
+                    W(rt, f'0x{(w & 0xFFFF) << 16:X}u')
+            elif op in LOADS:
+                ea = f'r[{rs}] + {simm}'
+                if op == 0x20: load = (rt, f'(uint32_t)(int32_t)(int8_t)R8(m, {ea})')
+                elif op == 0x24: load = (rt, f'(uint32_t)R8(m, {ea})')
+                elif op in (0x21, 0x25):
+                    body.append(f'if (({ea}) & 1u) {{ FALLBACK }}')
+                    load = (rt, f'(uint32_t)(int32_t)(int16_t)R16(m, {ea})' if op == 0x21 else f'(uint32_t)R16(m, {ea})')
+                elif op == 0x23:
+                    body.append(f'if (({ea}) & 3u) {{ FALLBACK }}')
+                    load = (rt, f'R32(m, {ea})')
+                else:  # lwl / lwr merge with an in-flight load of the same register
+                    body.append(f'const uint32_t ea = {ea}; const uint32_t mem = R32(m, ea & ~3u); '
+                                f'const uint32_t old = (pend && preg == {rt}u) ? pval : r[{rt}];')
+                    if op == 0x22:
+                        body.append('static constexpr uint32_t mk[4] = {0x00FFFFFFu, 0x0000FFFFu, 0x000000FFu, 0u}; static constexpr uint32_t sh[4] = {24u, 16u, 8u, 0u};')
+                        load = (rt, '(old & mk[ea & 3u]) | (mem << sh[ea & 3u])')
+                    else:
+                        body.append('static constexpr uint32_t mk[4] = {0u, 0xFF000000u, 0xFFFF0000u, 0xFFFFFF00u}; static constexpr uint32_t sh[4] = {0u, 8u, 16u, 24u};')
+                        load = (rt, '(old & mk[ea & 3u]) | (mem >> sh[ea & 3u])')
+            elif op == 0x28: body.append(f'm.write8(m.self, r[{rs}] + {simm}, (uint8_t)r[{rt}]);')
+            elif op == 0x29:
+                body.append(f'if ((r[{rs}] + {simm}) & 1u) {{ FALLBACK }}')
+                body.append(f'm.write16(m.self, r[{rs}] + {simm}, (uint16_t)r[{rt}]);')
+            elif op == 0x2B:
+                body.append(f'if ((r[{rs}] + {simm}) & 3u) {{ FALLBACK }}')
+                body.append(f'm.write32(m.self, r[{rs}] + {simm}, r[{rt}]);')
+            elif op in (0x2A, 0x2E):
+                body.append(f'const uint32_t ea = r[{rs}] + {simm}; const uint32_t al = ea & ~3u; const uint32_t old = R32(m, al); const uint32_t v = r[{rt}]; uint32_t res = old;')
+                if op == 0x2A:
+                    body.append('switch (ea & 3u) { case 0u: res = (old & 0xFFFFFF00u) | (v >> 24u); break; case 1u: res = (old & 0xFFFF0000u) | (v >> 16u); break; '
+                                'case 2u: res = (old & 0xFF000000u) | (v >> 8u); break; default: res = v; break; }')
+                else:
+                    body.append('switch (ea & 3u) { case 0u: res = v; break; case 1u: res = (old & 0x000000FFu) | (v << 8u); break; '
+                                'case 2u: res = (old & 0x0000FFFFu) | (v << 16u); break; default: res = (old & 0x00FFFFFFu) | (v << 24u); break; }')
+                body.append('m.write32(m.self, al, res);')
+            else:
+                fallback = True
+
+            # Hand-back code: the interpreter re-executes this instruction with the exact state.
+            if cur_is_delay:
+                fb = f'pc = base + 0x{a:X}u; s.branchPending = taken; s.branchTarget = bt; goto out;'
+            else:
+                fb = f'pc = base + 0x{a:X}u; goto out;'
+            if branch is not None and cur_is_delay:
+                fallback = True  # branch in a delay slot: leave it to the interpreter
+            emit(f'        case 0x{a >> 2:X}: {{')
+            if fallback:
+                emit(f'            {fb}')
+            else:
+                emit('            ++n;')
+                for line in body:
+                    emit('            ' + line.replace('FALLBACK', '--n; ' + fb))
+                if branch is not None and branch[0] == 'jump':
+                    if 'bt = ' not in ''.join(body):
+                        emit(f'            bt = {branch[1]};')
+                    emit('            taken = true;')
+                elif branch is not None:
+                    emit(f'            bt = {branch[1]};')
+                # load-delay commit of the previous load, then schedule this one
+                emit(f'            if (pend) {{ if (preg && preg != {wr}u) r[preg] = pval; pend = false; }}')
+                if load is not None:
+                    emit(f'            {{ const uint32_t v_ = {load[1]}; pend = true; preg = {load[0]}u; pval = v_; }}')
+            emit('        }')
+            if cur_is_delay:
+                # after the delay slot: follow a taken branch inside the module or leave
+                emit('            if (taken) { taken = false; pc = bt; if (n >= budget || pc - base >= 0x%Xu) goto out; continue; }' % code_end)
+            prev_branch = branch is not None and not fallback
+            a += 4
+    emit(f'        default: goto out;')
+    emit('        }')
+    emit(f'        pc = base + 0x{code_end:X}u; goto out;')
+    emit('    }')
+    emit('out:')
+    emit('    s.pc = pc; s.pendingLoad = pend; s.pendingLoadReg = preg; s.pendingLoadValue = pval;')
+    emit('    r[0] = 0u;')
+    emit('    return n;')
+    emit('}')
+    h = fnv64(d)
+    emit(f'const ps2x::iop::AotModuleRegistrar reg_{name}({{"{os.path.basename(path)}", 0x{h:X}ull, {len(d)}u, 0x{code_end:X}u, aot_{name}}});')
+    emit('}')
+    out = os.path.join(out_dir, f'aot_{name}.cpp')
+    open(out, 'w', encoding='utf-8', newline='\n').write('\n'.join(L) + '\n')
+    return out, h, len(d)
+
+
+def main():
+    if len(sys.argv) < 3:
+        raise SystemExit(__doc__)
+    os.makedirs(sys.argv[1], exist_ok=True)
+    for p in sys.argv[2:]:
+        out, h, size = gen_module(p, sys.argv[1])
+        print(f'{os.path.basename(p)}: hash=0x{h:X} size=0x{size:X} -> {out}')
+
+
+if __name__ == '__main__':
+    main()

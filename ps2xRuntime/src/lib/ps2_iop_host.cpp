@@ -508,6 +508,7 @@ bool PS2IopHostAdapter::callEeRpc(uint32_t sid, uint32_t function, const void *d
     if (size && !writeGuest(packet, data, size)) { m_runtime.guestFree(packet); return false; }
     GuestInvocation invocation{};
     invocation.kind = GuestInvocationKind::RpcCallback;
+    invocation.tag = kEeRpcServerTag; // runs on its own server thread (EeScheduler)
     invocation.context = m_activeContext ? *m_activeContext : m_runtime.cpu();
     invocation.context.pc = entry;
     SET_GPR_U32(&invocation.context, 4, function);

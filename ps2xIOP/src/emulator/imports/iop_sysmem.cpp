@@ -4,10 +4,21 @@
 #include "../core/iop_memory.h"
 #include "ps2x/iop/iop_host.h"
 
+#include <cstdio>
 #include <string>
 
 namespace ps2x::iop::detail
 {
+    namespace
+    {
+        std::string toHex(uint32_t v)
+        {
+            char b[16];
+            std::snprintf(b, sizeof b, "%x", v);
+            return b;
+        }
+    }
+
     IopSysmem::IopSysmem(IopHost &host, IopMemory &memory) noexcept
         : m_host(host), m_memory(memory)
     {
@@ -31,6 +42,9 @@ namespace ps2x::iop::detail
                                          ? m_memory.allocate(a1, 16u, a2)
                                          : m_memory.allocate(a1, 16u);
             setV0(address);
+            if (address == 0u)
+                m_host.log(LogLevel::Warning, "[IOP sysmem] AllocSysMemory failed size=0x" + toHex(a1) +
+                                                  " maxFree=0x" + toHex(m_memory.maxFreeMemory()));
             return true;
         }
         case 5: // FreeSysMemory
@@ -41,7 +55,7 @@ namespace ps2x::iop::detail
             return true;
         case 7: // QueryMaxFreeMemSize
         case 8: // QueryTotalFreeMemSize
-            setV0(m_memory.maxFreeMemory());
+            setV0(m_memory.maxFreeMemory(ordinal == 8));
             return true;
         case 9: // QueryBlockTopAddress
             if (const auto block = m_memory.allocationContaining(a0))

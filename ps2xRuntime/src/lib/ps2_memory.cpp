@@ -1578,6 +1578,16 @@ void PS2Memory::write128(uint32_t address, __m128i value)
     }
 }
 
+// DMA address registers (MADR/TADR/ASR and a DMAtag's ADDR) select scratchpad with bit 31 and keep
+// only the 14-bit offset (GT4 writes 0x80000000 | offset). Map that form to the CPU scratchpad window;
+// a larger value with bit 31 is a sloppy KSEG0 pointer and keeps the old RAM meaning.
+static inline uint32_t ps2DmaAddress(uint32_t addr)
+{
+    if ((addr & 0x80000000u) != 0u && (addr & 0x7FFFFFFFu) < PS2_SCRATCHPAD_SIZE)
+        return PS2_SCRATCHPAD_BASE | (addr & 0x7FFFFFFFu);
+    return addr;
+}
+
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
     if ((address & 0xFFFFF000u) == 0x10003000u)
@@ -1785,7 +1795,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 resetPath3Stream();
             }
 
-            const uint32_t madr = m_ioRegisters[channelBase + 0x10];
+            const uint32_t madr = ps2DmaAddress(m_ioRegisters[channelBase + 0x10]);
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
             PS2TL(TL_KICK, channelBase, qwc);
@@ -1816,6 +1826,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                 uint32_t chcr = value;
                 uint32_t mode = (chcr >> 2) & 0x3;
+                auto &channelQueue = (channelBase == 0x1000A000u)   ? m_pendingGifTransfers
+                                     : (channelBase == 0x10009000u) ? m_pendingVif1Transfers
+                                                                    : m_pendingVif0Transfers;
+                const size_t queuedBefore = channelQueue.size();
 
                 if (mode == 0 && qwc > 0)
                 {
@@ -1823,9 +1837,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 }
                 else if (mode == 1)
                 {
-                    uint32_t tagAddr = m_ioRegisters[channelBase + 0x30];
-                    uint32_t asr0 = m_ioRegisters[channelBase + 0x40];
-                    uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
+                    uint32_t tagAddr = ps2DmaAddress(m_ioRegisters[channelBase + 0x30]);
+                    uint32_t asr0 = ps2DmaAddress(m_ioRegisters[channelBase + 0x40]);
+                    uint32_t asr1 = ps2DmaAddress(m_ioRegisters[channelBase + 0x50]);
                     uint32_t asp = (chcr >> 4) & 0x3u;
                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
                     // Hardware has no tag limit; this only stops a corrupted chain that loops
@@ -1926,7 +1940,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         uint16_t tagQwc = static_cast<uint16_t>(tag & 0xFFFF);
                         uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7);
                         const bool irq = ((tag >> 31) & 0x1ull) != 0ull;
-                        uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
+                        uint32_t addr = ps2DmaAddress(static_cast<uint32_t>(tag >> 32));
+                        if (addr >= 0x80000000u)
+                            addr &= 0x7FFFFFFFu;
                         lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
                         ++tagsProcessed;
 
@@ -2054,6 +2070,14 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     enqueueTransfer(madr, qwc);
                 }
 
+                // A kick with nothing to send (QWC 0, or a chain of empty tags) still ends the transfer:
+                // STR clears and the channel interrupt fires. GT4 sleeps until that interrupt.
+                if (channelQueue.size() == queuedBefore)
+                {
+                    const uint32_t cause = (channelBase == 0x1000A000u) ? 2u : (channelBase == 0x10009000u) ? 1u : 0u;
+                    completeDmacChannel(channelBase, cause);
+                    m_ioRegisters[channelBase + 0x20] = 0;
+                }
                 const bool autoProcessTransfers =
                     (channelBase == 0x1000A000u) ? (m_gifPacketCallback || m_gifArbiter != nullptr) : true;
                 if (autoProcessTransfers)
