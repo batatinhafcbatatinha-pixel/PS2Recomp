@@ -368,8 +368,17 @@ static void traceSubmit(const GSPrimitiveBatch &batch)
         std::fprintf(file, "(%.1f,%.1f,%.0f rgba=%u,%u,%u,%u st=%.3f,%.3f,%.3f uv=%u,%u)", v.x, v.y, v.z, v.r, v.g, v.b, v.a,
                      v.s, v.t, v.q, v.u, v.v);
     }
-    std::fprintf(file, " ofs=%d,%d sc=%d,%d-%d,%d vu=%x top=%x\n", ctx.xyoffset.ofx >> 4, ctx.xyoffset.ofy >> 4, ctx.scissor.x0, ctx.scissor.y0,
+    std::fprintf(file, " ofs=%d,%d sc=%d,%d-%d,%d vu=%x top=%x", ctx.xyoffset.ofx >> 4, ctx.xyoffset.ofy >> 4, ctx.scissor.x0, ctx.scissor.y0,
                  ctx.scissor.x1, ctx.scissor.y1, g_gsDebugVu1Pc.load(std::memory_order_relaxed), g_gsDebugVu1Top.load(std::memory_order_relaxed));
+    // TEST[14:15] is DATE/DATM; TEST[16:18] is ZTE/ZTST. Keep the raw value above.
+    std::fprintf(file, " fbw=%u fba=%u pabe=%u ate=%u atst=%u afail=%u date=%u datm=%u zte=%u ztst=%u tw=%u th=%u cbp=%u cpsm=%x csm=%u csa=%u cld=%u\n",
+                 ctx.frame.fbw, static_cast<unsigned>(ctx.fba & 1u), static_cast<unsigned>(state.pabe),
+                 static_cast<unsigned>(ctx.test & 1u), static_cast<unsigned>((ctx.test >> 1u) & 7u),
+                 static_cast<unsigned>((ctx.test >> 12u) & 3u), static_cast<unsigned>((ctx.test >> 14u) & 1u),
+                 static_cast<unsigned>((ctx.test >> 15u) & 1u), static_cast<unsigned>((ctx.test >> 16u) & 1u),
+                 static_cast<unsigned>((ctx.test >> 17u) & 3u), static_cast<unsigned>(ctx.tex0.tw), static_cast<unsigned>(ctx.tex0.th),
+                 ctx.tex0.cbp, static_cast<unsigned>(ctx.tex0.cpsm), static_cast<unsigned>(ctx.tex0.csm),
+                 static_cast<unsigned>(ctx.tex0.csa), static_cast<unsigned>(ctx.tex0.cld));
     if (--remaining == 0u)
     {
         std::fclose(file);
@@ -770,13 +779,15 @@ struct GSGpuBackend::Impl
         // Opt-in, bounded texture investigation capture, on the owning GL thread.
         // Read before rasterization so decoded texels can be separated from scanout.
         static const char *captureDir = std::getenv("PS2X_GS_CAPTURE_DIR");
+        // Opt in for affine STQ menus (Q=1); retain the original perspective-only filter by default.
+        static const bool captureAnyQ = std::getenv("PS2X_GS_CAPTURE_ANY_Q") != nullptr;
         static const double captureAt = std::getenv("PS2X_GS_CAPTURE_AT") ? std::atof(std::getenv("PS2X_GS_CAPTURE_AT")) : 85.0;
         static const auto captureStart = std::chrono::steady_clock::now();
         static unsigned captureCount = 0;
         const double captureTime = captureDir ? std::chrono::duration<double>(std::chrono::steady_clock::now() - captureStart).count() : 0.0;
         if (captureDir && captureCount < 80u && captureTime >= captureAt && !s.empty() && !p.empty() &&
             (s[0].flags & kFlagTme) && !(s[0].flags & kFlagFst) && p[0].type == 2u &&
-            std::abs(p[0].q[0]) > 1.0e-8f && std::abs(p[0].q[0]) < 0.5f)
+            (captureAnyQ || (std::abs(p[0].q[0]) > 1.0e-8f && std::abs(p[0].q[0]) < 0.5f)))
         {
             captureUploads = true;
             const std::string prefix = std::string(captureDir) + "/gs-" + std::to_string(captureCount++);

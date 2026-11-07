@@ -348,6 +348,11 @@ void EeScheduler::run()
                     {
                     }
                 }
+                if (running->id < 0 && running->invocations.empty() && m_currentThreadId == running->id)
+                {
+                    makeDormant(*running);
+                    m_currentThreadId = 0;
+                }
                 continue;
             }
             // A guest thread reaching PC 0 normally means a null code pointer, not a
@@ -362,6 +367,27 @@ void EeScheduler::run()
             copyMainContextToRuntime();
             publishIdleDebugContext();
             publishSnapshot();
+            continue;
+        }
+
+        if (!m_pendingInvocations.empty() &&
+            m_pendingInvocations.front().kind == GuestInvocationKind::RpcCallback &&
+            m_pendingInvocations.front().tag == kEeRpcServerTag && rpcServerThreadsEnabled())
+        {
+            // An EE RPC server runs its handler in its own thread on the PS2 (sceSifRpcLoop).  The handler may block
+            // (Sopranos' stream callback takes a mutex the interrupted thread can hold), so it must not borrow the
+            // current thread: queue it on a dedicated invocation thread that blocks and resumes on its own.
+            GuestInvocation invocation = std::move(m_pendingInvocations.front());
+            m_pendingInvocations.pop_front();
+            GuestThread &owner = acquireInvocationThread();
+            owner.currentPriority = owner.initialPriority = rpcServerPriority();
+            if (getRegU32(&invocation.context, 29) == 0u)
+            {
+                SET_GPR_U32(&invocation.context, 29, invocationStackTopFor(owner));
+            }
+            owner.invocations.push_back(std::move(invocation));
+            enqueueReady(owner);
+            requestPreemptionIfHigher(owner, false);
             continue;
         }
 
@@ -1406,6 +1432,28 @@ uint32_t EeScheduler::invocationStackTop()
     {
         throw std::logic_error("EE invocation stack requested without a current guest context");
     }
+    return invocationStackTopFor(*owner);
+}
+
+bool EeScheduler::rpcServerThreadsEnabled()
+{
+    static const bool enabled = std::getenv("PS2X_RPC_INLINE") == nullptr;
+    return enabled;
+}
+
+int EeScheduler::rpcServerPriority()
+{
+    static const int priority = [] {
+        const char *text = std::getenv("PS2X_RPC_PRIORITY");
+        const int value = text ? std::atoi(text) : 1;
+        return value < 0 ? 0 : (value >= kPriorityCount ? kPriorityCount - 1 : value);
+    }();
+    return priority;
+}
+
+uint32_t EeScheduler::invocationStackTopFor(const GuestThread &ownerRef)
+{
+    const GuestThread *owner = &ownerRef;
     const size_t depth = owner ? owner->invocations.size() : 0u;
     const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(owner->id)) << 32u) |
                          static_cast<uint32_t>(depth);

@@ -237,7 +237,12 @@ namespace ps2_syscalls
             param->initial_priority,
             param->option,
         };
-        setReturnS32(ctx, scheduler(rdram, ctx, runtime).createThread(decoded));
+        const int created = scheduler(rdram, ctx, runtime).createThread(decoded);
+        if (const char *v = std::getenv("PS2X_TRACE_PRIORITY"); v && *v == '1')
+            std::cerr << "[thread] create id=" << created << std::hex << " func=0x" << param->func << " stack=0x" << param->stack
+                      << " size=0x" << param->stack_size << std::dec << " prio=" << param->initial_priority << std::hex
+                      << " ra=0x" << getRegU32(ctx, 31) << std::dec << std::endl;
+        setReturnS32(ctx, created);
     }
 
     void DeleteThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -254,7 +259,7 @@ namespace ps2_syscalls
         {
             runtime->guestFree(ownedStack);
         }
-        setReturnS32(ctx, result);
+        setReturnS32(ctx, result == KE_OK ? id : result);
     }
 
     void StartThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -291,6 +296,9 @@ namespace ps2_syscalls
         // The EE kernel returns the thread id on success (FlatOut 2 compares it with the CreateThread id and,
         // on a mismatch, deletes the power-off semaphore its just-started thread waits on -> console power-off).
         const int result = ee.startThread(id, arg, *ctx, false);
+        if (const char *v = std::getenv("PS2X_TRACE_PRIORITY"); v && *v == '1')
+            std::cerr << "[thread] start id=" << id << std::hex << " entry=0x" << target->entry << " arg=0x" << arg << std::dec
+                      << " result=" << result << std::endl;
         setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
@@ -316,14 +324,14 @@ namespace ps2_syscalls
         {
             runtime->guestFree(ownedStack);
         }
-        setReturnS32(ctx, result);
+        setReturnS32(ctx, result == KE_OK ? id : result);
     }
 
     void SuspendThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
         const int result = ee.suspendThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result);
+        setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
 
@@ -331,7 +339,7 @@ namespace ps2_syscalls
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
         const int result = ee.resumeThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result);
+        setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
 

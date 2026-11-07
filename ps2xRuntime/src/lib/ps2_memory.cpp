@@ -1878,6 +1878,22 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                                 chunk = maxSz2 - src;
                             if (chunk == 0)
                                 break;
+                            // Source bytes before DMA chain concatenation loses guest addresses.
+                            static int sourceLeft = std::getenv("PS2X_TEXUPLOAD_SOURCE_TRACE") ? std::atoi(std::getenv("PS2X_TEXUPLOAD_SOURCE_TRACE")) : 0;
+                            if (sourceLeft > 0)
+                            {
+                                --sourceLeft;
+                                uint32_t nonzero = 0;
+                                uint64_t hash = 14695981039346656037ull;
+                                for (uint32_t i = 0; i < chunk; ++i)
+                                {
+                                    nonzero += base2[src + i] != 0;
+                                    hash = (hash ^ base2[src + i]) * 1099511628211ull;
+                                }
+                                std::fprintf(stderr, "[dma:source] channel=%x next_tag=%08x guest=%08x phys=%08x spr=%u offset=%zu bytes=%u nz=%u hash=%016llx\n",
+                                    channelBase, tagAddr, srcAddr, src, static_cast<unsigned>(scratch), chainBuf.size(), chunk, nonzero,
+                                    static_cast<unsigned long long>(hash));
+                            }
                             chainBuf.insert(chainBuf.end(), base2 + src, base2 + src + chunk);
                             bytes -= chunk;
                             src += chunk;
@@ -2834,8 +2850,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
     if (Ps2GifOrderTraceEnabled())
     {
         char traceDetail[320];
-        std::snprintf(traceDetail, sizeof(traceDetail), "{\"tadr\":%u,\"chcr\":%u,\"bitbltbuf\":\"%016llx\",\"trxpos\":\"%016llx\",\"trxreg\":\"%016llx\",\"trxdir\":\"%016llx\"}",
-            tadr, chcr, static_cast<unsigned long long>(setupRegs[0]), static_cast<unsigned long long>(setupRegs[1]),
+        std::snprintf(traceDetail, sizeof(traceDetail), "{\"tadr\":%u,\"source_guest\":%u,\"chcr\":%u,\"bitbltbuf\":\"%016llx\",\"trxpos\":\"%016llx\",\"trxreg\":\"%016llx\",\"trxdir\":\"%016llx\"}",
+            tadr, imageDataAddr, chcr, static_cast<unsigned long long>(setupRegs[0]), static_cast<unsigned long long>(setupRegs[1]),
             static_cast<unsigned long long>(setupRegs[2]), static_cast<unsigned long long>(setupRegs[3]));
         Ps2TraceGifOrder("native-image", 3u, imageData, imageBytes, this,
             m_pendingGifTransfers.size(), m_pendingVif1Transfers.size(), traceDetail);
