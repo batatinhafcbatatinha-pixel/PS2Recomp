@@ -348,7 +348,8 @@ void EeScheduler::run()
                     {
                     }
                 }
-                if (running->id < 0 && running->invocations.empty() && m_currentThreadId == running->id)
+                if (rpcServerThreadsEnabled() && running->id < 0 && running->invocations.empty() &&
+                    m_currentThreadId == running->id)
                 {
                     makeDormant(*running);
                     m_currentThreadId = 0;

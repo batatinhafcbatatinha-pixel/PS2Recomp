@@ -455,24 +455,32 @@ namespace ps2_stubs
 
     void scePadGetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
-        (void)runtime;
-        std::lock_guard<std::mutex> lock(g_padStateMutex);
-        PadPortState *portState = lookupPadPortStateLocked(static_cast<int>(getRegU32(ctx, 4)),
-                                                           static_cast<int>(getRegU32(ctx, 5)));
+        const int port = static_cast<int>(getRegU32(ctx, 4));
+        const int slot = static_cast<int>(getRegU32(ctx, 5));
         int32_t state = kPadStateDisconnected;
-        if (portState && portState->open)
+        uint32_t dmaAddr = 0u;
         {
-            if (portState->transientState != 0u)
+            std::lock_guard<std::mutex> lock(g_padStateMutex);
+            PadPortState *portState = lookupPadPortStateLocked(port, slot);
+            if (portState && portState->open)
             {
-                state = static_cast<int32_t>(portState->transientState);
-                portState->transientState = 0u;
-            }
-            else
-            {
-                state = kPadStateStable;
+                dmaAddr = portState->dmaAddr;
+                if (portState->transientState != 0u)
+                {
+                    state = static_cast<int32_t>(portState->transientState);
+                    portState->transientState = 0u;
+                }
+                else
+                {
+                    state = kPadStateStable;
+                }
             }
         }
+        // padman refreshes the port's DMA buffer every frame; some games (The Sopranos) read the buttons
+        // straight from it (+1 mode, +2/+3 buttons) and never call scePadRead.
+        if (state == kPadStateStable && dmaAddr != 0u)
+            if (uint8_t *dma = getMemPtr(rdram, dmaAddr))
+                readPadPortData(port, slot, runtime, dma, dmaAddr);
         setReturnS32(ctx, state);
     }
 
