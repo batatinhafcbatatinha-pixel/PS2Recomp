@@ -27,6 +27,13 @@ namespace ps2x::iop::detail
         constexpr uint32_t kOhciRhStatus = 0x1F801650u;
         constexpr uint32_t kOhciRhPort1 = 0x1F801654u;
         constexpr uint32_t kOhciRhPort2 = 0x1F801658u;
+        // Off unless PS2X_IOP_USB=1 (Gran Turismo 4 sets it): with a working USBD, The Sopranos loads its own USB
+        // driver from memory and waits for a device that never comes.
+        bool ohciEnabled()
+        {
+            static const bool enabled = [] { const char *v = std::getenv("PS2X_IOP_USB"); return v && *v == '1'; }();
+            return enabled;
+        }
         constexpr uint32_t kSpuRamSize = 2u * 1024u * 1024u;
         constexpr uint32_t kSpu2Core1 = 0x400u;
         bool spuModelEnabled()
@@ -327,9 +334,9 @@ namespace ps2x::iop::detail
         case 0x1F801078u:
             return m_interruptControl;
         case kOhciRevision:
-            return 0x10u; // OHCI 1.0
+            return ohciEnabled() ? 0x10u : 0u; // OHCI 1.0
         case kOhciRhDescriptorA:
-            return 2u; // two downstream ports
+            return ohciEnabled() ? 2u : 0u; // two downstream ports
         default:
             return 0u;
         }
@@ -337,7 +344,7 @@ namespace ps2x::iop::detail
 
     void IopMemory::writeHardware32(uint32_t address, uint32_t value)
     {
-        switch (address)
+        switch (ohciEnabled() || address < kOhciRevision || address > kOhciRhPort2 ? address : 0u)
         {
         case 0x1F801070u:
             m_interruptStatus &= value;
