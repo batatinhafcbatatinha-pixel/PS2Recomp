@@ -103,6 +103,16 @@ inline bool ps2IsScratchpadAddress(uint32_t addr)
     return false;
 }
 
+// DMA address registers (MADR/TADR/ASR and a DMAtag's ADDR) select scratchpad with bit 31 and keep
+// only the 14-bit offset (GT4 writes 0x80000000 | offset). Map that form to the CPU scratchpad window;
+// a larger value with bit 31 is a sloppy KSEG0 pointer and keeps the old RAM meaning.
+inline uint32_t ps2DmaAddress(uint32_t addr)
+{
+    if ((addr & 0x80000000u) != 0u && (addr & 0x7FFFFFFFu) < PS2_SCRATCHPAD_SIZE)
+        return PS2_SCRATCHPAD_BASE | (addr & 0x7FFFFFFFu);
+    return addr;
+}
+
 inline uint32_t ps2ScratchpadOffset(uint32_t addr)
 {
     if (addr >= PS2_SCRATCHPAD_BASE && addr < (PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE))

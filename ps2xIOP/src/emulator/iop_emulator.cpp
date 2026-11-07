@@ -390,6 +390,12 @@ namespace ps2x::iop::detail
                            ? ImportDisposition::Handled
                            : ImportDisposition::Missing;
             }
+            if (iequals(call.library, "thmsgbx"))
+            {
+                return kernel.dispatchMailboxImport(call.ordinal, cpu)
+                           ? ImportDisposition::Handled
+                           : ImportDisposition::Missing;
+            }
             if (iequals(call.library, "thevent"))
             {
                 return kernel.dispatchEventImport(call.ordinal, cpu)

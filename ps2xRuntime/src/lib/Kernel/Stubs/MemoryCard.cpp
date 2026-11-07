@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "Common.h"
 #include "MemoryCard.h"
 
@@ -911,6 +912,15 @@ namespace ps2_stubs
                 freeBlocks = state.formatted ? kMcFreeClusters : 0;
                 format = state.formatted ? kMcFormatted : kMcUnformatted;
                 result = state.formatted ? kMcResultSucceed : kMcResultNoFormat;
+                // Real hardware: the first GetInfo after a card appears reports -1 ("new/changed card") once;
+                // GT4 only fills its free/format cache on that event. PS2X_MC_FIRST_CHANGED=0 disables.
+                static bool changePending[2] = {true, true};
+                static const bool firstChanged = [] { const char *e = std::getenv("PS2X_MC_FIRST_CHANGED"); return !(e && e[0] == '0'); }();
+                if (firstChanged && port >= 0 && port < 2 && changePending[port] && result == kMcResultSucceed)
+                {
+                    changePending[port] = false;
+                    result = -1;
+                }
             }
 
             setMcCommandResultLocked(kMcCmdGetInfo, result);

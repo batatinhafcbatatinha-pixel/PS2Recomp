@@ -147,15 +147,11 @@ def gen_module(path, out_dir):
          'if (p < 0x200000u - 1u && !(p & 1u)) { uint16_t v; std::memcpy(&v, m.ram + p, 2); return v; } return m.read16(m.self, a); }')
     emit('static inline uint8_t R8(const AotMemory &m, uint32_t a) { const uint32_t p = a & 0x1FFFFFFFu; '
          'if (p < 0x200000u) return m.ram[p]; return m.read8(m.self, a); }')
-    emit(f'static uint32_t aot_{name}(AotState &s, const AotMemory &m, const uint32_t base, const uint32_t budget)')
-    emit('{')
-    emit('    uint32_t *const r = s.gpr;')
-    emit('    uint32_t n = 0, bt = 0, pc = s.pc, preg = s.pendingLoadReg, pval = s.pendingLoadValue;')
-    emit('    bool taken = false, pend = s.pendingLoad;')
-    emit('    for (;;)')
-    emit('    {')
-    emit('        switch ((pc - base) >> 2)')
-    emit('        {')
+    blocks = []  # (offset, lines) per instruction; grouped into chunk functions below
+
+    def new_block(off):
+        blocks.append((off, []))
+        return blocks[-1][1].append
 
     def imm_expr(off, w, signed):
         """Immediate of a LO16-relocated or plain instruction."""
@@ -180,6 +176,7 @@ def gen_module(path, out_dir):
         while a < hi:
             w = word_at(d, image, a)
             cur_is_delay = prev_branch
+            emit = new_block(a)
             if in_skip(a) or w is None:
                 emit(f'        case 0x{a >> 2:X}: pc = base + 0x{a:X}u; goto out;')
                 prev_branch = False
@@ -339,14 +336,57 @@ def gen_module(path, out_dir):
                 emit('            if (taken) { taken = false; pc = bt; if (n >= budget || pc - base >= 0x%Xu) goto out; continue; }' % code_end)
             prev_branch = branch is not None and not fallback
             a += 4
-    emit(f'        default: goto out;')
+    # Chunk functions keep each switch small enough for the C++ optimizer (one huge switch per module
+    # needed >8 GB of compiler memory). A chunk leaves with why=0 when execution continues in another chunk
+    # (a pending branch across the boundary travels in s.branchPending/branchTarget), why=1 to stop.
+    emit = L.append
+    CH = int(os.environ.get('IRX_AOT_CHUNK', '1024'))  # instructions per chunk
+    chunks = {}
+    for off, lines in blocks:
+        chunks.setdefault((off >> 2) // CH, []).append((off, lines))
+    for k, items in sorted(chunks.items()):
+        lo_off, hi_off = k * CH * 4, (k + 1) * CH * 4
+        emit(f'static uint32_t aot_{name}_c{k}(AotState &s, const AotMemory &m, const uint32_t base, const uint32_t budget, uint32_t n, int &why)')
+        emit('{')
+        emit('    uint32_t *const r = s.gpr;')
+        emit('    uint32_t bt = s.branchTarget, pc = s.pc, preg = s.pendingLoadReg, pval = s.pendingLoadValue;')
+        emit('    bool taken = s.branchPending, pend = s.pendingLoad;')
+        emit('    s.branchPending = false;')
+        emit('    why = 1;')
+        emit('    for (;;)')
+        emit('    {')
+        emit('        switch ((pc - base) >> 2)')
+        emit('        {')
+        # default first: the last instruction must fall through to the chunk-exit code below, not into default
+        emit(f'        default: if (pc - base >= 0x{lo_off:X}u && pc - base < 0x{hi_off:X}u) goto out; why = 0; goto out;')
+        for _, lines in items:
+            L.extend(lines)
+        emit('        }')
+        end = min(hi_off, code_end)
+        emit(f'        pc = base + 0x{end:X}u; why = 0;')
+        emit('        if (taken) { s.branchPending = true; s.branchTarget = bt; taken = false; }')
+        emit('        goto out;')
+        emit('    }')
+        emit('out:')
+        emit('    s.pc = pc; s.pendingLoad = pend; s.pendingLoadReg = preg; s.pendingLoadValue = pval;')
+        emit('    r[0] = 0u;')
+        emit('    return n;')
+        emit('}')
+    emit(f'static uint32_t aot_{name}(AotState &s, const AotMemory &m, const uint32_t base, const uint32_t budget)')
+    emit('{')
+    emit('    uint32_t n = 0;')
+    emit('    for (;;)')
+    emit('    {')
+    emit('        int why = 1;')
+    emit('        const uint32_t before = n, pc0 = s.pc;')
+    emit(f'        switch (((s.pc - base) >> 2) / {CH}u)')
+    emit('        {')
+    for k in sorted(chunks):
+        emit(f'        case {k}u: n = aot_{name}_c{k}(s, m, base, budget, n, why); break;')
+    emit('        default: return n;')
     emit('        }')
-    emit(f'        pc = base + 0x{code_end:X}u; goto out;')
+    emit('        if (why != 0 || n >= budget || (n == before && s.pc == pc0)) return n;')
     emit('    }')
-    emit('out:')
-    emit('    s.pc = pc; s.pendingLoad = pend; s.pendingLoadReg = preg; s.pendingLoadValue = pval;')
-    emit('    r[0] = 0u;')
-    emit('    return n;')
     emit('}')
     h = fnv64(d)
     emit(f'const ps2x::iop::AotModuleRegistrar reg_{name}({{"{os.path.basename(path)}", 0x{h:X}ull, {len(d)}u, 0x{code_end:X}u, aot_{name}}});')
