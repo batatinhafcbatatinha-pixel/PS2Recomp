@@ -1,0 +1,5 @@
+# Grand Theft Auto: Liberty City Stories: overrides for the generic pipeline (tools/ps2port).
+name = "Grand Theft Auto: Liberty City Stories"
+
+[profile]
+handlers = "handlers.cpp"

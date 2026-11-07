@@ -125,12 +125,19 @@ The furthest point each game has reached in the native builds so far, captured f
 </tr>
 <tr>
 <td align="center" valign="top" width="50%">
+<img src="docs/screenshots/gta-lcs.jpg" alt="Grand Theft Auto: Liberty City Stories" width="100%"><br>
+<b>Grand Theft Auto: Liberty City Stories</b><br>
+<sub>City behind the title screen (built with no game-specific fixes)</sub>
+</td>
+<td align="center" valign="top" width="50%">
 <img src="docs/screenshots/sopranos.jpg" alt="The Sopranos: Road to Respect" width="100%"><br>
 <b>The Sopranos: Road to Respect</b><br>
 <sub>Main menu</sub>
 </td>
-<td align="center" valign="middle" width="50%">
-<sub>Ben 10: Alien Force and GTA: Liberty City Stories screenshots are coming. Gran Turismo 4 and MotorStorm: Arctic Edge do not show a picture yet.</sub>
+</tr>
+<tr>
+<td align="center" colspan="2">
+<sub>Ben 10: Alien Force screenshot is coming. Gran Turismo 4 and MotorStorm: Arctic Edge do not show a picture yet.</sub>
 </td>
 </tr>
 </table>
