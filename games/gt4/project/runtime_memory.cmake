@@ -1,0 +1,22 @@
+# GT4 runs more than six threads with callbacks at once; each needs a 16 KiB invocation stack from the band between
+# the runtime arena's end and the top-of-RAM main stack (128 KiB in the shared runtime, 32 KiB of it the main stack).
+# Move the arena end down to 0x01F80000 (arena 512 KiB, band 512 KiB) in a local copy; the shared source is untouched.
+get_target_property(GT4_RUNTIME_SOURCES ps2_runtime SOURCES)
+get_target_property(GT4_RUNTIME_SOURCE_DIR ps2_runtime SOURCE_DIR)
+set(GT4_LOCAL_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/gt4-runtime")
+file(MAKE_DIRECTORY "${GT4_LOCAL_RUNTIME_DIR}")
+set(original "${GT4_RUNTIME_SOURCE_DIR}/src/lib/ps2_runtime.cpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${original}")
+file(READ "${original}" content)
+set(needle "constexpr uint32_t kRuntimeArenaEnd = 0x01FE0000u;")
+string(FIND "${content}" "${needle}" found)
+if(found LESS 0)
+    message(FATAL_ERROR "Review the GT4 callback-stack adaptation: shared ps2_runtime.cpp changed")
+endif()
+string(REPLACE "${needle}" "constexpr uint32_t kRuntimeArenaEnd = 0x01F80000u; // GT4: room for its callback stacks" content "${content}")
+set(destination "${GT4_LOCAL_RUNTIME_DIR}/ps2_runtime.cpp")
+file(CONFIGURE OUTPUT "${destination}" CONTENT "${content}" @ONLY)
+list(REMOVE_ITEM GT4_RUNTIME_SOURCES "src/lib/ps2_runtime.cpp" "${original}")
+list(APPEND GT4_RUNTIME_SOURCES "${destination}")
+set_property(TARGET ps2_runtime PROPERTY SOURCES ${GT4_RUNTIME_SOURCES})
+set_source_files_properties("${destination}" TARGET_DIRECTORY ps2_runtime PROPERTIES INCLUDE_DIRECTORIES "${GT4_RUNTIME_SOURCE_DIR}/src/lib")

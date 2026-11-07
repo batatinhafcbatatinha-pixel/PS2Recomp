@@ -1,0 +1,2 @@
+# SDK functions the analyzer missed, identified by hand: one name@0xADDR per line (# comments).
+sceCdSearchFile@0x179ed8  # wrapper of 0x179bc0 ("Libcdvd bind err CdSearchFile"); the pack loader (0x1cde60) needs the LSN of DATA/*_P.FS

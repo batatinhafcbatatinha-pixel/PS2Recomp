@@ -1,0 +1,10 @@
+# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables at 0x1721e0);
+# found breaking Boku2 (2026-10-28). The guest sceIpuInit runs instead.
+sceIpuInit
+# Runtime stub is an empty no-op (Boku2: Z never cleared at buffer swap); the guest code runs instead.
+sceGsSetDefClear
+InitThread  # guest version creates the SDK top thread and lowers main to priority 1 (runtime stub leaves main at 0: movie loop starves the CD stream thread)
+# The analyzer matched only these two of the sceGifPk family; the native builder keeps the open DMA tag's qwc live,
+# and the guest sceGifPkCnt/Terminate then add the size again (movie upload chain CNT 3 -> 6 qw, image never sent).
+sceGifPkAddGsAD
+sceGifPkCloseGifTag

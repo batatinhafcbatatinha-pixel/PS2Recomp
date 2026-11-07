@@ -1,0 +1,12 @@
+# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables at 0x1721e0);
+# found breaking Boku2 (2026-10-28). The guest sceIpuInit runs instead.
+sceIpuInit
+# Runtime stub is an empty no-op (Boku2: Z never cleared at buffer swap); the guest code runs instead.
+sceGsSetDefClear
+# MSAE SDK uses six GIF qwords (96 bytes), consumed both by ExecLoadImage and custom DMA.
+# Native GsImageMem is a 12-byte private descriptor and cannot replace that ABI.
+# Evidence: FUN_0028cc88 writes GS A+D pairs at +0x10..+0x48 and image tag +0x50.
+sceGsSetDefLoadImage
+sceGsExecLoadImage
+sceGsSetDefStoreImage
+sceGsExecStoreImage

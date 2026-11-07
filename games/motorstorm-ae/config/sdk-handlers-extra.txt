@@ -1,0 +1,1 @@
+# SDK functions the analyzer missed, identified by hand: one name@0xADDR per line (# comments).

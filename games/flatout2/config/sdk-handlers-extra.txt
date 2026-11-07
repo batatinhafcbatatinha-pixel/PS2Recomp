@@ -1,0 +1,2 @@
+# SDK functions the analyzer missed, identified by hand: one name@0xADDR per line (# comments).
+sceCdSearchFile@0x2bd988  # (fp, name) wrapper of 0x2bd688, which binds CD RPC 0x80000597 and loops forever

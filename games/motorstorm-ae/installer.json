@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "name": "MotorStorm: Arctic Edge (USA)",
+  "revision": "PS2",
+  "filesystem": "iso9660",
+  "destination": "game_files",
+  "required_files": {
+    "SYSTEM.CNF": "cd4a133e1a60d0e86314e804fbb40bd0e74f6bde1e9290dc07f21343366841a6",
+    "SCUS_976.54": "b9b7d66dbd9b3ecbf84096a7c06a9fa2d67eb120daba0f5027944ea23e2b0b06",
+    "IRX/IOPRP310.IMG": "1cf5475f533f04d161bbb4b08179df156afeb7b400f207c88dcf1e39466679b6",
+    "IRX/STREAM.IRX": "0e3b5874cd07e5fe94806a6a7afed386551872d994f7b281f828f0d78d1529d7",
+    "FE.PAK": "94397e4995f64106cc552a9f0860f0dcc62035e03d1936a48a6fe0ae9e2ff4ca",
+    "MAIN.PAK": "611644dd4b71f9d3b51fb21e49bf7f466a9ab79554f32586dc7d7c17d0b388e7"
+  },
+  "required_paths": [],
+  "expected_files": {
+    "FE.PAK": 1316174081,
+    "IRX/IOPRP310.IMG": 278353,
+    "IRX/LIBSD.IRX": 30085,
+    "IRX/MCMAN.IRX": 103677,
+    "IRX/MCSERV.IRX": 7713,
+    "IRX/PADMAN.IRX": 45925,
+    "IRX/SIO2MAN.IRX": 5217,
+    "IRX/STREAM.IRX": 126124,
+    "MAIN.PAK": 973582966,
+    "SCUS_976.54": 2370292,
+    "SYSTEM.CNF": 57
+  }
+}

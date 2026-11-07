@@ -1,0 +1,4 @@
+# SDK functions the analyzer missed, identified by hand: one name@0xADDR per line (# comments).
+sceCdSearchFile@0x365758  # wrapper of 0x365458; game reads sceCdlFILE lsn/size (dir scan 0x2e5eb8)
+sceMpegIsEnd@0x36a230  # lw sys=mp->0x40; return sys->0 (too short for the matcher); the native decoder owns that state
+sceMpegIsRefBuffEmpty@0x36a240  # return sys->4 == 0; movie end wait 0x2b6bf8

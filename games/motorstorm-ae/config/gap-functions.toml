@@ -1,0 +1,10 @@
+[general]
+input = "E:/CodexBuilds/motorstorm-ae/game_files/SCUS_976.54"
+output = "project/gap-functions"
+ghidra_output = "config/gap-functions.csv"
+single_file_output = false
+patch_syscalls = false
+patch_cop0 = true
+patch_cache = true
+stubs = []
+skip = []

@@ -1,0 +1,5 @@
+# SDK functions the analyzer missed, identified by hand: one name@0xADDR per line (# comments).
+# libsif sceSifGetSreg/sceSifSetSreg (read/write the guest sreg array at 0x8869C0): the native ones share the
+# registers with SIF SET_SREG commands from the IOP (MSIFRPC handshake in sceSifMInitRpc polls sreg 1).
+sceSifGetSreg@0x005B0880
+sceSifSetSreg@0x005B0898

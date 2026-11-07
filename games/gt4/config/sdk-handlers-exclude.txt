@@ -1,0 +1,5 @@
+# Runtime stub hard-codes another game's addresses (SETD4_CHCR_ENTRY=0x126428, IQ/VQ tables at 0x1721e0);
+# found breaking Boku2 (2026-10-28). The guest sceIpuInit runs instead.
+sceIpuInit
+# Runtime stub is an empty no-op (Boku2: Z never cleared at buffer swap); the guest code runs instead.
+sceGsSetDefClear
