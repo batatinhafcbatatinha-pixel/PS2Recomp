@@ -1938,15 +1938,22 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     const auto statT0 = vuStats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     uint64_t interpretedSteps = 0u;
     // GOW_VU1_CAPTURA also captures here: with the native loop first, compiledProgramFor() is not reached.
-    if (m_unit == Unit::VU1 && memory != nullptr && vuCode == memory->getVU1Code() && codeSize == PS2_VU1_CODE_SIZE)
+    // VU0 micromemory too (4 KB images): vu1n_gen pads them and the native blocks are keyed by content, so VCALLMS
+    // programs (MotorStorm AE's vertex morph runs ~2 M VU0 programs per minute) leave the exact interpreter.
+    const bool captureVu1 = m_unit == Unit::VU1 && memory != nullptr && vuCode == memory->getVU1Code() && codeSize == PS2_VU1_CODE_SIZE;
+    const bool captureVu0 = m_unit == Unit::VU0 && memory != nullptr && vuCode == memory->getVU0Code() && codeSize == PS2_VU0_CODE_SIZE;
+    if (captureVu1 || captureVu0)
     {
         static const char *captureDir = std::getenv("GOW_VU1_CAPTURA");
-        static uint64_t capturedGeneration = ~0ull;
-        if (captureDir != nullptr && memory->getVU1CodeGeneration() != capturedGeneration)
+        static uint64_t capturedGeneration[2] = {~0ull, ~0ull};
+        uint64_t &lastGeneration = capturedGeneration[captureVu0 ? 1 : 0];
+        const uint64_t generation = captureVu0 ? memory->getVU0CodeGeneration() : memory->getVU1CodeGeneration();
+        if (captureDir != nullptr && generation != lastGeneration)
         {
-            capturedGeneration = memory->getVU1CodeGeneration();
+            lastGeneration = generation;
             char name[64];
-            std::snprintf(name, sizeof(name), "/vu1_%016llx.bin", static_cast<unsigned long long>(hashMicrocode(vuCode, codeSize)));
+            std::snprintf(name, sizeof(name), captureVu0 ? "/vu0_%016llx.bin" : "/vu1_%016llx.bin",
+                          static_cast<unsigned long long>(hashMicrocode(vuCode, codeSize)));
             const std::string path = std::string(captureDir) + name;
             if (!std::filesystem::exists(path))
                 if (std::FILE *file = std::fopen(path.c_str(), "wb"))
