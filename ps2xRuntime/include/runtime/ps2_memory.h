@@ -12,6 +12,7 @@
 #include <mutex>
 
 #include "gs/ps2_gif_arbiter.h"
+#include "runtime/ps2_ipu.h"
 #if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(USE_SSE2NEON)
@@ -316,6 +317,9 @@ public:
     // Hardware register interface
     bool writeIORegister(uint32_t address, uint32_t value);
     uint32_t readIORegister(uint32_t address);
+    // INTC_STAT (0x1000F000): pending interrupt causes. Raised by the VBlank events, cleared by writing 1s.
+    void raiseIntcStat(uint32_t bits) noexcept { m_intcStat.fetch_or(bits, std::memory_order_acq_rel); }
+    static bool intcStatPlain() noexcept;
 
     // EE timers advance from the scheduler's emulated EE-cycle clock. The
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
@@ -360,6 +364,12 @@ public:
     void runVif1Transfers(std::vector<PendingTransfer> &transfers);
     void materializeTransfer(PendingTransfer &transfer);
     std::vector<uint32_t> consumeCompletedDmacCauses();
+    // INTC causes raised by devices (VIF1 I-bit = 5), delivered to the guest's INTC handlers by the runtime.
+    void queueIntcCause(uint32_t cause);
+    // VIF1 I bit on the VIF worker: stall until the EE writes FBRST.STC (or a short timeout), running the GIF-only
+    // jobs the EE queues meanwhile, so PATH3 work an interrupt handler starts lands before the rest of the VIF list.
+    void stallVif1ForInterrupt();
+    std::vector<uint32_t> consumeIntcCauses();
 
     int pollDmaRegisters();
 
@@ -407,6 +417,9 @@ public:
     std::atomic<uint64_t> m_vu1CodeGeneration{0};
     // I/O registers
     std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
+    std::atomic<uint32_t> m_intcStat{0u};
+    Ps2Ipu m_ipu;
+    void pumpIpu(); // moves decoded IPU output into an active FROM_IPU DMA
 
     // Registers
     GSRegisters gs_regs;
@@ -452,6 +465,9 @@ public:
     std::vector<PendingTransfer> m_pendingVif1Transfers;
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;
+    std::vector<uint32_t> m_pendingIntcCauses;
+    std::atomic<bool> m_vif1IrqStall{false};
+    std::atomic<int> m_gifStatBusyReads{0}; // GIF_STAT reads that still show PATH3 active after a GIF DMA kick
 
     struct CodeRegion
     {

@@ -150,16 +150,19 @@ def learn(elf, named, analyzer_known):
     return out
 
 
-def bindings(repo, matches, exclude=(), extra=()):
-    """matches: ['name@0xADDR', ...] from the analyzer, signatures and the profile. Returns (wrappers, entries, skipped)."""
+def bindings(repo, matches, exclude=(), extra=(), native=()):
+    """matches: ['name@0xADDR', ...] from the analyzer, signatures and the profile. Returns (wrappers, entries, skipped).
+    native: names a profile serves with the runtime handler although the policy keeps the guest code (sceGs*...)."""
     syscalls, stubs, todo = runtime_lists(repo)
-    exclude = set(exclude) | GUEST_ALWAYS
+    native = set(native)
+    exclude = set(exclude) | (GUEST_ALWAYS - native)
     wrappers, entries, skipped, seen = [], [], [], set()
     for match in list(matches) + list(extra):
         name, addr = match.split('@')
         addr = int(addr, 16)
         base = name.lstrip('_')
-        if name in exclude or base in exclude or base in todo or base.startswith(GUEST_PREFIXES) or addr in seen:
+        guest = base.startswith(GUEST_PREFIXES) and base not in native
+        if name in exclude or base in exclude or base in todo or guest or addr in seen:
             skipped.append(match)
             continue
         name = base if base in syscalls | stubs else name

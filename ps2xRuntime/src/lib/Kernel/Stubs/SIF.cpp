@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <sstream>
+#include <iostream>
+#include <cstdlib>
 #include <vector>
 
 namespace ps2_stubs
@@ -282,6 +285,21 @@ namespace ps2_stubs
             return true;
         }
 
+        // PS2X_SIFCMD_LOG=1 also dumps the commands the IOP sends to the EE.
+        static const bool logIopCommands = std::getenv("PS2X_SIFCMD_LOG") != nullptr;
+        if (logIopCommands)
+        {
+            std::ostringstream line;
+            line << "[sifcmd:iop->ee] cid=0x" << std::hex << commandId << " size=0x" << packetSize << " |";
+            const auto *bytes = static_cast<const uint8_t *>(packet);
+            for (size_t i = 0; i + 4u <= packetSize; i += 4u)
+            {
+                uint32_t word = 0u;
+                std::memcpy(&word, bytes + i, 4u);
+                line << ' ' << word;
+            }
+            std::cerr << line.str() << std::endl;
+        }
         SifCmdHandler registered{};
         {
             std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);

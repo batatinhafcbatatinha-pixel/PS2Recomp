@@ -1435,7 +1435,9 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
                 ++traced;
             // PS2X_TRX_TRACE=<n>: log the first n transfers (destination, format, size).
             static int trxLeft = std::getenv("PS2X_TRX_TRACE") ? std::atoi(std::getenv("PS2X_TRX_TRACE")) : 0;
-            if (trxLeft > 0)
+            // PS2X_TRX_SKIP_DBP0=1: leave out transfers to block 0 (movie frames written straight to the display).
+            static const bool trxSkip0 = std::getenv("PS2X_TRX_SKIP_DBP0") != nullptr;
+            if (trxLeft > 0 && !(trxSkip0 && m_bitbltbuf.dbp == 0u))
             {
                 --trxLeft;
                 std::fprintf(stderr, "[gs:trx] dir=%u sbp=%x dbp=%x dbw=%u dpsm=%x pos=%u,%u size=%ux%u\n", m_trxdir,

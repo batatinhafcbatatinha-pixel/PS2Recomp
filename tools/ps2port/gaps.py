@@ -98,12 +98,54 @@ def find(elf, ghidra_rows, labels, analyzer_log_text, extra_starts=()):
         if i + 1 < len(splits) and splits[i + 1] < end:
             end = splits[i + 1]
         rows.append((a, end))
+    # Observed starts are proven entries: they get a function even inside a Ghidra range (to that range's end).
+    for a in extra_starts:
+        if in_code(a) and not a & 3 and ghidra_end(a):
+            rows.append((a, ghidra_end(a)))
     seen, out = set(), []
     for a, e in sorted(rows):
         if a not in seen and e > a:
             seen.add(a)
             out.append((a, e))
-    return out
+    # Branches and jumps that leave their function land on an entry the dispatcher must find: hand-written routines
+    # with several entries share loop bodies (MotorStorm AE's VU0 code at 0x287208/0x287428 branches from one into
+    # the other), and the generator turns such a branch into "continue at that pc". Each target outside its own
+    # function becomes a start of its own, running to the end of the function that holds it.
+    ranges = sorted(set(ghidra) | set(out))
+    range_starts = [s for s, _ in ranges]
+    have = set(range_starts)
+
+    def holder_end(t):
+        i = bisect.bisect_right(range_starts, t) - 1
+        while i >= 0:
+            s, e = ranges[i]
+            if s <= t < e:
+                return e
+            i -= 1
+            if t - s > 0x100000:
+                break
+        return 0
+
+    extra = []
+    for s, e in ranges:
+        for a in range(s, e, 4):
+            w = word(a)
+            op = w >> 26
+            target = None
+            if op in (0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17) or \
+                    (op == 0x01 and ((w >> 16) & 0x1F) in (0, 1, 2, 3, 0x10, 0x11, 0x12, 0x13)) or \
+                    (op in (0x11, 0x12) and ((w >> 21) & 0x1F) == 0x08):
+                off = w & 0xFFFF
+                target = (a + 4 + ((off - 0x10000 if off & 0x8000 else off) << 2)) & 0xFFFFFFFF
+            elif op == 0x02:
+                target = ((a + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+            if target is None or s <= target < e or target in have or target & 3 or not in_code(target):
+                continue
+            end = holder_end(target)
+            if end:
+                have.add(target)
+                extra.append((target, end))
+    return sorted(out + extra)
 
 
 def write_csv(path, elf, ghidra_rows, rows):

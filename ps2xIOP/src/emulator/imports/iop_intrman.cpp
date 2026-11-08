@@ -4,6 +4,10 @@
 #include "../core/iop_memory.h"
 #include "../services/iop_rpc.h"
 
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
 namespace ps2x::iop::detail
 {
     IopIntrman::IopIntrman(IopMemory &memory) noexcept
@@ -15,6 +19,7 @@ namespace ps2x::iop::detail
     {
         m_handlers.clear();
         m_enabled.clear();
+        m_latched.clear();
     }
 
     bool IopIntrman::dispatchImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor)
@@ -39,6 +44,7 @@ namespace ps2x::iop::detail
             return true;
         case 5: // ReleaseIntrHandler
             m_handlers.erase(static_cast<int>(a0));
+            m_latched.erase(static_cast<int>(a0));
             setV0(0u);
             return true;
         case 6: // EnableIntr
@@ -94,12 +100,31 @@ namespace ps2x::iop::detail
 
     bool IopIntrman::dispatchInterrupt(int irq, IopGuestExecutor &executor) const
     {
+        // PS2X_IOP_INTR_TRACE=1: log every delivered, latched or dropped IOP interrupt.
+        static const bool trace = std::getenv("PS2X_IOP_INTR_TRACE") != nullptr;
+        static const bool noLatch = std::getenv("PS2X_IOP_INTR_NO_LATCH") != nullptr;
         const auto enabled = m_enabled.find(irq);
-        if (enabled == m_enabled.end() || !enabled->second)
-            return false;
         const auto handler = m_handlers.find(irq);
-        if (handler == m_handlers.end() || handler->second.function == 0u)
+        const bool haveHandler = handler != m_handlers.end() && handler->second.function != 0u;
+        if (enabled == m_enabled.end() || !enabled->second)
+        {
+            // A disabled line keeps the request: the handler runs when EnableIntr turns it back on (libsd
+            // disables the SPU DMA lines around BlockTrans setup, and a completion in that window was lost).
+            if (!noLatch && haveHandler)
+                m_latched[irq] = true;
+            if (trace)
+                std::cerr << "[iop-intr] irq=" << irq << (haveHandler && !noLatch ? " latched (disabled)" : " dropped (disabled)") << std::endl;
             return false;
+        }
+        if (!haveHandler)
+        {
+            if (trace)
+                std::cerr << "[iop-intr] irq=" << irq << " dropped (no handler)" << std::endl;
+            return false;
+        }
+        if (trace)
+            std::cerr << "[iop-intr] irq=" << irq << std::hex << " handler=0x" << handler->second.function << " arg=0x"
+                      << handler->second.argument << std::dec << std::endl;
 
         (void)executor.executeGuestFunctionWithBudget(handler->second.function,
                                                       handler->second.argument,
@@ -109,5 +134,36 @@ namespace ps2x::iop::detail
                                                       handler->second.gp,
                                                       100000u);
         return true;
+    }
+
+    bool IopIntrman::hasDeliverableLatched() const noexcept
+    {
+        for (const auto &[irq, pending] : m_latched)
+        {
+            const auto enabled = m_enabled.find(irq);
+            if (pending && enabled != m_enabled.end() && enabled->second)
+                return true;
+        }
+        return false;
+    }
+
+    void IopIntrman::serviceLatched(IopGuestExecutor &executor)
+    {
+        if (m_latched.empty())
+            return;
+        std::vector<int> due;
+        for (auto it = m_latched.begin(); it != m_latched.end();)
+        {
+            const auto enabled = m_enabled.find(it->first);
+            if (enabled != m_enabled.end() && enabled->second)
+            {
+                due.push_back(it->first);
+                it = m_latched.erase(it);
+            }
+            else
+                ++it;
+        }
+        for (const int irq : due)
+            (void)dispatchInterrupt(irq, executor);
     }
 }

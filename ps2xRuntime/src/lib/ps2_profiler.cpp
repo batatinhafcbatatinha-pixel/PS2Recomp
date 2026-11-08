@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
 #endif
 
 #include <algorithm>
@@ -20,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -296,6 +299,36 @@ namespace {
             const uintptr_t address = static_cast<uintptr_t>(info->ExceptionRecord->ExceptionInformation[1]);
             if ((address & ~uintptr_t(0xFFF)) != g_watchPage)
                 return EXCEPTION_CONTINUE_SEARCH;
+            // PS2X_WATCH_RIPS=1: print each distinct host instruction that stores into the watched page once, with its
+            // symbol (generated FUN_/gap_ code vs. runtime HLE code that writes guest memory).
+            static const bool rips = std::getenv("PS2X_WATCH_RIPS") != nullptr;
+            if (rips)
+            {
+                static std::mutex ripLock;
+                static std::unordered_set<uintptr_t> seen;
+                const uintptr_t rip = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+                std::lock_guard<std::mutex> guard(ripLock);
+                if (seen.insert(rip).second && seen.size() < 20000u)
+                {
+                    static bool symInit = false;
+                    if (!symInit)
+                    {
+                        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+                        SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+                        symInit = true;
+                    }
+                    alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256] = {};
+                    auto *symbol = reinterpret_cast<SYMBOL_INFO *>(buffer);
+                    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                    symbol->MaxNameLen = 255;
+                    DWORD64 displacement = 0;
+                    const char *name = SymFromAddr(GetCurrentProcess(), rip, &displacement, symbol) ? symbol->Name : "?";
+                    std::fprintf(stderr, "[watch:rip] guest=0x%x tid=%lu rip=%p %s+0x%llx pc=0x%x\n",
+                                 static_cast<uint32_t>(address - reinterpret_cast<uintptr_t>(g_watchHost)),
+                                 static_cast<unsigned long>(GetCurrentThreadId()), info->ExceptionRecord->ExceptionAddress,
+                                 name, static_cast<unsigned long long>(displacement), g_watchPc ? g_watchPc() : 0u);
+                }
+            }
             g_watchFault = address;
             VirtualProtect(reinterpret_cast<void *>(g_watchPage), 0x1000, PAGE_READWRITE, &old);
             info->ContextRecord->EFlags |= 0x100; // trap after the faulting store
@@ -304,6 +337,32 @@ namespace {
         if (code == EXCEPTION_SINGLE_STEP && g_watchFault != 0)
         {
             const uintptr_t start = reinterpret_cast<uintptr_t>(g_watchHost + g_watchGuest);
+            // PS2X_WATCH_FOREIGN=1: report only stores from a host thread other than the first one that wrote the
+            // watched range (the EE executor), i.e. DMA/IOP/GS/audio threads writing guest RAM behind the EE's back.
+            static const bool foreignOnly = std::getenv("PS2X_WATCH_FOREIGN") != nullptr;
+            if (foreignOnly && g_watchFault + 16u > start && g_watchFault < start + g_watchLength)
+            {
+                static DWORD eeTid = 0;
+                const DWORD tid = GetCurrentThreadId();
+                if (eeTid == 0)
+                    eeTid = tid;
+                if (tid != eeTid)
+                {
+                    const uint32_t n = g_watchLogs.fetch_add(1);
+                    if (n < 2000u)
+                    {
+                        const uint32_t offset = static_cast<uint32_t>((g_watchFault & ~uintptr_t(3)) - reinterpret_cast<uintptr_t>(g_watchHost));
+                        uint32_t bits = 0;
+                        std::memcpy(&bits, g_watchHost + offset, 4);
+                        std::fprintf(stderr, "[watch:foreign] tid=%lu ee_tid=%lu guest=0x%x value=0x%08x pc=0x%x rip=%p\n",
+                                     static_cast<unsigned long>(tid), static_cast<unsigned long>(eeTid), offset, bits,
+                                     g_watchPc ? g_watchPc() : 0u, info->ExceptionRecord->ExceptionAddress);
+                    }
+                }
+                g_watchFault = 0;
+                VirtualProtect(reinterpret_cast<void *>(g_watchPage), 0x1000, PAGE_READONLY, &old);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
             if (g_watchFault + 16u > start && g_watchFault < start + g_watchLength)
             {
                 // PS2X_WATCH_CHANGES: report the watched word itself, only when its value changes.
@@ -325,7 +384,7 @@ namespace {
                 std::memcpy(&value, &bits, 4);
                 const bool abnormal = !(value == value) || value > 1.0e7f || value < -1.0e7f;
                 const uint32_t n = g_watchLogs.fetch_add(1);
-                if (n < 64u || (abnormal && n < 4096u))
+                if (n < 64u || (abnormal && n < 4096u) || (changesOnly && n < 200000u))
                     std::fprintf(stderr, "[watch] guest=0x%x value=0x%08x (%g) pc=0x%x%s\n", offset, bits, value,
                                  g_watchPc ? g_watchPc() : 0u, abnormal ? " ABNORMAL" : "");
                 if (abnormal && g_watchDump && n < 4096u && !(value > 9.0e29f || value < -9.0e29f))

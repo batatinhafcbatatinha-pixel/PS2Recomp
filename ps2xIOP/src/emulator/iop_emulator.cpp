@@ -333,6 +333,31 @@ namespace ps2x::iop::detail
             {
                 cpu.gpr[2] = value;
             };
+            // PS2X_IOP_IMPORT_TRACE=1 logs every IOP import that reaches the runtime (library, ordinal, a0-a3, ra);
+            // PS2X_IOP_IMPORT_TRACE=<lib>[,<lib>...] limits it to those libraries.
+            static const char *importTrace = std::getenv("PS2X_IOP_IMPORT_TRACE");
+            const auto traceLibrary = [&]
+            {
+                const std::string_view list(importTrace);
+                if (list == "1")
+                    return true;
+                for (size_t start = 0; start <= list.size();)
+                {
+                    const size_t end = std::min(list.find(',', start), list.size());
+                    if (iequals(list.substr(start, end - start), call.library))
+                        return true;
+                    start = end + 1u;
+                }
+                return false;
+            };
+            if (importTrace && *importTrace && traceLibrary())
+            {
+                static uint64_t traced = 0u;
+                if (++traced <= 2000000u)
+                    std::cerr << "[iop-import] " << call.library << ":" << call.ordinal << std::hex << " a0=0x" << cpu.gpr[4]
+                              << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6] << " a3=0x" << cpu.gpr[7] << " ra=0x"
+                              << cpu.gpr[31] << std::dec << " cycle=" << totalCycles << std::endl;
+            }
 
             if (iequals(call.library, "sysmem") && sysmem.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
@@ -378,6 +403,18 @@ namespace ps2x::iop::detail
             if (iequals(call.library, "loadcore") && loadcore.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
 
+            static const bool noAlarms = std::getenv("PS2X_IOP_NO_ALARMS") != nullptr; // TEMP bisect
+            if (!noAlarms && (iequals(call.library, "thbase") || iequals(call.library, "threadman")) && call.ordinal >= 35u &&
+                call.ordinal <= 38u)
+            {
+                const uint32_t clock = cpu.gpr[4];
+                // thbase 35 SetAlarm, 36 iSetAlarm (clock*, handler, arg), 37 CancelAlarm, 38 iCancelAlarm (handler, arg)
+                const bool set = call.ordinal == 35u || call.ordinal == 36u;
+                const uint32_t lo = set ? memory.read32(clock) : 0u;
+                const uint32_t hi = set ? memory.read32(clock + 4u) : 0u;
+                if (timrman.dispatchAlarmImport(call.ordinal, cpu, totalCycles, lo, hi))
+                    return ImportDisposition::Handled;
+            }
             if (iequals(call.library, "thbase") || iequals(call.library, "threadman"))
             {
                 return kernel.dispatchThreadImport(call.ordinal, cpu, totalCycles)
@@ -537,6 +574,8 @@ namespace ps2x::iop::detail
                     break;
                 if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
                     servicePendingDmaInterrupts();
+                if (!servicingDmaInterrupts && intrman.hasDeliverableLatched())
+                    serviceLatchedInterrupts();
                 if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
                     servicePendingGuestCallbacks();
             }
@@ -641,6 +680,23 @@ namespace ps2x::iop::detail
             servicingDmaInterrupts = false;
         }
 
+        void serviceLatchedInterrupts()
+        {
+            if (servicingDmaInterrupts)
+                return;
+            servicingDmaInterrupts = true;
+            try
+            {
+                intrman.serviceLatched(*this);
+            }
+            catch (...)
+            {
+                servicingDmaInterrupts = false;
+                throw;
+            }
+            servicingDmaInterrupts = false;
+        }
+
         void servicePendingGuestCallbacks()
         {
             if (servicingGuestCallbacks || pendingGuestCallbacks.empty())
@@ -693,6 +749,8 @@ namespace ps2x::iop::detail
                     if (memory.takeSpu2Irq())
                         (void)intrman.dispatchInterrupt(9, *this); // SPU2 IRQ (IRQA hit)
                     servicePendingDmaInterrupts();
+                    if (intrman.hasDeliverableLatched())
+                        serviceLatchedInterrupts();
                     servicePendingGuestCallbacks();
                     timrman.serviceDue(totalCycles, *this);
                     IopThread *next = kernel.beginNextReady(totalCycles);
@@ -801,20 +859,60 @@ namespace ps2x::iop::detail
                     aotRanges.push_back({module.base, module.base + module.aot->codeSize, module.aot->fn});
             }
 
-            uint32_t args = 0u;
+            // Module start(argc, argv) like the IOP's modload: argv[0] is the module path, the load arguments (strings
+            // separated by NULs) follow. The Sopranos' RAD sound module starts only with argc == 3 (2026-11-08).
+            std::vector<std::string> argv{path};
             if (arguments && argumentSize)
             {
-                args = allocate(argumentSize + 1u, 16u);
-                if (args)
+                const char *text = static_cast<const char *>(arguments);
+                for (uint32_t i = 0u; i < argumentSize;)
                 {
-                    writeRam(args, arguments, argumentSize);
-                    write8(args + argumentSize, 0u);
+                    const uint32_t start = i;
+                    while (i < argumentSize && text[i])
+                        ++i;
+                    if (i > start || i < argumentSize)
+                        argv.emplace_back(text + start, i - start);
+                    ++i;
                 }
+                while (argv.size() > 1u && argv.back().empty())
+                    argv.pop_back();
             }
-            const uint32_t startResult = callFunction(module.entry, argumentSize, args, 0u, 0u, module.gp);
+            if (argv.size() > 1u)
+            {
+                std::ostringstream args;
+                for (size_t i = 1; i < argv.size(); ++i)
+                    args << " \"" << argv[i] << "\"";
+                log(LogLevel::Info, "[IOP] module args " + path + ":" + args.str());
+            }
+            uint32_t blockSize = static_cast<uint32_t>((argv.size() + 1u) * 4u);
+            for (const std::string &s : argv)
+                blockSize += static_cast<uint32_t>(s.size()) + 1u;
+            uint32_t args = allocate(blockSize, 16u);
             if (args)
+            {
+                uint32_t text = args + static_cast<uint32_t>((argv.size() + 1u) * 4u);
+                for (size_t i = 0; i < argv.size(); ++i)
+                {
+                    write32(args + static_cast<uint32_t>(i * 4u), text);
+                    writeRam(text, argv[i].data(), argv[i].size());
+                    write8(text + static_cast<uint32_t>(argv[i].size()), 0u);
+                    text += static_cast<uint32_t>(argv[i].size()) + 1u;
+                }
+                write32(args + static_cast<uint32_t>(argv.size() * 4u), 0u);
+            }
+            static const bool legacyArgs = std::getenv("PS2X_IOP_LEGACY_ARGS") != nullptr; // TEMP bisect
+            if (legacyArgs && args)
+            {
                 freeAllocation(args);
+                args = 0u;
+            }
+            const uint32_t startResult = callFunction(module.entry, args ? static_cast<uint32_t>(argv.size()) : 0u, args, 0u,
+                                                      0u, module.gp);
             module.resident = startResult == 0u || startResult == 2u;
+            // A resident module may keep its argv pointers (option strings parsed later): free the block only when
+            // the module unloaded itself.
+            if (args && !module.resident)
+                freeAllocation(args);
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);
             modules[module.id] = std::move(module);

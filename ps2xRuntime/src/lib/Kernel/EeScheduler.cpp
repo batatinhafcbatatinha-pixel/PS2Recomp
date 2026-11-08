@@ -371,6 +371,11 @@ void EeScheduler::run()
             continue;
         }
 
+        // Device interrupts raised off the EE thread (VIF1 I bit): deliver them at the next dispatch, not only after
+        // the guest's next 32-bit store.
+        for (uint32_t cause : m_runtime.memory().consumeIntcCauses())
+            dispatchIrq(false, cause);
+
         if (!m_pendingInvocations.empty() &&
             m_pendingInvocations.front().kind == GuestInvocationKind::RpcCallback &&
             m_pendingInvocations.front().tag == kEeRpcServerTag && rpcServerThreadsEnabled())
@@ -1471,7 +1476,14 @@ uint32_t EeScheduler::invocationStackTopFor(const GuestThread &ownerRef)
         m_invocationStackTops.emplace(key, reused);
         return reused;
     }
-    const uint32_t top = m_runtime.reserveAsyncCallbackStack(kInvocationStackSize, 16u);
+    uint32_t top = m_runtime.reserveAsyncCallbackStack(kInvocationStackSize, 16u);
+    if (top == 0u)
+    {
+        // The fixed area holds 8 stacks; a game whose interrupts land on more threads (Gran Turismo 4 runs 13) takes
+        // the rest from the runtime arena. Released stacks go back to the free list, so this is bounded too.
+        const uint32_t base = m_runtime.guestMalloc(kInvocationStackSize, 16u);
+        top = base ? base + kInvocationStackSize - 0x10u : 0u;
+    }
     if (top == 0u)
     {
         throw std::runtime_error("EE invocation stack space exhausted");
@@ -2230,6 +2242,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        m_runtime.memory().raiseIntcStat(1u << 2u); // INTC_STAT VBLANK_START
         ++m_vsyncTick;
         PS2TL(TL_VBLANK, static_cast<uint32_t>(m_vsyncTick));
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
@@ -2306,6 +2319,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         completeExternalWait(event.id, event.value, KE_OK);
         break;
     case EeEventType::VBlankEnd:
+        m_runtime.memory().raiseIntcStat(1u << 3u); // INTC_STAT VBLANK_END
         dispatchIrq(false, 3u);
         break;
     case EeEventType::Dmac:

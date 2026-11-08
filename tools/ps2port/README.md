@@ -57,6 +57,7 @@ PS2X_IOP_USB = "1"
 [sdk]
 extra = ["sceCdSearchFile@0x365758"]     # functions to bind that no signature finds yet
 exclude = ["sceSomething"]               # keep the game's own translation
+native = ["sceGsSyncV"]                  # use the runtime handler where the policy keeps the game's code
 [gaps]
 starts = ["0x20A920"]                    # extra function starts
 [profile]

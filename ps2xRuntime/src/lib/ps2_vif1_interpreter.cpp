@@ -568,7 +568,15 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
         vif1_regs.code = cmd;
         vif1_regs.num = num;
         if (irq)
+        {
             vif1_regs.stat |= (1u << 11); // INT
+            // The I bit raises INTC cause 5 (VIF1). Games use it to start PATH3 transfers in step with the VIF1 list
+            // (MotorStorm AE kicks its texture uploads from that handler). The VIF does not stall here: the handler's
+            // FBRST.STC release is accepted whenever it comes. PS2X_VIF1_IRQ=0 disables.
+            static const bool vifIrq = [] { const char *e = std::getenv("PS2X_VIF1_IRQ"); return !(e && e[0] == '0'); }();
+            if (vifIrq)
+                stallVif1ForInterrupt();
+        }
 
         if (opcode == VIF_NOP)
         {
