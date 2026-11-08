@@ -82,3 +82,5 @@ setup-log.txt
 /tools/launcher/bin/
 /tools/launcher/obj/
 !/.github/
+!/port.toml
+!/handlers.cpp

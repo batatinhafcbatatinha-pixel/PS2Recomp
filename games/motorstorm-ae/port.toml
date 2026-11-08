@@ -1,0 +1,8 @@
+# MotorStorm: Arctic Edge: overrides for the generic pipeline (tools/ps2port).
+# Its memory-setup fix (allocator sized up to EndOfHeap) is the runtime's EndOfHeap now.
+name = "MotorStorm: Arctic Edge"
+
+[env]
+# The intro and menu movies are written by the IPU straight into the displayed framebuffer; only the gpu renderer
+# shows them (the hw one keeps its own copy of that render target).
+PS2X_GS = "gpu"

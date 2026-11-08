@@ -1,0 +1,10 @@
+# The Sopranos: Road to Respect: overrides for the generic pipeline (tools/ps2port).
+name = "The Sopranos: Road to Respect"
+
+[profile]
+handlers = "handlers.cpp"   # stream callback re-entered by its own lock holder
+
+[sdk]
+# The old profile served these with the runtime (reached the main menu); the game's own sceGsSyncV path ends in a
+# null virtual call at 0x1fc54c after the logo.
+native = ["sceGsSyncV", "sceGsSyncVCallback", "sceGsResetGraph", "sceGsSetDefStoreImage", "sceGsExecStoreImage", "InitThread"]
