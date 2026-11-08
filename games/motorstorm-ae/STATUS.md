@@ -45,3 +45,14 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS / GT4 / Ben 10 (PS2Recomp;
   (VU1) e PATH2, nenhum PATH3/IMAGE; TEX0 aponta para TBP 0x3760 (nunca escrito). IOP entrega dados ao EE (17 DMAs de
   256 KB, "Exit MultiStream V7.1 Thread Load"). Próximo: achar no EE o gerenciador de texturas (quem monta BITBLTBUF/
   TRXDIR para 0x3760 ou um pacote PATH3) e por que não roda: esperando um evento/estado do carregamento?
+
+## 08/11 tarde (Claude) — carros visíveis
+- Causa da carroceria/piloto/rivais invisíveis: o laço de morph de vértices (0x2866e0, rotina VU0 0x287208, programas
+  VU0 0x310/0x800 = posição + peso·delta, FTOI12, normais ×127) devolve os vértices da scratchpad para a RAM pelo
+  canal fromSPR em modo chain (CHCR=0x104, tags CNT/END na scratchpad com o endereço de destino). O runtime só fazia
+  o modo normal -> buffers zerados -> todos os vértices na origem do objeto (vistos no PS2X_GS_TRACE como milhares de
+  triângulos com os 3 vértices iguais). Implementado em ps2_memory.cpp (commit 0e257e8, local). Corrida com carros ok.
+- Ferramentas (scratchpad da sessão): gstr.py (agrupa gs-trace por estado/programa VU1), vudis.py (desmontador VU),
+  mdis.py (capstone + COP2/MMI). Microcódigo VU0 vem de pacotes MPG em .vutext (0x2bd250..0x2be840).
+- Pendente: fps 12-25 (alvo 30); hw backend; pasta .local/ports/motorstorm-ae-prof ainda não criada (usei PS2X_GS=gpu
+  na linha de comando).
