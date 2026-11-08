@@ -56,3 +56,8 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS / GT4 / Ben 10 (PS2Recomp;
   mdis.py (capstone + COP2/MMI). Microcódigo VU0 vem de pacotes MPG em .vutext (0x2bd250..0x2be840).
 - Pendente: fps 12-25 (alvo 30); hw backend; pasta .local/ports/motorstorm-ae-prof ainda não criada (usei PS2X_GS=gpu
   na linha de comando).
+- fps (08/11 tarde): perfil da corrida (PS2X_PROFILE_AT=165, ps2-perf-tools/prof.py msae race1/race2). Antes ~45% do
+  thread do jogo era o interpretador exato rodando os programas VU0 -> captura do VU0 + blocos nativos (commit acima;
+  rodar smoke e depois o passo vu1). Agora o EE espera o FINISH do GS (CSR lido em 0x28d434; FIELD em 0x28c914) e o
+  limite é o thread VIF/VU1 (35-55% ocupado). gpu e hw dão 11-28 fps (média ~19). hw desenha a corrida certo em 2x.
+  Próximo: custo dos blocos nativos do VU1 (blockTiming/walkHistory/resetScheduler) e a fila do GS.
