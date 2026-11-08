@@ -2304,8 +2304,62 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
         return false;
 
     const uint32_t mode = (chcr >> 2u) & 0x3u;
+    if (mode == 1u && channelBase == kSprFromChannel)
+    {
+        // Destination chain (fromSPR): each DMAtag sits in the scratchpad and gives the RAM destination (ADDR) and
+        // the qword count of the data that follows it. CNT/CNTS continue with the next tag after the data, END stops,
+        // and so does a tag with IRQ when CHCR.TIE is set. MotorStorm AE's vertex morph loop (0x2866e0) returns its
+        // packed positions and normals this way; without it every car, driver and rival mesh drew from zeroed buffers.
+        uint32_t sadr = m_ioRegisters[channelBase + 0x80u] & 0x3FF0u;
+        uint32_t madr = m_ioRegisters[channelBase + 0x10u] & 0x7FFFFFF0u;
+        uint32_t lastTag = 0u;
+        for (unsigned guard = 0; guard < 1024u; ++guard)
+        {
+            uint32_t tag[2];
+            std::memcpy(tag, m_scratchpad + sadr, sizeof(tag));
+            lastTag = tag[0];
+            sadr = (sadr + 16u) & (PS2_SCRATCHPAD_SIZE - 1u);
+            const uint32_t tagQwc = tag[0] & 0xFFFFu;
+            const uint32_t id = (tag[0] >> 28u) & 0x7u;
+            madr = tag[1] & 0x7FFFFFF0u;
+            uint32_t mainOffset = 0u;
+            try
+            {
+                mainOffset = translateAddress(madr);
+            }
+            catch (const std::exception &)
+            {
+                break;
+            }
+            for (uint32_t q = 0; q < tagQwc && mainOffset + 16u <= PS2_RAM_SIZE; ++q)
+            {
+                std::memcpy(m_rdram + mainOffset, m_scratchpad + sadr, 16u);
+                markModified(mainOffset, 16u);
+                mainOffset += 16u;
+                sadr = (sadr + 16u) & (PS2_SCRATCHPAD_SIZE - 1u);
+            }
+            madr += tagQwc * 16u;
+            if (id == 7u || (id != 0u && id != 1u) || ((chcr & 0x80u) && (tag[0] & 0x80000000u)))
+                break;
+        }
+        m_ioRegisters[channelBase] = (m_ioRegisters[channelBase] & 0x0000FFFFu) | (lastTag & 0xFFFF0000u);
+        m_ioRegisters[channelBase + 0x10u] = madr;
+        m_ioRegisters[channelBase + 0x20u] = 0u;
+        m_ioRegisters[channelBase + 0x80u] = sadr;
+        completeDmacChannel(channelBase, 8u);
+        return true;
+    }
     if (mode != 0u)
+    {
+        static bool warned[2] = {};
+        bool &w = warned[channelBase == kSprFromChannel ? 0 : 1];
+        if (!w)
+        {
+            w = true;
+            std::fprintf(stderr, "[dma] scratchpad channel 0x%x mode %u is not supported (chcr=0x%x)\n", channelBase, mode, chcr);
+        }
         return false;
+    }
 
     const uint32_t qwc = m_ioRegisters[channelBase + 0x20u] & 0xFFFFu;
     const uint32_t byteCount = qwc * 16u;
