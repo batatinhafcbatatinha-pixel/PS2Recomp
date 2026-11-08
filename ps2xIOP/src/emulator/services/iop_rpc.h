@@ -41,6 +41,8 @@ namespace ps2x::iop::detail
         {
             return executeGuestFunction(address, a0, a1, a2, a3, gp);
         }
+        // True while an interrupt handler, alarm, SIF command handler or completion callback runs (QueryIntrContext).
+        [[nodiscard]] virtual bool inInterruptContext() const { return false; }
     };
 
     class IopRpcBridge

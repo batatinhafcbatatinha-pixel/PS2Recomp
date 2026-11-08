@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "iop_cpu.h"
 #include "iop_memory.h"
 
@@ -29,6 +30,13 @@ namespace ps2x::iop::detail
 
     void IopCpuCore::raiseException(IopCpuState &cpu, uint32_t code, uint32_t faultPc, bool delaySlot, std::optional<uint32_t> badAddress) const
     {
+        // There is no IOP exception handler: a guest exception sends the thread through RAM from 0x80000080. Report the
+        // first ones, they are the cause of whatever the thread does next.
+        static unsigned reported = 0u;
+        if (code != 8u && code != 9u && reported++ < 16u)
+            std::fprintf(stderr, "[iop-exception] code=%u pc=0x%x delay=%d bad=0x%x ra=0x%x sp=0x%x v0=0x%x a0=0x%x\n", code,
+                         faultPc, delaySlot ? 1 : 0, badAddress ? *badAddress : 0u, cpu.gpr[31], cpu.gpr[29], cpu.gpr[2],
+                         cpu.gpr[4]);
         uint32_t cause = cpu.cop0[13] & ~0x7Cu;
         cause |= (code & 0x1Fu) << 2u;
         if (delaySlot)

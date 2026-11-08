@@ -30,6 +30,10 @@ GUEST_ALWAYS = {
     '_sceSifSendCmd', '_sceSifCmdIntrHdlr',    # internal variants with another ABI
 }
 GUEST_PREFIXES = ('sceGs', 'sceGifPk')
+# Interrupt-context variants the runtime serves with the plain handler. The Sopranos' RAD reader sends its next block
+# request from inside its SIF command handler with isceSifSendCmd; left to the game code, that wrote the SIF DMA
+# registers directly and the request never reached the IOP (boot hang at "Checking memory card").
+INTERRUPT_ALIASES = {'isceSifSendCmd': 'sceSifSendCmd'}
 
 
 def runtime_lists(repo):
@@ -166,6 +170,8 @@ def bindings(repo, matches, exclude=(), extra=(), native=()):
             skipped.append(match)
             continue
         name = base if base in syscalls | stubs else name
+        if name not in syscalls | stubs and INTERRUPT_ALIASES.get(base) in syscalls | stubs:
+            name = INTERRUPT_ALIASES[base]
         ns = 'ps2_syscalls' if name in syscalls else 'ps2_stubs' if name in stubs else None
         if ns is None:
             skipped.append(match)

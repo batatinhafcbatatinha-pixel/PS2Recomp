@@ -324,13 +324,16 @@ namespace ps2x::iop::detail
         case 37: // atob
             setV0(0);
             return true;
-        case 40: // _wmemcopy, count is 32-bit words
-            for (uint32_t i = 0; i < a2; ++i)
+        // _wmemcopy(dest, src, size) / _wmemset(dest, value, size): word loops, but size is in bytes. Counting words
+        // wrote 4x too far: The Sopranos' RAD reader clears its 4 KB audio buffer with _wmemset(buf, 0, 0x1000) and
+        // the extra 12 KB erased the module's own code (boot hang at "Checking memory card").
+        case 40: // _wmemcopy
+            for (uint32_t i = 0; i < a2 / 4u; ++i)
                 m_memory.write32(a0 + i * 4u, m_memory.read32(a1 + i * 4u));
             setV0(a0);
             return true;
-        case 41:
-            for (uint32_t i = 0; i < a2; ++i)
+        case 41: // _wmemset
+            for (uint32_t i = 0; i < a2 / 4u; ++i)
                 m_memory.write32(a0 + i * 4u, a1);
             setV0(a0);
             return true;

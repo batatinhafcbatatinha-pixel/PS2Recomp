@@ -69,6 +69,20 @@ namespace ps2x::iop::detail
             return true;
         }
 
+        // Thread-library calls that wait or switch threads (non-"i" forms). Interrupt context must use the "i" forms.
+        bool blocksInInterrupt(std::string_view library, uint16_t ordinal)
+        {
+            if (iequals(library, "thbase") || iequals(library, "threadman"))
+                return ordinal == 24u /* SleepThread */ || ordinal == 33u /* DelayThread */;
+            if (iequals(library, "thsemap"))
+                return ordinal == 8u; // WaitSema
+            if (iequals(library, "thevent"))
+                return ordinal == 10u; // WaitEventFlag
+            if (iequals(library, "thmsgbx"))
+                return ordinal == 8u; // ReceiveMbx
+            return false;
+        }
+
     }
 
     class IopEmulator::Impl final : public IopGuestExecutor
@@ -415,6 +429,15 @@ namespace ps2x::iop::detail
                 if (timrman.dispatchAlarmImport(call.ordinal, cpu, totalCycles, lo, hi))
                     return ImportDisposition::Handled;
             }
+            if (interruptDepth != 0u && blocksInInterrupt(call.library, call.ordinal))
+            {
+                static unsigned illegalLogs = 0u;
+                if (illegalLogs++ < 16u)
+                    std::cerr << "[iop-intr] blocking " << call.library << ":" << call.ordinal << " from interrupt context ra=0x"
+                              << std::hex << cpu.gpr[31] << std::dec << " -> KE_ILLEGAL_CONTEXT" << std::endl;
+                cpu.gpr[2] = static_cast<uint32_t>(-100); // KE_ILLEGAL_CONTEXT
+                return ImportDisposition::Handled;
+            }
             if (iequals(call.library, "thbase") || iequals(call.library, "threadman"))
             {
                 return kernel.dispatchThreadImport(call.ordinal, cpu, totalCycles)
@@ -746,13 +769,16 @@ namespace ps2x::iop::detail
                 memory.setSpuCycleSource(&totalCycles);
                 while (totalCycles < target)
                 {
-                    if (memory.takeSpu2Irq())
-                        (void)intrman.dispatchInterrupt(9, *this); // SPU2 IRQ (IRQA hit)
-                    servicePendingDmaInterrupts();
-                    if (intrman.hasDeliverableLatched())
-                        serviceLatchedInterrupts();
-                    servicePendingGuestCallbacks();
-                    timrman.serviceDue(totalCycles, *this);
+                    {
+                        const InterruptScope interrupt(interruptDepth);
+                        if (memory.takeSpu2Irq())
+                            (void)intrman.dispatchInterrupt(9, *this); // SPU2 IRQ (IRQA hit)
+                        servicePendingDmaInterrupts();
+                        if (intrman.hasDeliverableLatched())
+                            serviceLatchedInterrupts();
+                        servicePendingGuestCallbacks();
+                        timrman.serviceDue(totalCycles, *this);
+                    }
                     IopThread *next = kernel.beginNextReady(totalCycles);
                     if (!next)
                     {
@@ -995,6 +1021,18 @@ namespace ps2x::iop::detail
         bool servicingDmaInterrupts = false;
         bool servicingGuestCallbacks = false;
         uint32_t callDepth = 0u;
+        // Interrupt context (QueryIntrContext): handlers, alarms, SIF command handlers and completion callbacks run
+        // outside every IOP thread. Kernel calls that block or reschedule the current thread are illegal there; letting
+        // them through saved the handler's state into whichever thread ran last (The Sopranos: the RAD reader slept in
+        // sceCdSync, a SIF command started LIBSD's block transfer, and the reader woke up at a stray pc).
+        uint32_t interruptDepth = 0u;
+        struct InterruptScope
+        {
+            uint32_t &depth;
+            explicit InterruptScope(uint32_t &d) : depth(d) { ++depth; }
+            ~InterruptScope() { --depth; }
+        };
+        bool inInterruptContext() const override { return interruptDepth != 0u; }
         GuestCallback secrMcCommandHandler;
         GuestCallback secrMcDevIdHandler;
         GuestCallback checkKelfPathCallback;

@@ -74,9 +74,11 @@ namespace ps2x::iop::detail
                       ? executor.executeGuestFunctionWithBudget(a0, a1, a2, a3, 0u, cpu.gpr[28], 100000u)
                       : 0u);
             return true;
+        case 23: // QueryIntrContext
+            setV0(executor.inInterruptContext() ? 1u : 0u);
+            return true;
         case 15:
         case 16:
-        case 23:
         case 24:
         case 25:
         case 28:
