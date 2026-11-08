@@ -65,7 +65,10 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
     params[1] = result.height;
     params[2] = stride;
     params[3] = (dual ? 1u : 0u) | (((request.pmode >> 5) & 7u) << 1u);
-    if ((request.smode2 & 1u) && !(request.smode2 & 2u))
+    // Interlaced frame mode (INT=1, FFMD=0) holds a whole progressive frame; showing one field per vblank (bob) made
+    // every game bounce half a line up and down at 60 Hz, like an old TV. PS2X_GS_BOB=1 restores that CRT emulation.
+    static const bool bob = [] { const char *e = std::getenv("PS2X_GS_BOB"); return e && e[0] == '1'; }();
+    if (bob && (request.smode2 & 1u) && !(request.smode2 & 2u))
         params[3] |= 16u | ((request.vsyncTick & 1u) ? 32u : 0u);
     params[4] = uint32_t((request.pmode >> 8) & 0xFFu);
     params[5] = uint32_t(request.bgcolor & 0xFFFFFFu);

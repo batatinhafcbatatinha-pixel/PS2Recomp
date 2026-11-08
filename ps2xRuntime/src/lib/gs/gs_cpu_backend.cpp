@@ -1944,7 +1944,9 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     PresentationFrame result{};
     const GSPmodeState pmode = decodePmode(request.pmode);
     const GSSmode2State smode2 = decodeSMode2(request.smode2);
-    const bool fieldMode = smode2.interlaced && !smode2.frameMode;
+    // Bob (one field per vblank) only on request: it made the picture bounce half a line (see gs_gpu_scanout.inl).
+    static const bool bob = [] { const char *e = std::getenv("PS2X_GS_BOB"); return e && e[0] == '1'; }();
+    const bool fieldMode = bob && smode2.interlaced && !smode2.frameMode;
     const bool oddField = (request.vsyncTick & 1ull) != 0ull;
     const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
     const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
