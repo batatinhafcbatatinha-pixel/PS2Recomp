@@ -674,6 +674,7 @@ namespace ps2x::iop::detail
         // Not that good to use exception handling for control flow but will do for now
         void servicePendingDmaInterrupts()
         {
+            const InterruptScope interrupt(interruptDepth);
             if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
                 return;
 
@@ -705,6 +706,7 @@ namespace ps2x::iop::detail
 
         void serviceLatchedInterrupts()
         {
+            const InterruptScope interrupt(interruptDepth);
             if (servicingDmaInterrupts)
                 return;
             servicingDmaInterrupts = true;
@@ -722,6 +724,7 @@ namespace ps2x::iop::detail
 
         void servicePendingGuestCallbacks()
         {
+            const InterruptScope interrupt(interruptDepth);
             if (servicingGuestCallbacks || pendingGuestCallbacks.empty())
                 return;
 
@@ -1022,9 +1025,9 @@ namespace ps2x::iop::detail
         bool servicingGuestCallbacks = false;
         uint32_t callDepth = 0u;
         // Interrupt context (QueryIntrContext): handlers, alarms, SIF command handlers and completion callbacks run
-        // outside every IOP thread. Kernel calls that block or reschedule the current thread are illegal there; letting
-        // them through saved the handler's state into whichever thread ran last (The Sopranos: the RAD reader slept in
-        // sceCdSync, a SIF command started LIBSD's block transfer, and the reader woke up at a stray pc).
+        // outside every IOP thread. Kernel calls that block the current thread are illegal there; letting them through
+        // would park whichever thread ran last with the handler's state. LIBSD and others ask QueryIntrContext to pick
+        // the interrupt-safe path.
         uint32_t interruptDepth = 0u;
         struct InterruptScope
         {
