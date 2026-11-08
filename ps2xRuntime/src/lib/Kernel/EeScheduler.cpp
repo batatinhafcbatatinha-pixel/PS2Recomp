@@ -1668,6 +1668,11 @@ void EeScheduler::completeVSync(uint64_t tick)
         const int result = wait.fixedResult >= 0
                                ? wait.fixedResult
                                : static_cast<int>((tick - 1u) & 1u);
+        static const bool vsLog = std::getenv("PS2X_VSYNC_WAIT_LOG") != nullptr;
+        static unsigned vsLogs = 0;
+        if (vsLog && vsLogs++ < 64u)
+            std::fprintf(stderr, "[vsync-wait] thread=%d tick=%llu fixed=%d result=%d\n", id,
+                         static_cast<unsigned long long>(tick), wait.fixedResult, result);
         makeReady(*waiter, result, false);
     }
 

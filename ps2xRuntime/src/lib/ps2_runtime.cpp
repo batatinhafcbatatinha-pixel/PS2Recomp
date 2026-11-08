@@ -51,6 +51,8 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #include <stdexcept>
 #include <fstream>
 #include <algorithm>
+#include <map>
+#include <thread>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -3242,6 +3244,36 @@ void PS2Runtime::run()
         ps2_log::log_stream().setstate(std::ios::badbit);
 #endif
     m_stopRequested.store(false, std::memory_order_relaxed);
+    // PS2X_PCSAMPLE=<seconds>: sample the running EE thread's pc every millisecond and print the 12 most frequent
+    // (pc, ra) pairs every <seconds> (where a guest waits when nothing reports it).
+    if (const char *pcs = std::getenv("PS2X_PCSAMPLE"))
+    {
+        const int period = std::max(1, std::atoi(pcs));
+        std::thread([this, period] {
+            std::map<std::pair<uint32_t, uint32_t>, unsigned> hist;
+            auto last = std::chrono::steady_clock::now();
+            for (;;)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                const R5900Context *c = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+                if (c)
+                    ++hist[{c->pc, static_cast<uint32_t>(_mm_extract_epi32(c->r[31], 0))}];
+                if (std::chrono::steady_clock::now() - last >= std::chrono::seconds(period))
+                {
+                    last = std::chrono::steady_clock::now();
+                    std::vector<std::pair<unsigned, std::pair<uint32_t, uint32_t>>> top;
+                    for (const auto &[k, n] : hist)
+                        top.push_back({n, k});
+                    std::sort(top.rbegin(), top.rend());
+                    std::fprintf(stderr, "[pcsample]");
+                    for (size_t i = 0; i < top.size() && i < 12u; ++i)
+                        std::fprintf(stderr, " %x/%x:%u", top[i].second.first, top[i].second.second, top[i].first);
+                    std::fprintf(stderr, "\n");
+                    hist.clear();
+                }
+            }
+        }).detach();
+    }
     ps2_stubs::resetSifState();
     resetIop();
     ps2_stubs::resetAudioStubState();

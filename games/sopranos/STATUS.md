@@ -143,3 +143,16 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
 - 07/11 02:00 (Claude): AOT regenerado com o gerador corrigido (HI16/LO16 pela ordem da tabela; era a causa do GTA LCS).
   Run aot2 (scripts/drive.py novo, X a cada 3 s): menu principal -> New Game -> cena de abertura, mas continua parada na
   2ª fala por 200 s, IOP 66% (STREAM.IRX). Não era o AOT. Segue o próximo passo de antes (o que o EE espera da MultiStream).
+
+## 08/11 (Claude) — pipeline genérico
+- Rodar sempre com o perfil: `--port .local/ports/sopranos-prof --work .local/measure/sopranos` (o port.toml/handlers só
+  são lidos da pasta do port; com `--port E:/CodexBuilds/sopranos` o perfil não entra e o jogo fica no laço do
+  sceGsSyncV do próprio jogo em 0x1dbbd0).
+- Com o perfil: para em "Checking memory card" (fps 0). MC ok (sem save: Chdir -4). EE faz 4 pedidos SIF cid 0xb ao
+  módulo RAD_IOP_SIDE (IRX de 7 KB carregado de buffer, id 8, leitor de arquivos Bink/RAD; respostas tipo 1 = handle,
+  tipo 0 = 4 KB lidos com palavra 5 = erro 0, tipo 4 = tique do alarme). Depois de 2 blocos de 4 KB o EE não pede mais;
+  laço principal fica na máquina de estados de leitura 0x16d4xx (FUN_0016d1e8). Handler EE dos comandos = 0x169740.
+- Testes sem efeito: excluir sceSifGet/SetSreg, sceSifSearchModuleByName/Stop/UnloadModule; entregar a 1ª invocação
+  entregável em vez da da frente; PS2X_VIF1_IRQ=0; PS2X_INTC_STAT_PLAIN=1.
+- O pipeline antigo (games/sopranos/project) chegava ao menu e à cena de abertura; a diferença está nas ligações
+  SDK/runtime. Ferramenta nova: PS2X_PCSAMPLE=<s> (histograma de pc/ra do EE).
