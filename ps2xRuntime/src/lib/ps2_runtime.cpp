@@ -1962,6 +1962,27 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
             _mm_store_ps(fullIn[r], ctx->vu0_vf[r]);
     const uint16_t fullVi[4] = {ctx->vi[1], ctx->vi[2], ctx->vi[3], ctx->vi[4]};
 
+    // PS2X_VU0_DUMP=<pc hex>:<n>: the first n runs of the microprogram at pc save VU0 data memory and VF/VI before and
+    // after (analysis/vu0d_<k>_{in,out}.bin: 4 KB data, then vf0..31, then vi0..15).
+    static const char *vu0DumpSpec = std::getenv("PS2X_VU0_DUMP");
+    static const uint32_t vu0DumpPc = vu0DumpSpec ? static_cast<uint32_t>(std::strtoul(vu0DumpSpec, nullptr, 16)) : ~0u;
+    static const int vu0DumpMax = vu0DumpSpec && std::strchr(vu0DumpSpec, ':') ? std::atoi(std::strchr(vu0DumpSpec, ':') + 1) : 8;
+    static int vu0Dumped = 0;
+    const bool vu0Dump = startPC == vu0DumpPc && vu0Dumped < vu0DumpMax;
+    const auto dumpVu0 = [&](const char *when)
+    {
+        char name[64];
+        std::snprintf(name, sizeof(name), "analysis/vu0d_%02d_%s.bin", vu0Dumped, when);
+        if (FILE *f = std::fopen(name, "wb"))
+        {
+            std::fwrite(vu0Data, 1, PS2_VU0_DATA_SIZE, f);
+            std::fwrite(ctx->vu0_vf, 1, sizeof(ctx->vu0_vf), f);
+            std::fwrite(ctx->vi, 1, sizeof(uint16_t) * 16, f);
+            std::fclose(f);
+        }
+    };
+    if (vu0Dump)
+        dumpVu0("in");
     m_vu0.reset();
     copyVu0ContextToState(ctx, m_vu0.state());
     m_vu0.execute(vu0Code, PS2_VU0_CODE_SIZE,
@@ -1969,6 +1990,11 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
                   m_gs, &m_memory,
                   startPC, 0u, ctx->vu0_itop, 4096);
     copyVu0StateToContext(m_vu0.state(), ctx);
+    if (vu0Dump)
+    {
+        dumpVu0("out");
+        ++vu0Dumped;
+    }
 
     if (vu0Full > 0)
     {

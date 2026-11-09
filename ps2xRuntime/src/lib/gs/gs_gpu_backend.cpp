@@ -358,9 +358,9 @@ static void traceSubmit(const GSPrimitiveBatch &batch)
         return;
     const GSDrawState &state = batch.state;
     const GSContext &ctx = state.context;
-    std::fprintf(file, "type=%u tme=%u abe=%u fst=%u fbp=%u psm=%x fbmsk=%x zbp=%u zmsk=%u alpha=%llx test=%llx tex0=%u/%u/%x tfx=%u tcc=%u v=",
+    std::fprintf(file, "type=%u tme=%u abe=%u fst=%u fbp=%u psm=%x fbmsk=%x zbp=%u zpsm=%x zmsk=%u alpha=%llx test=%llx tex0=%u/%u/%x tfx=%u tcc=%u v=",
                  static_cast<unsigned>(state.prim.type), state.prim.tme, state.prim.abe, state.prim.fst, ctx.frame.fbp, ctx.frame.psm,
-                 ctx.frame.fbmsk, ctx.zbuf.zbp, ctx.zbuf.zmask ? 1u : 0u, static_cast<unsigned long long>(ctx.alpha),
+                 ctx.frame.fbmsk, ctx.zbuf.zbp, static_cast<unsigned>(ctx.zbuf.psm), ctx.zbuf.zmask ? 1u : 0u, static_cast<unsigned long long>(ctx.alpha),
                  static_cast<unsigned long long>(ctx.test), ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, ctx.tex0.tfx, ctx.tex0.tcc);
     for (uint32_t i = 0; i < batch.vertexCount; ++i)
     {

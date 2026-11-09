@@ -75,14 +75,14 @@ namespace ps2recomp
         uint8_t fs_reg = inst.rd;
         uint8_t ft_reg = inst.rt;
 
-        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft != 0.0f) ? (fs / ft) : 0.0f; }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
+        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_fdiv(fs, ft); /* x/0 = +-max as on the VU */ }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
     }
 
     std::string CodeGenerator::translateVU_VSQRT(const Instruction &inst)
     {
         uint8_t ftf = inst.vectorInfo.ftf;
         uint8_t ft_reg = inst.rt;
-        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = sqrtf(std::max(0.0f, ft)); }}", ft_reg, ft_reg, ftf);
+        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_fsqrt(ft); /* sqrt(|ft|) as on the VU */ }}", ft_reg, ft_reg, ftf);
     }
 
     std::string CodeGenerator::translateVU_VRSQRT(const Instruction &inst)
@@ -92,7 +92,7 @@ namespace ps2recomp
         uint8_t ftf = inst.vectorInfo.ftf;
         uint8_t fs_reg = inst.rd;
         uint8_t ft_reg = inst.rt;
-        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft > 0.0f) ? (fs / sqrtf(ft)) : 0.0f; }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
+        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_frsqrt(fs, ft); /* fs / sqrt(|ft|), +-max for 0 */ }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
     }
 
     std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
@@ -792,7 +792,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translateVU_VSQI(const Instruction &inst)
     {
-        uint8_t vis = inst.rd;
+        uint8_t vis = inst.rt; // VSQI/VSQD fs, (it): address register it = bits 16-20, stored vector fs = bits 11-15
         uint8_t dest_mask = inst.vectorInfo.vectorField;
         return fmt::format("{{ uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); " /* VU0 data memory, not EE RAM */
                            "__m128i old_val = READ128(addr); "
@@ -800,7 +800,7 @@ namespace ps2recomp
                            "WRITE128(addr, _mm_castps_si128(res)); "
                            "ctx->vi[{}] = (ctx->vi[{}] + 1) & 0x3FF; }}",
                            vis,
-                           inst.rt,
+                           inst.rd,
                            (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
                            (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0,
                            vis, vis);
@@ -808,7 +808,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translateVU_VLQD(const Instruction &inst)
     {
-        uint8_t vis = inst.rd;
+        uint8_t vis = inst.rd; // VLQD ft, (--is): is = bits 11-15
         uint8_t dest_mask = inst.vectorInfo.vectorField;
         return fmt::format("{{ ctx->vi[{}] = (ctx->vi[{}] - 1) & 0x3FF; "
                            "uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); " /* VU0 data memory, not EE RAM */
@@ -824,7 +824,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translateVU_VSQD(const Instruction &inst)
     {
-        uint8_t vis = inst.rd;
+        uint8_t vis = inst.rt; // VSQI/VSQD fs, (it): address register it = bits 16-20, stored vector fs = bits 11-15
         uint8_t dest_mask = inst.vectorInfo.vectorField;
         return fmt::format("{{ ctx->vi[{}] = (ctx->vi[{}] - 1) & 0x3FF; "
                            "uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); " /* VU0 data memory, not EE RAM */
@@ -833,7 +833,7 @@ namespace ps2recomp
                            "WRITE128(addr, _mm_castps_si128(res)); }}",
                            vis, vis,
                            vis,
-                           inst.rt,
+                           inst.rd,
                            (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
                            (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0);
     }
