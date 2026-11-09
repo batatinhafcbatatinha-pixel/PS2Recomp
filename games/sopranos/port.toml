@@ -7,4 +7,8 @@ handlers = "handlers.cpp"   # stream callback re-entered by its own lock holder
 [sdk]
 # The old profile served these with the runtime (reached the main menu); the game's own sceGsSyncV path ends in a
 # null virtual call at 0x1fc54c after the logo.
+# Libm functions bound by signature to runtime stubs that read float args (f12/f14): the game's sin/cos/atan/atan2/pow/
+# sqrt are double precision, passed in GPRs on the EE, so the stubs returned garbage and gameplay drew nothing (camera
+# angles). The game's own maths runs instead.
+exclude = ["sin", "cos", "atan", "atan2", "pow", "sqrt", "floor", "fabs", "__kernel_sinf", "__kernel_cosf", "__ieee754_rem_pio2f"]
 native = ["sceGsSyncV", "sceGsSyncVCallback", "sceGsResetGraph", "sceGsSetDefStoreImage", "sceGsExecStoreImage", "InitThread"]

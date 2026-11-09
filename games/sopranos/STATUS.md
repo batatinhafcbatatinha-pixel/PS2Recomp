@@ -156,3 +156,16 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
   entregável em vez da da frente; PS2X_VIF1_IRQ=0; PS2X_INTC_STAT_PLAIN=1.
 - O pipeline antigo (games/sopranos/project) chegava ao menu e à cena de abertura; a diferença está nas ligações
   SDK/runtime. Ferramenta nova: PS2X_PCSAMPLE=<s> (histograma de pc/ra do EE).
+
+## 08-09/11 (Claude) — pipeline genérico, de "Checking memory card" até a jogabilidade
+- Boot: IOP sysclib _wmemset/_wmemcopy em BYTES (apagavam o próprio RAD); isceSifSendCmd ligado; contexto de interrupção
+  do IOP (QueryIntrContext). Vídeos Bink: família MMI de HI/LO 128 bits, PINTH/PINTEH, embaralhamentos, PADDUH/PSUBUH.
+  Personagens nas cenas: VU0 macro VLQI/VSQI/VLQD/VSQD/VILWR/VISWR na memória do VU0 (0x11004000) e VSQI/VSQD com
+  campos it/fs certos (os ossos vão por VSQI vf24,(vi12++) antes do VCALLMS 0x90). VDIV/VSQRT/VRSQRT como no VU.
+- port.toml: libm (sin/cos/atan/atan2/pow/sqrt/floor/fabs/__kernel_*) não ligada aos stubs do runtime (liam floats;
+  as do jogo são double em GPRs).
+- ABERTO: na jogabilidade o mundo e os personagens não são desenhados (GS só recebe HUD, VU1 <1%, nenhuma thread
+  bloqueada; cenas no motor funcionam). Referência PCSX2 (C:\Users\dudua\Downloads\pcsx2-v2.9.166-windows-x64-Qt,
+  portable, BIOS 0230a) mostra o beco iluminado com os personagens. Comparar RAM: .p2s é zip com zstd (eeMemory.bin);
+  heap/pools do jogo (0x1514d00-0x1915d00, 0x1a8xxxx) mudam de ordem, só globais comparam.
+- LEMBRETE: `ps2port tools` só reconstrói o recompilador com --force.
