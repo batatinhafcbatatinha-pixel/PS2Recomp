@@ -776,8 +776,11 @@ inline __m128i ps2_ppacb(__m128i rs, __m128i rt)
 #define PS2_PPACB(a, b) ps2_ppacb((__m128i)(a), (__m128i)(b))
 
 // Packed Interleave (PINT)
-#define PS2_PINTH(a, b) _mm_unpacklo_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
-#define PS2_PINTEH(a, b) _mm_unpackhi_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
+// PINTH rd, rs, rt: the low four halfwords of rt interleaved with the HIGH four of rs (rt0, rs4, rt1, rs5, ...).
+// PINTEH rd, rs, rt: the even halfwords of rt and rs interleaved (rt0, rs0, rt2, rs2, ...). Both took the wrong halves
+// (The Sopranos' Bink movies came out in alternating stripes).
+#define PS2_PINTH(a, b) _mm_unpacklo_epi16((__m128i)(b), _mm_unpackhi_epi64((__m128i)(a), (__m128i)(a)))
+#define PS2_PINTEH(a, b) _mm_or_si128(_mm_and_si128((__m128i)(b), _mm_set1_epi32(0x0000FFFF)), _mm_slli_epi32((__m128i)(a), 16))
 
 // Packed Multiply-Add (PMADD)
 #define PS2_PMADDW(a, b) _mm_add_epi32(_mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(1, 0, 3, 2)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(1, 0, 3, 2))), _mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0))))
@@ -973,9 +976,10 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
 }
 #define PS2_QFSRV(rs, rt, sa) ps2_qfsrv((__m128i)(rs), (__m128i)(rt), (uint32_t)(sa))
 #define PS2_PCPYLD(rs, rt) _mm_unpacklo_epi64(rt, rs)
-#define PS2_PEXEH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(2, 3, 0, 1)), _MM_SHUFFLE(2, 3, 0, 1))
-#define PS2_PEXEW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(2, 3, 0, 1))
-#define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(0, 3, 2, 1))
+// PEXEH: h2,h1,h0,h3 per doubleword; PEXEW: w2,w1,w0,w3; PROT3W: w1,w2,w0,w3 (were neighbour swaps / a 4-word rotate).
+#define PS2_PEXEH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(3, 0, 1, 2)), _MM_SHUFFLE(3, 0, 1, 2))
+#define PS2_PEXEW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(3, 0, 1, 2))
+#define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(3, 0, 2, 1))
 
 // Additional VU0 operations
 #define PS2_VSQRT(x) sqrtf(x)
@@ -1060,5 +1064,225 @@ PS2_HOT_INLINE void Ps2SetGprLow64(R5900Context *ctx, int reg, __m128i new_low)
         if (reg_idx != 0)                  \
             ctx_ptr->r[reg_idx] = (val);   \
     } while (0)
+
+#include <climits>
+
+// ---- R5900 MMI instructions on the 128-bit HI/LO -------------------------------------------------------------------
+// HI and LO are 128 bits wide: hi/lo hold the low doubleword (what MULT/DIV write) and hi1/lo1 the high one (MULT1,
+// DIV1). The MMI multiply/divide family and PMFHL/PMTHL work on all four words. The previous translations used only
+// hi/lo (and PMULTH summed every product into one value), which broke integer DCT and colour code such as Bink movies.
+struct Ps2HiLo128
+{
+    uint32_t lo[4], hi[4];
+};
+template <class Ctx>
+inline Ps2HiLo128 ps2HiLoLoad(const Ctx *ctx)
+{
+    Ps2HiLo128 v;
+    v.lo[0] = static_cast<uint32_t>(ctx->lo); v.lo[1] = static_cast<uint32_t>(ctx->lo >> 32);
+    v.lo[2] = static_cast<uint32_t>(ctx->lo1); v.lo[3] = static_cast<uint32_t>(ctx->lo1 >> 32);
+    v.hi[0] = static_cast<uint32_t>(ctx->hi); v.hi[1] = static_cast<uint32_t>(ctx->hi >> 32);
+    v.hi[2] = static_cast<uint32_t>(ctx->hi1); v.hi[3] = static_cast<uint32_t>(ctx->hi1 >> 32);
+    return v;
+}
+template <class Ctx>
+inline void ps2HiLoStore(Ctx *ctx, const Ps2HiLo128 &v)
+{
+    ctx->lo = static_cast<uint64_t>(v.lo[0]) | (static_cast<uint64_t>(v.lo[1]) << 32);
+    ctx->lo1 = static_cast<uint64_t>(v.lo[2]) | (static_cast<uint64_t>(v.lo[3]) << 32);
+    ctx->hi = static_cast<uint64_t>(v.hi[0]) | (static_cast<uint64_t>(v.hi[1]) << 32);
+    ctx->hi1 = static_cast<uint64_t>(v.hi[2]) | (static_cast<uint64_t>(v.hi[3]) << 32);
+}
+template <class Ctx>
+inline void ps2MmiGprWords(const Ctx *ctx, int reg, uint32_t out[4])
+{
+    if (reg == 0) { out[0] = out[1] = out[2] = out[3] = 0u; return; }
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out), ctx->r[reg]);
+}
+template <class Ctx>
+inline void ps2MmiSetGprWords(Ctx *ctx, int reg, const uint32_t w[4])
+{
+    if (reg != 0)
+        ctx->r[reg] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(w));
+}
+inline int16_t ps2MmiHalf(const uint32_t w[4], int i) { return static_cast<int16_t>(w[i >> 1] >> ((i & 1) * 16)); }
+
+// PMULTH / PMADDH / PMSUBH: eight halfword products into LO0 LO1 HI0 HI1 LO2 LO3 HI2 HI3; rd = LO0 HI0 LO2 HI2.
+template <class Ctx>
+inline void ps2MmiHalfMul(Ctx *ctx, int rd, int rs, int rt, int mode /* 0 mult, 1 madd, -1 msub */)
+{
+    uint32_t s[4], t[4];
+    ps2MmiGprWords(ctx, rs, s); ps2MmiGprWords(ctx, rt, t);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    uint32_t *dest[8] = {&v.lo[0], &v.lo[1], &v.hi[0], &v.hi[1], &v.lo[2], &v.lo[3], &v.hi[2], &v.hi[3]};
+    for (int i = 0; i < 8; ++i)
+    {
+        const int32_t p = static_cast<int32_t>(ps2MmiHalf(s, i)) * static_cast<int32_t>(ps2MmiHalf(t, i));
+        const uint32_t acc = *dest[i];
+        *dest[i] = mode == 0 ? static_cast<uint32_t>(p) : mode > 0 ? acc + static_cast<uint32_t>(p) : acc - static_cast<uint32_t>(p);
+    }
+    ps2HiLoStore(ctx, v);
+    const uint32_t r[4] = {v.lo[0], v.hi[0], v.lo[2], v.hi[2]};
+    ps2MmiSetGprWords(ctx, rd, r);
+}
+// PHMADH / PHMSBH: horizontal pair sums (differences); the odd words keep the upper product (PHMSBH: its complement).
+template <class Ctx>
+inline void ps2MmiHalfHorizontal(Ctx *ctx, int rd, int rs, int rt, bool subtract)
+{
+    uint32_t s[4], t[4];
+    ps2MmiGprWords(ctx, rs, s); ps2MmiGprWords(ctx, rt, t);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    for (int pair = 0; pair < 4; ++pair)
+    {
+        const int n = pair * 2;
+        const int32_t first = static_cast<int32_t>(ps2MmiHalf(s, n + 1)) * ps2MmiHalf(t, n + 1);
+        const int32_t second = static_cast<int32_t>(ps2MmiHalf(s, n)) * ps2MmiHalf(t, n);
+        const uint32_t sum = subtract ? static_cast<uint32_t>(first) - static_cast<uint32_t>(second)
+                                      : static_cast<uint32_t>(first) + static_cast<uint32_t>(second);
+        const uint32_t odd = subtract ? ~static_cast<uint32_t>(first) : static_cast<uint32_t>(first);
+        uint32_t *bank = (pair & 1) ? v.hi : v.lo;
+        const int w = (pair >> 1) * 2;
+        bank[w] = sum;
+        bank[w + 1] = odd;
+    }
+    ps2HiLoStore(ctx, v);
+    const uint32_t r[4] = {v.lo[0], v.hi[0], v.lo[2], v.hi[2]};
+    ps2MmiSetGprWords(ctx, rd, r);
+}
+// PMULTW/PMULTUW/PMADDW/PMADDUW/PMSUBW: words 0 and 2; LO/HI doublewords get the sign-extended halves of the product.
+template <class Ctx>
+inline void ps2MmiWordMul(Ctx *ctx, int rd, int rs, int rt, bool isUnsigned, int mode)
+{
+    uint32_t s[4], t[4];
+    ps2MmiGprWords(ctx, rs, s); ps2MmiGprWords(ctx, rt, t);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    uint32_t r[4];
+    for (int k = 0; k < 2; ++k)
+    {
+        const int w = k * 2;
+        uint64_t p = isUnsigned ? static_cast<uint64_t>(s[w]) * t[w]
+                                : static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(s[w])) * static_cast<int32_t>(t[w]));
+        const uint64_t acc = (static_cast<uint64_t>(v.hi[w]) << 32) | v.lo[w];
+        if (mode > 0) p = acc + p;
+        else if (mode < 0) p = acc - p;
+        const uint32_t lo32 = static_cast<uint32_t>(p), hi32 = static_cast<uint32_t>(p >> 32);
+        v.lo[w] = lo32; v.lo[w + 1] = (lo32 & 0x80000000u) ? 0xFFFFFFFFu : 0u;
+        v.hi[w] = hi32; v.hi[w + 1] = (hi32 & 0x80000000u) ? 0xFFFFFFFFu : 0u;
+        r[w] = lo32; r[w + 1] = hi32;
+    }
+    ps2HiLoStore(ctx, v);
+    ps2MmiSetGprWords(ctx, rd, r);
+}
+// PDIVW / PDIVUW: words 0 and 2 -> LO/HI doublewords (sign-extended quotient / remainder).
+template <class Ctx>
+inline void ps2MmiWordDiv(Ctx *ctx, int rs, int rt, bool isUnsigned)
+{
+    uint32_t s[4], t[4];
+    ps2MmiGprWords(ctx, rs, s); ps2MmiGprWords(ctx, rt, t);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    for (int k = 0; k < 2; ++k)
+    {
+        const int w = k * 2;
+        uint32_t q, rem;
+        if (isUnsigned)
+        {
+            if (t[w] == 0u) { q = 0xFFFFFFFFu; rem = s[w]; }
+            else { q = s[w] / t[w]; rem = s[w] % t[w]; }
+        }
+        else
+        {
+            const int32_t a = static_cast<int32_t>(s[w]), b = static_cast<int32_t>(t[w]);
+            if (b == 0) { q = a < 0 ? 1u : 0xFFFFFFFFu; rem = static_cast<uint32_t>(a); }
+            else if (a == INT32_MIN && b == -1) { q = 0x80000000u; rem = 0u; }
+            else { q = static_cast<uint32_t>(a / b); rem = static_cast<uint32_t>(a % b); }
+        }
+        v.lo[w] = q; v.lo[w + 1] = (q & 0x80000000u) ? 0xFFFFFFFFu : 0u;
+        v.hi[w] = rem; v.hi[w + 1] = (rem & 0x80000000u) ? 0xFFFFFFFFu : 0u;
+    }
+    ps2HiLoStore(ctx, v);
+}
+// PDIVBW: the four words of rs divided by halfword 0 of rt.
+template <class Ctx>
+inline void ps2MmiDivBw(Ctx *ctx, int rs, int rt)
+{
+    uint32_t s[4], t[4];
+    ps2MmiGprWords(ctx, rs, s); ps2MmiGprWords(ctx, rt, t);
+    const int32_t b = ps2MmiHalf(t, 0);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    for (int i = 0; i < 4; ++i)
+    {
+        const int32_t a = static_cast<int32_t>(s[i]);
+        int32_t q, rem;
+        if (b == 0) { q = a < 0 ? 1 : -1; rem = a; }
+        else if (a == INT32_MIN && b == -1) { q = INT32_MIN; rem = 0; }
+        else { q = a / b; rem = a % b; }
+        v.lo[i] = static_cast<uint32_t>(q);
+        v.hi[i] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(rem)));
+    }
+    ps2HiLoStore(ctx, v);
+}
+template <class Ctx>
+inline void ps2MmiMoveFromHiLo(Ctx *ctx, int rd, bool fromHi)
+{
+    const Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    ps2MmiSetGprWords(ctx, rd, fromHi ? v.hi : v.lo);
+}
+template <class Ctx>
+inline void ps2MmiMoveToHiLo(Ctx *ctx, int rs, bool toHi)
+{
+    uint32_t s[4];
+    ps2MmiGprWords(ctx, rs, s);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    uint32_t *dst = toHi ? v.hi : v.lo;
+    for (int i = 0; i < 4; ++i)
+        dst[i] = s[i];
+    ps2HiLoStore(ctx, v);
+}
+inline uint32_t ps2MmiSat16(int32_t x) { return static_cast<uint16_t>(x > 32767 ? 32767 : x < -32768 ? -32768 : x); }
+// PMFHL fmt: 0 LW, 1 UW, 2 SLW, 3 LH, 4 SH.
+template <class Ctx>
+inline void ps2MmiPmfhl(Ctx *ctx, int rd, int fmt)
+{
+    const Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    uint32_t r[4] = {0u, 0u, 0u, 0u};
+    switch (fmt)
+    {
+    case 0: r[0] = v.lo[0]; r[1] = v.hi[0]; r[2] = v.lo[2]; r[3] = v.hi[2]; break;
+    case 1: r[0] = v.lo[1]; r[1] = v.hi[1]; r[2] = v.lo[3]; r[3] = v.hi[3]; break;
+    case 2:
+        for (int k = 0; k < 2; ++k)
+        {
+            const int64_t x = static_cast<int64_t>((static_cast<uint64_t>(v.hi[k * 2]) << 32) | v.lo[k * 2]);
+            const int64_t sat = x > INT32_MAX ? INT32_MAX : x < INT32_MIN ? INT32_MIN : x;
+            r[k * 2] = static_cast<uint32_t>(sat);
+            r[k * 2 + 1] = sat < 0 ? 0xFFFFFFFFu : 0u;
+        }
+        break;
+    case 3:
+        r[0] = (v.lo[0] & 0xFFFFu) | (v.lo[1] << 16);
+        r[1] = (v.hi[0] & 0xFFFFu) | (v.hi[1] << 16);
+        r[2] = (v.lo[2] & 0xFFFFu) | (v.lo[3] << 16);
+        r[3] = (v.hi[2] & 0xFFFFu) | (v.hi[3] << 16);
+        break;
+    case 4:
+        r[0] = ps2MmiSat16(static_cast<int32_t>(v.lo[0])) | (ps2MmiSat16(static_cast<int32_t>(v.lo[1])) << 16);
+        r[1] = ps2MmiSat16(static_cast<int32_t>(v.hi[0])) | (ps2MmiSat16(static_cast<int32_t>(v.hi[1])) << 16);
+        r[2] = ps2MmiSat16(static_cast<int32_t>(v.lo[2])) | (ps2MmiSat16(static_cast<int32_t>(v.lo[3])) << 16);
+        r[3] = ps2MmiSat16(static_cast<int32_t>(v.hi[2])) | (ps2MmiSat16(static_cast<int32_t>(v.hi[3])) << 16);
+        break;
+    default: return;
+    }
+    ps2MmiSetGprWords(ctx, rd, r);
+}
+// PMTHL.LW: rs words 0..3 -> LO0 HI0 LO2 HI2.
+template <class Ctx>
+inline void ps2MmiPmthl(Ctx *ctx, int rs)
+{
+    uint32_t s[4];
+    ps2MmiGprWords(ctx, rs, s);
+    Ps2HiLo128 v = ps2HiLoLoad(ctx);
+    v.lo[0] = s[0]; v.hi[0] = s[1]; v.lo[2] = s[2]; v.hi[2] = s[3];
+    ps2HiLoStore(ctx, v);
+}
 
 #endif // PS2_RUNTIME_MACROS_H

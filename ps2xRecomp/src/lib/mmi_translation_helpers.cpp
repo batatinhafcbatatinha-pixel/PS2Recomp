@@ -105,9 +105,9 @@ namespace ps2recomp
         case MMI1_PEXTUW:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PADDUH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_add_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_adds_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt); // unsigned saturating
         case MMI1_PSUBUH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_sub_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_subs_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt); // unsigned saturating
         case MMI1_PEXTUH:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PADDUB:
@@ -133,23 +133,23 @@ namespace ps2recomp
         switch (subfunc)
         {
         case MMI2_PMADDW:
-            return translatePMADDW(inst);
+            return fmt::format("ps2MmiWordMul(ctx, {}, {}, {}, false, 1);", rd, rs, rt);
         case MMI2_PSLLVW:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PSLLVW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI2_PSRLVW:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PSRLVW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI2_PMSUBW:
-            return translatePMSUBW(inst);
+            return fmt::format("ps2MmiWordMul(ctx, {}, {}, {}, false, -1);", rd, rs, rt);
         case MMI2_PMFHI:
-            return fmt::format("SET_GPR_U64(ctx, {}, ctx->hi);", rd);
+            return fmt::format("ps2MmiMoveFromHiLo(ctx, {}, true);", rd);
         case MMI2_PMFLO:
-            return fmt::format("SET_GPR_U64(ctx, {}, ctx->lo);", rd);
+            return fmt::format("ps2MmiMoveFromHiLo(ctx, {}, false);", rd);
         case MMI2_PINTH:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PINTH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI2_PMULTW:
-            return translatePMULTW(inst);
+            return fmt::format("ps2MmiWordMul(ctx, {}, {}, {}, false, 0);", rd, rs, rt);
         case MMI2_PDIVW:
-            return translatePDIVW(inst);
+            return fmt::format("ps2MmiWordDiv(ctx, {}, {}, false);", rs, rt);
         case MMI2_PCPYLD:
             return translatePCPYLD(inst);
         case MMI2_PAND:
@@ -157,21 +157,21 @@ namespace ps2recomp
         case MMI2_PXOR:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PXOR(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI2_PMADDH:
-            return translatePMADDH(inst);
+            return fmt::format("ps2MmiHalfMul(ctx, {}, {}, {}, 1);", rd, rs, rt);
         case MMI2_PHMADH:
-            return translatePHMADH(inst);
+            return fmt::format("ps2MmiHalfHorizontal(ctx, {}, {}, {}, false);", rd, rs, rt);
         case MMI2_PMSUBH:
-            return translatePMSUBH(inst);
+            return fmt::format("ps2MmiHalfMul(ctx, {}, {}, {}, -1);", rd, rs, rt);
         case MMI2_PHMSBH:
-            return translatePHMSBH(inst);
+            return fmt::format("ps2MmiHalfHorizontal(ctx, {}, {}, {}, true);", rd, rs, rt);
         case MMI2_PEXEH:
             return translatePEXEH(inst);
         case MMI2_PREVH:
             return translatePREVH(inst);
         case MMI2_PMULTH:
-            return translatePMULTH(inst);
+            return fmt::format("ps2MmiHalfMul(ctx, {}, {}, {}, 0);", rd, rs, rt);
         case MMI2_PDIVBW:
-            return translatePDIVBW(inst);
+            return fmt::format("ps2MmiDivBw(ctx, {}, {});", rs, rt);
         case MMI2_PEXEW:
             return translatePEXEW(inst);
         case MMI2_PROT3W:
@@ -191,19 +191,19 @@ namespace ps2recomp
         switch (subfunc)
         {
         case MMI3_PMADDUW:
-            return translatePMADDUW(inst);
+            return fmt::format("ps2MmiWordMul(ctx, {}, {}, {}, true, 1);", rd, rs, rt);
         case MMI3_PSRAVW:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PSRAVW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI3_PMTHI:
-            return translatePMTHI(inst);
+            return fmt::format("ps2MmiMoveToHiLo(ctx, {}, true);", rs);
         case MMI3_PMTLO:
-            return translatePMTLO(inst);
+            return fmt::format("ps2MmiMoveToHiLo(ctx, {}, false);", rs);
         case MMI3_PINTEH:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PINTEH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI3_PMULTUW:
-            return translatePMULTUW(inst);
+            return fmt::format("ps2MmiWordMul(ctx, {}, {}, {}, true, 0);", rd, rs, rt);
         case MMI3_PDIVUW:
-            return translatePDIVUW(inst);
+            return fmt::format("ps2MmiWordDiv(ctx, {}, {}, true);", rs, rt);
         case MMI3_PCPYUD:
             return translatePCPYUD(inst);
         case MMI3_POR:
@@ -228,15 +228,15 @@ namespace ps2recomp
         switch (subfunc)
         {
         case PMFHL_LW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_LW(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format("ps2MmiPmfhl(ctx, {}, 0);", inst.rd);
         case PMFHL_UW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_UW(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format("ps2MmiPmfhl(ctx, {}, 1);", inst.rd);
         case PMFHL_SLW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_SLW(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format("ps2MmiPmfhl(ctx, {}, 2);", inst.rd);
         case PMFHL_LH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_LH(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format("ps2MmiPmfhl(ctx, {}, 3);", inst.rd);
         case PMFHL_SH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_SH(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format("ps2MmiPmfhl(ctx, {}, 4);", inst.rd);
         default:
             return emitUnhandledInstruction(inst, fmt::format("Unhandled PMFHL instruction: function 0x{:X}", subfunc));
         }
@@ -249,7 +249,7 @@ namespace ps2recomp
         switch (subfunc)
         {
         case PMFHL_LW:
-            return fmt::format("{{ __m128i val = GPR_VEC(ctx, {}); ctx->lo = _mm_extract_epi32(val, 0); ctx->hi = _mm_extract_epi32(val, 1); }}", inst.rs);
+            return fmt::format("ps2MmiPmthl(ctx, {});", inst.rs);
         default:
             return emitUnhandledInstruction(inst, fmt::format("Unhandled PMTHL instruction: function 0x{:X}", subfunc));
         }
@@ -454,16 +454,16 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePEXEH(const Instruction &inst)
     {
-        // Swaps halfwords 1<->3 and 5<->7 within the 128-bit register
-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(2,3,0,1)), _MM_SHUFFLE(2,3,0,1)));",
+        // Exchange even halfwords in each doubleword: h2, h1, h0, h3
+        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(3,0,1,2)), _MM_SHUFFLE(3,0,1,2)));",
                            inst.rd, inst.rt);
     }
 
 
     std::string CodeGenerator::translatePREVH(const Instruction &inst)
     {
-        // Reverses the order of the 8 halfwords
-        return fmt::format("{{ __m128i mask = _mm_setr_epi8(14,15, 12,13, 10,11, 8,9, 6,7, 4,5, 2,3, 0,1); "
+        // Reverses the four halfwords of each doubleword
+        return fmt::format("{{ __m128i mask = _mm_setr_epi8(6,7, 4,5, 2,3, 0,1, 14,15, 12,13, 10,11, 8,9); "
                            "SET_GPR_VEC(ctx, {}, PS2_SHUFFLE_EPI8(GPR_VEC(ctx, {}), mask)); }}",
                            inst.rd, inst.rt);
     }
@@ -520,8 +520,8 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePROT3W(const Instruction &inst)
     {
-        // Rotates words left by 3: [d,c,b,a] -> [a,d,c,b]
-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(0,3,2,1)));",
+        // Rotates the low three words: w1, w2, w0, w3
+        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(3,0,2,1)));",
                            inst.rd, inst.rt);
     }
 
@@ -560,8 +560,8 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePEXCH(const Instruction &inst)
     {
-        // Parallel Exchange Center Halfword (same as MMI2 PEXEH)
-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(2,3,0,1)), _MM_SHUFFLE(2,3,0,1)));",
+        // Parallel Exchange Center Halfword in each doubleword: h0, h2, h1, h3
+        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(3,1,2,0)), _MM_SHUFFLE(3,1,2,0)));",
                            inst.rd, inst.rt);
     }
 
@@ -577,8 +577,8 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePEXCW(const Instruction &inst)
     {
-        // Parallel Exchange Center Word (Swaps words 0<>2, 1<>3)
-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(1,0,3,2)));",
+        // Parallel Exchange Center Word: w0, w2, w1, w3
+        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(3,1,2,0)));",
                            inst.rd, inst.rt);
     }
 
