@@ -1,3 +1,4 @@
+#include "ps2_timed_wait.h"
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -2180,7 +2181,7 @@ void EeScheduler::processDueDeadlines()
 
             if (now < pacingDeadline)
             {
-                m_eventCv.wait_until(lock, pacingDeadline, [this]()
+                ps2_wait::waitUntil(m_eventCv, lock, pacingDeadline, [this]()
                                      { return !m_events.empty() ||
                                               m_stopRequested.load(std::memory_order_acquire); });
                 if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
@@ -2479,7 +2480,7 @@ void EeScheduler::waitForEvent()
 
     PS2TL(TL_EE_IDLE_BEGIN);
     const auto idleStart = std::chrono::steady_clock::now();
-    const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
+    const bool signaled = ps2_wait::waitUntil(m_eventCv, lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });
     g_perfIdleNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - idleStart).count();

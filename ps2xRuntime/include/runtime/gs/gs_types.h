@@ -125,6 +125,9 @@ struct GSFrameReg
     uint32_t fbw = 0;
     uint8_t psm = 0;
     uint32_t fbmsk = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSFrameReg &) const = default;
 };
 
 struct GSZbufReg
@@ -132,6 +135,9 @@ struct GSZbufReg
     uint32_t zbp = 0;
     uint8_t psm = 0;
     bool zmask = false;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSZbufReg &) const = default;
 };
 
 struct GSScissorReg
@@ -140,6 +146,9 @@ struct GSScissorReg
     uint16_t x1 = 0;
     uint16_t y0 = 0;
     uint16_t y1 = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSScissorReg &) const = default;
 };
 
 struct GSTex0Reg
@@ -156,12 +165,18 @@ struct GSTex0Reg
     uint8_t csm = 0;
     uint8_t csa = 0;
     uint8_t cld = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSTex0Reg &) const = default;
 };
 
 struct GSXYOffsetReg
 {
     uint16_t ofx = 0;
     uint16_t ofy = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSXYOffsetReg &) const = default;
 };
 
 struct GSTexaReg
@@ -169,6 +184,9 @@ struct GSTexaReg
     uint8_t ta0 = 0;
     bool aem = false;
     uint8_t ta1 = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSTexaReg &) const = default;
 };
 
 struct GSTexClutReg
@@ -176,6 +194,9 @@ struct GSTexClutReg
     uint8_t cbw = 0;
     uint8_t cou = 0;
     uint16_t cov = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSTexClutReg &) const = default;
 };
 
 struct GSContext
@@ -192,6 +213,9 @@ struct GSContext
     uint64_t alpha = 0;
     uint64_t test = 0;
     uint64_t fba = 0;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSContext &) const = default;
 };
 
 struct GSPrimReg
@@ -205,6 +229,9 @@ struct GSPrimReg
     bool fst = false;
     bool ctxt = false;
     bool fix = false;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSPrimReg &) const = default;
 };
 
 struct GSBitBltBuf
@@ -249,6 +276,9 @@ struct GSDrawState
     uint16_t textureWidth = 1;
     uint16_t textureHeight = 1;
     bool linearFilter = false;
+
+    // Field by field: the padding between fields is not part of the state (memcmp saw garbage there with Clang).
+    bool operator==(const GSDrawState &) const = default;
 };
 
 struct GSPrimitiveBatch

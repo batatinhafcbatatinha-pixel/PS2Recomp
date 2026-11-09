@@ -28,6 +28,7 @@
 #include <thread>
 #include <tuple>
 #include <type_traits>
+#include "ps2_timed_wait.h"
 
 void ps2ProfilerRegisterCurrentThread(const char *name);
 namespace GSGL
@@ -1606,7 +1607,9 @@ struct GSHwBackend::Impl
     // ---- drawing --------------------------------------------------------------------------------------------------
     static bool sameState(const GSDrawState &a, const GSDrawState &b)
     {
-        return std::memcmp(&a, &b, sizeof(GSDrawState)) == 0;
+        // Not memcmp: GSDrawState has padding, which Clang leaves uninitialized, so no two draws ever matched and
+        // nothing was batched (Ben 10 under llvm-mingw: 4 million GL draws instead of 3 thousand batches).
+        return a == b;
     }
 
     float zInverseOf = 0.0f;

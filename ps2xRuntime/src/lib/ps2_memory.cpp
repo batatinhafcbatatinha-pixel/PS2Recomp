@@ -1,3 +1,4 @@
+#include "ps2_timed_wait.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_timeline.h"
 #include <intrin.h>
@@ -643,7 +644,7 @@ bool PS2Memory::deferGsPrivWrite(uint32_t address, uint64_t value, uint64_t mask
         const auto waitStart = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(g_vifWorker.mutex);
         while (g_deferredPrivWrites.load(std::memory_order_acquire) + 5u >= kMaxDeferredDisplayWrites)
-            g_vifWorker.idle.wait_for(lock, std::chrono::microseconds(200));
+            ps2_wait::waitFor(g_vifWorker.idle, lock, std::chrono::microseconds(200));
         lock.unlock();
         g_perfSyncNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count();
         PS2TL(TL_BACKLOG_END);

@@ -21,6 +21,16 @@ extern "C"
 
 #include "Syscalls/Helpers/State.h"
 
+namespace
+{
+    // Read once: the demux loop runs every frame of a movie, and getenv walks the whole environment under a lock.
+    bool mpegTraceOn()
+    {
+        static const bool on = std::getenv("PS2X_MPEG_TRACE") != nullptr;
+        return on;
+    }
+}
+
 namespace ps2_stubs
 {
     namespace
@@ -2255,7 +2265,7 @@ namespace ps2_stubs
 
         if (backpressured)
         {
-            if (std::getenv("PS2X_MPEG_TRACE") && traceIdx < 200u)
+            if (mpegTraceOn() && traceIdx < 200u)
                 std::cerr << "[mpeg:demux-ring] #" << traceIdx << " BACKPRESSURE avail=" << availableBytes << std::endl;
             if (traceIdx < 32u)
             {
@@ -2375,7 +2385,7 @@ namespace ps2_stubs
                     ++g_mpeg_stub_state.getPictureWaitTraceCount;
                 }
                 static uint32_t tracedEmpty = 0;
-                if (std::getenv("PS2X_MPEG_TRACE") && tracedEmpty++ < 40u)
+                if (mpegTraceOn() && tracedEmpty++ < 40u)
                     std::cerr << "[mpeg:picture-empty] served=" << playback.picturesServed
                               << " seqEnd=" << playback.sawSequenceEnd << " pss=" << playback.pssBuffer.size()
                               << " produced=" << g_mpeg_stub_state.cdStreamBytesProduced
@@ -2419,7 +2429,7 @@ namespace ps2_stubs
                 {
                     const uint64_t eligibleTick = (presentationTargetQ32 + kPictureClockOne - 1u) >> 32u;
                     static uint32_t tracedWaits = 0;
-                    if (std::getenv("PS2X_MPEG_TRACE") && tracedWaits++ < 40u)
+                    if (mpegTraceOn() && tracedWaits++ < 40u)
                         std::cerr << "[mpeg:picture-wait] tick=" << currentTick << " eligible=" << eligibleTick
                                   << " pts=" << nextFrame.pts90k << " firstPts=" << playback.firstPresentedPts90k
                                   << " served=" << playback.picturesServed << std::endl;

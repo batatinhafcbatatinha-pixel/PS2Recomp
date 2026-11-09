@@ -19,7 +19,7 @@ namespace GlAsync
         if (sleeping.load(std::memory_order_seq_cst))
         {
             sleeping.store(false, std::memory_order_seq_cst);
-            sleeping.notify_one();
+            ps2_wait::wakeOne(&sleeping);
         }
     }
 
@@ -134,7 +134,11 @@ namespace GlAsync
                 }
                 sleeping.store(true, std::memory_order_seq_cst);
                 if (writePos.load(std::memory_order_seq_cst) == position)
-                    sleeping.wait(true, std::memory_order_seq_cst);
+                {
+                    const bool asleep = true;
+                    // Spurious returns are fine: the loop checks writePos again.
+                    ps2_wait::waitWhileEqual(&sleeping, &asleep, sizeof(asleep));
+                }
                 sleeping.store(false, std::memory_order_seq_cst);
                 spin = 0u;
             }

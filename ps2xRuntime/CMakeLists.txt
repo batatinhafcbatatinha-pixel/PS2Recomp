@@ -561,11 +561,11 @@ if(PS2X_SPLIT_GAME_CODE)
     add_library(ps2_game_code STATIC ${PS2X_GAME_SRC_FILES})
     add_executable(ps2EntryRunner ${PS2X_ENTRY_SRC_FILES})
     set(PS2X_GAME_CODE_TARGET ps2_game_code)
-    # Clang (llvm-mingw, Linux, macOS) spends hours optimizing one multi-megabyte translated function (Ben 10's
-    # FUN_0028b290 is 6.9 MB): a generated file over 2 MB, or a chunk that includes one, is compiled at -O0, after the
-    # game's own -O1 and without the precompiled header (built at the game's level).
-    if(NOT MSVC)
-        set(PS2X_HUGE_GAME_SOURCE_BYTES 2000000 CACHE STRING "Generated sources larger than this are compiled at -O0 by Clang/GCC")
+    # Clang's loop rotation never finishes on one multi-megabyte translated function (Ben 10's FUN_0028b290: 6.9 MB,
+    # 22k resumable labels; over 50 minutes at -O1). Without rotation the same -O1 takes 42 s, and -O0 instead made the
+    # game far slower. A generated file over 2 MB, or a chunk that includes one, is compiled without loop rotation.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+        set(PS2X_HUGE_GAME_SOURCE_BYTES 2000000 CACHE STRING "Generated sources larger than this are compiled without loop rotation by Clang")
         foreach(src IN LISTS PS2X_GAME_SRC_FILES)
             set(huge FALSE)
             if(EXISTS "${src}")
@@ -588,7 +588,7 @@ if(PS2X_SPLIT_GAME_CODE)
                 endif()
             endif()
             if(huge)
-                set_source_files_properties("${src}" PROPERTIES COMPILE_OPTIONS "-O0" SKIP_PRECOMPILE_HEADERS ON)
+                set_source_files_properties("${src}" PROPERTIES COMPILE_OPTIONS "-mllvm;-rotation-max-header-size=0")
             endif()
         endforeach()
     endif()
@@ -716,7 +716,7 @@ if(NOT MSVC AND NOT PS2X_IS_ARM_TARGET AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_6
 endif()
 if(WIN32)
     # Native GS renderer (gs/gpu): its own WGL context on the GS thread.
-    target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32 dbghelp)   # dbghelp: the sampling profiler (MinGW ignores its #pragma comment)
+    target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32 dbghelp synchronization)   # dbghelp: the sampling profiler (MinGW ignores its #pragma comment)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
     target_link_libraries(ps2_runtime PRIVATE OpenGL::EGL OpenGL::OpenGL ${CMAKE_DL_LIBS})
