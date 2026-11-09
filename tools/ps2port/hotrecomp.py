@@ -14,6 +14,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -85,13 +86,19 @@ def function_end(ram, start, limit=0x10000):
     return a
 
 
-def write_elf(path, ram, entry):
-    """A minimal ELF32 MIPS executable: the whole RAM as one RWX PT_LOAD at virtual address 0."""
+def write_elf(path, ram, entry, start=0, end=None):
+    """A minimal ELF32 MIPS executable: RAM[start:end] as one RWX PT_LOAD at its own address.
+
+    Only the function's own bytes (plus a margin) go in: with all 32 MB the translator analysed the whole image and
+    took about 3.5 minutes for one function; indirect jumps it cannot resolve fall back to the runtime's dispatch.
+    """
+    end = len(ram) if end is None else end
+    data = ram[start:end]
     ehdr = struct.pack('<16sHHIIIIIHHHHHH', b'\x7fELF\x01\x01\x01' + b'\0' * 9, 2, 8, 1, entry, 52, 0, 0, 52, 32, 1, 40, 0, 0)
-    phdr = struct.pack('<8I', 1, 0x1000, 0, 0, len(ram), len(ram), 7, 0x1000)
+    phdr = struct.pack('<8I', 1, 0x1000, start, start, len(data), len(data), 7, 0x1000)
     with open(path, 'wb') as f:
         f.write(ehdr + phdr + b'\0' * (0x1000 - 52 - 32))
-        f.write(ram)
+        f.write(data)
 
 
 def ninja_flags(port):
@@ -101,8 +108,17 @@ def ninja_flags(port):
     if not m:
         raise SystemExit('build.ninja has no ps2_game_code compile; build the game first')
     vals = dict(re.findall(r'  ([A-Z_]+) = ([^\n]*)', m.group(1)))
-    flags = vals.get('FLAGS', '').split()
-    flags = [f for f in flags if not f.startswith(('/Yu', '/Fp', '/FI', '-include'))]
+    tokens = vals.get('FLAGS', '').split()
+    flags, i = [], 0
+    while i < len(tokens):
+        t = tokens[i]
+        # Clang (llvm-mingw): -Xclang -include-pch -Xclang <file> / -Xclang -include -Xclang <file>, four tokens each.
+        if t == '-Xclang' and i + 3 < len(tokens) and tokens[i + 1] in ('-include-pch', '-include') and tokens[i + 2] == '-Xclang':
+            i += 4
+            continue
+        if not t.startswith(('/Yu', '/Fp', '/FI', '-include', '-Winvalid-pch')):
+            flags.append(t)
+        i += 1
     return flags + vals.get('DEFINES', '').split() + shlex.split(vals.get('INCLUDES', ''), posix=False)
 
 
@@ -119,13 +135,15 @@ def main():
     def run(cmd, cwd=None):
         log.write('> ' + ' '.join(map(str, cmd)) + '\n')
         log.flush()
+        started = time.monotonic()
         r = subprocess.run([str(c) for c in cmd], cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
+        log.write(f'({time.monotonic() - started:.1f} s)\n')
         if r.returncode:
             raise SystemExit(f'failed: {cmd[0]}')
 
     ram = (out / f'ram_{hexaddr}.bin').read_bytes()
     end = function_end(ram, address)
-    write_elf(work / 'ram.elf', ram, address)
+    write_elf(work / 'ram.elf', ram, address, address & ~0xFFF, min(len(ram), ((end + 0x1000) + 0xFFF) & ~0xFFF))
     (work / 'map.csv').write_text('Name,Start,End,Size\n' + f'hot_{hexaddr},0x{address:08X},0x{end:08X},{end - address}\n')
     (work / 'hot.toml').write_text('\n'.join([
         '[general]', 'input = "ram.elf"', 'output = "gen"', 'ghidra_output = "map.csv"', 'single_file_output = false',

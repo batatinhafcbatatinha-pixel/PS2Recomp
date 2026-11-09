@@ -1,3 +1,4 @@
+#include "ps2_patches.h"
 #include "ps2x/iop/iop_audio.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <pthread.h>
@@ -1383,6 +1384,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
                                       m_cpuContext.pc,
                                       elfCrc32,
                                       elfCrc32Valid);
+
+    ps2_patches::load(*this, m_memory.getRDRAM()); // the launcher's patches and cheats (PS2X_PATCHES)
 
     RUNTIME_LOG("ELF file loaded successfully. Entry point: 0x" << std::hex << m_cpuContext.pc << std::dec);
     return true;

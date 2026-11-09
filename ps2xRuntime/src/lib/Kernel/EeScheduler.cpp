@@ -1,4 +1,5 @@
 #include "ps2_timed_wait.h"
+#include "ps2_patches.h"
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -2248,6 +2249,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        ps2_patches::everyVblank(m_rdram); // cheats that hold a value
         m_runtime.memory().raiseIntcStat(1u << 2u); // INTC_STAT VBLANK_START
         ++m_vsyncTick;
         PS2TL(TL_VBLANK, static_cast<uint32_t>(m_vsyncTick));

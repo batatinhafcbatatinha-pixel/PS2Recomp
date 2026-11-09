@@ -93,7 +93,9 @@ PS2Runtime::RecompiledFunction ps2xHotRecompile(uint8_t *rdram, uint32_t address
 {
     static const char *script = std::getenv("PS2X_HOTRECOMP");
     static const char *observe = std::getenv("PS2X_OBSERVE_DIR");
-    if (!script || !*script || !observe || !*observe || !rdram)
+    // A library made earlier (a run, or tools/ps2port hotpatch for the launcher's patches) loads without the
+    // translator; translating a new one needs PS2X_HOTRECOMP.
+    if (!observe || !*observe || !rdram)
         return nullptr;
     g_rdram = rdram;
     const uint32_t offset = address & (PS2_RAM_SIZE - 1u);
@@ -121,6 +123,8 @@ PS2Runtime::RecompiledFunction ps2xHotRecompile(uint8_t *rdram, uint32_t address
 #endif
     if (!std::filesystem::exists(library, ec))
     {
+        if (!script || !*script)
+            return nullptr;
         const std::filesystem::path ram = dir / ("ram_" + std::string(tag) + ".bin");
         if (FILE *f = std::fopen(ram.string().c_str(), "wb"))
         {

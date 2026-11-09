@@ -20,6 +20,10 @@ Steps (each skips itself when its output is newer than its inputs; --force redoe
   prepare   tools ghidra analyze config generate gaps sdk finish iop vu1   (everything before compile)
   all       prepare + compile
   play      run the game (records missing functions and VU1 programs for the next build)
+  hotpatch  patches.pnach / cheats.pnach of the port folder (PCSX2 format, written by the launcher) as run-time
+            changes: writes to code retranslate just those functions into small libraries (observed/hot), the
+            rest are memory writes the runtime makes at boot or every frame (observed/patches.txt). Seconds, no
+            rebuild; turning a patch off is running it again without it.
 """
 import argparse
 import csv
@@ -86,6 +90,26 @@ class Port:
 
 def log(msg):
     print(msg, flush=True)
+
+
+def pnach_writes(path):
+    """The EE writes of a PCSX2 .pnach: (when, address, size, value); when is 'once' (patch=0) or 'frame'."""
+    sizes = {'byte': 1, 'short': 2, 'word': 4}
+    out = []
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        line = line.split('//')[0].strip()
+        m = re.match(r'patch\s*=\s*(\d+)\s*,\s*EE\s*,\s*([0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*([0-9A-Fa-f]+)', line)
+        if not m:
+            continue
+        address, kind, value = int(m.group(2), 16), m.group(3).lower(), int(m.group(4), 16)
+        size = sizes.get(kind)
+        if kind == 'extended' and (address >> 28) in (0, 1, 2):   # cheat-style 8/16/32-bit writes
+            size = (1, 2, 4)[address >> 28]
+        if not size:
+            continue                                           # conditionals and other code types: not supported
+        out.append(('once' if m.group(1) == '0' else 'frame', address & 0x01FFFFFF, size,
+                    value & ((1 << (8 * size)) - 1)))
+    return out
 
 
 def newer(target, *sources):
@@ -530,6 +554,8 @@ def step_compile(port, args):
             log(f'compile stopped; resuming with {jobs} jobs')
             time.sleep(10)
     log('compile: ' + str(native / 'ps2recomp/ps2xRuntime/ps2EntryRunner.exe'))
+    if any((port.dir / n).is_file() for n in ('patches.pnach', 'cheats.pnach')):
+        step_hotpatch(port, args)   # the patches and cheats chosen in the launcher
 
 
 def free_ram_gb():
@@ -588,7 +614,84 @@ def game_env(port, args):
                     env.setdefault(k, v)
         env.setdefault('PS2X_HOTRECOMP', str(HERE / 'hotrecomp.py'))
         env.setdefault('PS2X_HOTRECOMP_PYTHON', sys.executable)
+    if (port.observed / 'patches.txt').is_file():
+        env.setdefault('PS2X_PATCHES', str(port.observed / 'patches.txt'))   # chosen patches and cheats (hotpatch)
     return env
+
+
+def fnv32(data):
+    h = 2166136261
+    for b in data:
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def step_hotpatch(port, args):
+    sources = [p for p in (port.dir / 'patches.pnach', port.dir / 'cheats.pnach') if p.is_file()]
+    listing = port.observed / 'patches.txt'
+    writes = [w for p in sources for w in pnach_writes(p)]
+    if not writes:
+        listing.unlink(missing_ok=True)
+        log('hotpatch: no patches or cheats chosen')
+        return
+    import struct
+    elf = Path(port.elf_path).read_bytes()
+    phoff, = struct.unpack_from('<I', elf, 28)
+    phentsize, phnum = struct.unpack_from('<HH', elf, 42)
+    ram = bytearray(32 * 1024 * 1024)
+    code = []
+    for i in range(phnum):
+        kind, offset, vaddr, _, filesz, _, flags, _ = struct.unpack_from('<8I', elf, phoff + i * phentsize)
+        if kind == 1:
+            ram[vaddr & 0x01FFFFFF:(vaddr & 0x01FFFFFF) + filesz] = elf[offset:offset + filesz]
+            if flags & 1:
+                code.append((vaddr & 0x01FFFFFF, (vaddr & 0x01FFFFFF) + filesz))
+    functions = []
+    for name in ('ghidra-functions-capped.csv', 'gap-functions.csv'):
+        f = port.cfg / name
+        if f.is_file():
+            for row in csv.DictReader(f.open(encoding='utf-8')):
+                try:
+                    functions.append((int(row['Start'], 16), int(row['End'], 16)))
+                except (KeyError, ValueError):
+                    pass
+    touched = set()
+    for when, address, size, value in writes:
+        ram[address:address + size] = value.to_bytes(size, 'little')
+        if any(lo <= address < hi for lo, hi in code):
+            start = next((lo for lo, hi in functions if lo <= address < hi), None)
+            if start is None:
+                log(f'hotpatch: 0x{address:x} is code outside every known function; written to memory only')
+            else:
+                touched.add(start)
+    hot = port.observed / 'hot'
+    hot.mkdir(parents=True, exist_ok=True)
+    built = []
+    can_compile = (port.build / 'native' / 'build.ninja').is_file()
+    for start in sorted(touched):
+        tag = f'{start:08x}_{fnv32(ram[start:start + 64]):08x}'
+        library = hot / (f'hot_{tag}.dll' if os.name == 'nt' else f'hot_{tag}.so')
+        if not library.is_file():
+            if not can_compile:
+                log(f'hotpatch: 0x{start:x} is compiled with the game (the game is not built yet)')
+                continue
+            (hot / f'ram_{tag}.bin').write_bytes(ram)
+            log(f'hotpatch: translating 0x{start:x}')
+            r = subprocess.run([sys.executable, str(HERE / 'hotrecomp.py'), str(hot), tag], env=compile_env(port))
+            (hot / f'ram_{tag}.bin').unlink(missing_ok=True)
+            if r.returncode or not library.is_file():
+                raise SystemExit(f'hotpatch: 0x{start:x} failed; see {hot / f"hot_{tag}.log"}')
+        built.append(start)
+    lines = ['# Written by tools/ps2port hotpatch from ' + ', '.join(p.name for p in sources) + '; do not edit.']
+    lines += [f'{when} {address:08x} {size} {value:x}' for when, address, size, value in writes]
+    lines += [f'hot {start:08x}' for start in built]
+    listing.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    log(f'hotpatch: {len(writes)} writes, {len(built)} functions retranslated ({listing})')
+
+
+def compile_env(port):
+    """The compiler environment hotrecomp needs (Visual Studio, or llvm-mingw's clang on PATH)."""
+    return vc_env() or os.environ.copy()
 
 
 def step_play(port, args):
@@ -659,7 +762,7 @@ def step_smoke(port, args):
 
 STEPS = {'tools': step_tools, 'ghidra': step_ghidra, 'analyze': step_analyze, 'config': step_config,
          'generate': step_generate, 'gaps': step_gaps, 'sdk': step_sdk, 'finish': step_finish, 'iop': step_iop,
-         'vu1': step_vu1, 'compile': step_compile, 'play': step_play, 'smoke': step_smoke}
+         'vu1': step_vu1, 'compile': step_compile, 'play': step_play, 'smoke': step_smoke, 'hotpatch': step_hotpatch}
 PREPARE = ['tools', 'ghidra', 'analyze', 'config', 'generate', 'gaps', 'sdk', 'finish', 'iop', 'vu1']
 
 
