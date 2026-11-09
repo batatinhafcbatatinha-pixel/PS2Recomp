@@ -8,6 +8,7 @@
 #include "runtime/gs/gs_frontend.h"
 #include "ps2_log.h"
 #include <atomic>
+#include <filesystem>
 #include <cstring>
 #include <chrono>
 #include <cstdio>
@@ -1916,6 +1917,75 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
         {
             const auto dctrlIt = m_ioRegisters.find(0x1000E000u);
             const bool dmacEnabled = (dctrlIt == m_ioRegisters.end()) || ((dctrlIt->second & 0x1u) != 0u);
+            // PS2X_DMA_STATS=1: once per second, how many times each DMA channel was started (and its last CHCR,
+            // MADR/TADR/QWC) and the D_CTRL value; shows which paths a scene feeds (e.g. VIF1 idle, MFIFO in use).
+            static const bool dmaStats = std::getenv("PS2X_DMA_STATS") != nullptr;
+            if (dmaStats)
+            {
+                static std::atomic<uint32_t> starts[0x70]{};
+                static uint32_t lastChcr[0x70]{}, lastMadr[0x70]{}, lastTadr[0x70]{}, lastQwc[0x70]{};
+                static auto last = std::chrono::steady_clock::now();
+                static std::mutex statsMutex;
+                const uint32_t ch = ((address - 0x10008000u) >> 8) & 0x7Fu; // 0x00 VIF0, 0x10 VIF1, 0x20 GIF .. 0x54 SPR_TO
+                starts[ch].fetch_add(1u, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(statsMutex);
+                const uint32_t base = address & 0xFFFFFF00u;
+                lastChcr[ch] = value;
+                lastMadr[ch] = m_ioRegisters[base + 0x10u];
+                lastQwc[ch] = m_ioRegisters[base + 0x20u];
+                lastTadr[ch] = m_ioRegisters[base + 0x30u];
+                // Creating analysis/dma-log.trigger logs the next 200 channel starts one by one.
+                static uint32_t logLeft = 0, checkTick = 0;
+                if (logLeft == 0u && (checkTick++ & 63u) == 0u && std::filesystem::exists("analysis/dma-log.trigger"))
+                {
+                    std::filesystem::remove("analysis/dma-log.trigger");
+                    logLeft = 200u;
+                }
+                if (logLeft)
+                {
+                    --logLeft;
+                    std::fprintf(stderr, "[dma-log] %x chcr=%x madr=%x qwc=%x tadr=%x asr0=%x\n", base, value, lastMadr[ch],
+                                 lastQwc[ch], lastTadr[ch], m_ioRegisters[base + 0x40u]);
+                    if ((value & 0xCu) == 0x4u && m_rdram) // source chain: walk the tags without transferring
+                    {
+                        uint32_t t = lastTadr[ch], stack[2]{}, sp = 0;
+                        for (int n = 0; n < 48; ++n)
+                        {
+                            const uint32_t phys = t & 0x1FFFFFF0u;
+                            if ((t & 0x80000000u) || phys + 16u > PS2_RAM_SIZE)
+                            {
+                                std::fprintf(stderr, "    tag@%x (spr/out of range)\n", t);
+                                break;
+                            }
+                            uint32_t w[4];
+                            std::memcpy(w, m_rdram + phys, 16);
+                            const uint32_t id = (w[0] >> 28) & 7u, q = w[0] & 0xFFFFu, addr = w[1];
+                            std::fprintf(stderr, "    tag@%x id=%u qwc=%x addr=%x irq=%u vif=%08x %08x\n", t, id, q, addr, w[0] >> 31, w[2], w[3]);
+                            if (id == 0u) { t = t + 16u + q * 16u; std::fprintf(stderr, "    (refe end)\n"); break; }
+                            else if (id == 1u) t = t + 16u + q * 16u;
+                            else if (id == 2u) t = addr;
+                            else if (id == 3u || id == 4u) t = t + 16u;
+                            else if (id == 5u) { if (sp < 2) stack[sp++] = t + 16u + q * 16u; t = addr; }
+                            else if (id == 6u) { if (sp == 0) { std::fprintf(stderr, "    (ret end)\n"); break; } t = stack[--sp]; }
+                            else { std::fprintf(stderr, "    (end)\n"); break; }
+                        }
+                    }
+                }
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last >= std::chrono::seconds(1))
+                {
+                    last = now;
+                    std::fprintf(stderr, "[dma-stats] dctrl=%x", dctrlIt == m_ioRegisters.end() ? 0u : dctrlIt->second);
+                    for (uint32_t i = 0; i < 0x70u; ++i)
+                    {
+                        const uint32_t n = starts[i].exchange(0u);
+                        if (n)
+                            std::fprintf(stderr, " %x:%u(chcr=%x madr=%x qwc=%x tadr=%x)", 0x8000u + i * 0x100u, n, lastChcr[i],
+                                         lastMadr[i], lastQwc[i], lastTadr[i]);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+            }
             if (!dmacEnabled)
             {
                 return true;

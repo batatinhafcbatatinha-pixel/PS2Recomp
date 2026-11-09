@@ -12,3 +12,8 @@ handlers = "handlers.cpp"   # stream callback re-entered by its own lock holder
 # angles). The game's own maths runs instead.
 exclude = ["sin", "cos", "atan", "atan2", "pow", "sqrt", "floor", "fabs", "__kernel_sinf", "__kernel_cosf", "__ieee754_rem_pio2f"]
 native = ["sceGsSyncV", "sceGsSyncVCallback", "sceGsResetGraph", "sceGsSetDefStoreImage", "sceGsExecStoreImage", "InitThread"]
+
+[env]
+# The hw GS renderer loses the gameplay world (drawn, then hidden by the bloom/shadow passes that read the frame
+# and the 16-bit shadow buffer back as textures); the gpu renderer draws it like PCSX2 at the full 30 fps.
+PS2X_GS = "gpu"

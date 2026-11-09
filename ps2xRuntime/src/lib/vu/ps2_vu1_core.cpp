@@ -1182,7 +1182,8 @@ void VU1Interpreter::finishXgkick()
             off += 16u;
             const uint32_t nloop = static_cast<uint32_t>(lo & 0x7FFFu), flg = static_cast<uint32_t>((lo >> 58) & 3u);
             const uint32_t nreg = ((lo >> 60) & 0xFu) ? static_cast<uint32_t>((lo >> 60) & 0xFu) : 16u;
-            const bool tagMatch = ((lo >> 46) & 1u) != 0u && static_cast<long>((lo >> 47) & 0x7FFu) == kickPrim;
+            // 0x800 (GOW_VU1_KICKPRIM=800) matches any tag, PRE set or not.
+            const bool tagMatch = kickPrim == 0x800 || (((lo >> 46) & 1u) != 0u && static_cast<long>((lo >> 47) & 0x7FFu) == kickPrim);
             match = match || tagMatch;
             if (flg == 0u)
             {
@@ -1198,6 +1199,16 @@ void VU1Interpreter::finishXgkick()
                 off += ((nloop * nreg * 8u) + 15u) & ~15u;
             else
                 off += nloop * 16u;
+        }
+        static uint64_t sumKicks = 0, sumNoKicks = 0, sumPackets = 0;
+        static auto sumLast = std::chrono::steady_clock::now();
+        sumKicks += kicks; sumNoKicks += noKicks; sumPackets += match ? 1u : 0u;
+        if (std::chrono::steady_clock::now() - sumLast >= std::chrono::seconds(1))
+        {
+            sumLast = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[vu1-kickprim/s] packets=%llu xyz2 kicked=%llu adc=%llu\n", (unsigned long long)sumPackets,
+                         (unsigned long long)sumKicks, (unsigned long long)sumNoKicks);
+            sumKicks = sumNoKicks = sumPackets = 0;
         }
         if (match && kickShown < 60)
         {

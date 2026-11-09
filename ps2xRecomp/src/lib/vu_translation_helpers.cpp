@@ -406,9 +406,12 @@ namespace ps2recomp
         uint8_t vfs = inst.rd;
         uint8_t vft = inst.rt;
         uint8_t dest_mask = inst.vectorInfo.vectorField;
-        return fmt::format("{{ __m128 fs_yzx = _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(3,0,2,1)); "
-                           "__m128 ft_zxy = _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(3,1,0,2)); "
-                           "__m128 mul_res = PS2_VMUL(fs_yzx, ft_zxy); "
+        // OPMSUB is the second half of the cross product: fd.x = ACC.x - fs.z*ft.y, fd.y = ACC.y - fs.x*ft.z,
+        // fd.z = ACC.z - fs.y*ft.x (OPMULA put fs.y*ft.z, fs.z*ft.x, fs.x*ft.y in ACC). With OPMULA's shuffles the
+        // result was ACC - ACC = 0, so every VU0 cross product (camera look-at axes) came out null.
+        return fmt::format("{{ __m128 fs_zxy = _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(3,1,0,2)); "
+                           "__m128 ft_yzx = _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(3,0,2,1)); "
+                           "__m128 mul_res = PS2_VMUL(fs_zxy, ft_yzx); "
                            "__m128 res = PS2_VSUB(ctx->vu0_acc, mul_res); "
                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",

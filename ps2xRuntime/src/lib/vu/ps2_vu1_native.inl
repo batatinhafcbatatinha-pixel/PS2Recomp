@@ -206,7 +206,8 @@ void VU1NativeAccess::xgkick(VU1NativeCtx &n, uint32_t rel, uint32_t qwordAddres
             uint8_t *dst = vu.m_xgkick.packet.data();
             const uint32_t first = src & (size - 1u);
             const uint32_t head = std::min(total, size - first);
-            if (head == total && vu.m_activeMemory && !vu.m_verifySilent)
+            static const bool kickPrimDiag = std::getenv("GOW_VU1_KICKPRIM") != nullptr; // finishXgkick reports it
+            if (head == total && vu.m_activeMemory && !vu.m_verifySilent && !kickPrimDiag)
             {
                 // in one piece in VU memory: no copy on the way to the GS queue
                 vu.m_xgkick.copiedBytes = total;

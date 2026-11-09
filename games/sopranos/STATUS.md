@@ -169,3 +169,19 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
   portable, BIOS 0230a) mostra o beco iluminado com os personagens. Comparar RAM: .p2s é zip com zstd (eeMemory.bin);
   heap/pools do jogo (0x1514d00-0x1915d00, 0x1a8xxxx) mudam de ordem, só globais comparam.
 - LEMBRETE: `ps2port tools` só reconstrói o recompilador com --force.
+
+## 09/11 (Claude) — mundo da jogabilidade aparece (backend gpu)
+- A lógica do jogo estava certa (RAM igual ao PCSX2, só diferenças de 1 ULP) e o VIF1 recebia cadeias completas.
+  Trace do GS (PS2X_GS=gpu, PS2X_GS_TRACE): o quadro inteiro chega ao GS (mundo, personagens, HUD). O jogo alterna
+  os buffers de exibição fbp 0/112 (512x448x32, Z em 224), desenha sombras num buffer de 16 bits (fbp 336, psm 0xa)
+  e faz bloom com sprites em tiras que leem o próprio quadro (fbp 336/368) e o Z (tbp 7168) como textura.
+- O backend **hw** perde o mundo nesses passes (fica só HUD + "blocos laranja"); o backend **gpu** mostra o beco e
+  os personagens como o PCSX2 a 30 fps cheios. port.toml: [env] PS2X_GS = "gpu" (também na cópia .local/ports).
+- ABERTO: (1) faixas longas saindo dos personagens (membros esticados até a câmera; triângulos com vértice atrás da
+  câmera, z negativo, que o ADC deveria descartar); (2) bug do hw nos passes render-to-texture; (3) blocos escuros no
+  fundo do menu principal.
+- Corrigido de passagem (geral, não era a causa aqui): recompilador VOPMSUB usava os embaralhamentos do VOPMULA
+  (produto vetorial sempre 0). Outros jogos PS2 precisam ser regenerados. ps2port generate: troca da linha output por
+  regex (configs antigos com caminho absoluto falhavam).
+- Diagnósticos novos: PS2X_DMA_STATS=1 (+ analysis/dma-log.trigger percorre as tags das cadeias), GOW_VU1_KICKPRIM=800
+  (resumo por segundo de vértices desenhados/ADC nos pacotes do VU1).

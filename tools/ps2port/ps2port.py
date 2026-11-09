@@ -245,7 +245,8 @@ def generate_into(port, config, out, limit_gb=8):
     shutil.rmtree(scratch, ignore_errors=True)
     text = config.read_text()
     tmp_config = config.with_name(config.stem + '.tmp.toml')
-    tmp_config.write_text(text.replace(f'output = "{port.rel(out)}"', f'output = "{port.rel(scratch)}"'))
+    # Whatever form the config's output line has (relative, or absolute from an older config step), point it at scratch.
+    tmp_config.write_text(re.sub(r'(?m)^output = ".*"$', lambda m: f'output = {json.dumps(port.rel(scratch))}', text, count=1))
     logf = port.log / f'{out.name}-generate.log'
     with logf.open('w') as stream:
         proc = subprocess.Popen([str(tool('ps2_recomp')), port.rel(tmp_config)], cwd=port.dir, stdout=stream,
