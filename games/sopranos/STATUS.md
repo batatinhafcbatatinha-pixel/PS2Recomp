@@ -200,3 +200,7 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
   scratchpad -> multiplicados pela matriz do pai viravam faixas. Teto agora igual ao do VU1 (1<<22). Caminho do
   diagnóstico: vu-negz -> pacote 0x152b920 -> watch (FUN_001c1690 copia de 0x70000000+i*0x40) -> watch no scratchpad
   (PS2X_WATCH=7000xxxx agora vale para o scratchpad) -> FUN_00149af8/00156604/00156a38 (Ghidra) -> VCALLMS cortado.
+- Blocos claros/escuros no fundo do menu principal: NÃO é defeito — o PCSX2 mostra os mesmos painéis animados.
+- Backend hw depois da correção do VU0: mundo e personagens aparecem (resolução maior), mas o painel do tutorial
+  some (só o texto) e aparecem glifos laranja soltos (texturas 8 bits com CLUT do HUD). O perfil segue com
+  PS2X_GS="gpu" (correto, 30 fps); o hw fica como pendência do renderizador.
