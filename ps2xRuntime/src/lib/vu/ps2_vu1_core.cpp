@@ -1193,6 +1193,37 @@ void VU1Interpreter::finishXgkick()
                         uint32_t w3 = 0;
                         std::memcpy(&w3, pk + off + 12u, 4u);
                         ++(((w3 >> 15) & 1u) ? noKicks : kicks);
+                        // A drawing vertex (ADC=0) with a negative Z (behind the camera): dump VU1 data memory, the
+                        // packet and the registers for the first few, to inspect the inputs offline.
+                        uint32_t z = 0;
+                        std::memcpy(&z, pk + off + 8u, 4u);
+                        static int badDumps = 0;
+                        static const auto dumpEpoch = std::chrono::steady_clock::now();
+                        static const double dumpAfter = std::getenv("GOW_VU1_NEGZ_AFTER") ? std::atof(std::getenv("GOW_VU1_NEGZ_AFTER")) : 0.0;
+                        const bool dumpTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpEpoch).count() >= dumpAfter;
+                        if (!((w3 >> 15) & 1u) && (z & 0x80000000u) && badDumps < 4 && m_activeVuData && dumpTime)
+                        {
+                            const std::string path = "analysis/vu-negz-" + std::to_string(badDumps++) + ".bin";
+                            if (FILE *file = std::fopen(path.c_str(), "wb"))
+                            {
+                                std::fwrite(m_activeVuData, 1, m_activeVuDataSize, file);
+                                std::fwrite(&m_state, 1, sizeof(m_state), file);
+                                const uint32_t meta[4] = {m_xgkick.sourceAddress, m_xgkick.totalBytes, off, m_state.pc};
+                                std::fwrite(meta, 1, sizeof(meta), file);
+                                std::fwrite(pk, 1, m_xgkick.totalBytes, file);
+                                if (m_activeMemory)
+                                    std::fwrite(m_activeMemory->getVU1Code(), 1, PS2_VU1_CODE_SIZE, file);
+                                std::fclose(file);
+                                if (badDumps == 1 && m_activeMemory && m_activeMemory->getRDRAM())
+                                    if (FILE *ram = std::fopen("analysis/vu-negz-ram.bin", "wb"))
+                                    {
+                                        std::fwrite(m_activeMemory->getRDRAM(), 1, PS2_RAM_SIZE, ram);
+                                        if (m_activeMemory->getScratchpad())
+                                            std::fwrite(m_activeMemory->getScratchpad(), 1, PS2_SCRATCHPAD_SIZE, ram);
+                                        std::fclose(ram);
+                                    }
+                            }
+                        }
                     }
             }
             else if (flg == 1u)
@@ -2038,7 +2069,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     };
     if (!m_native)
         m_native = new NativeState();
-    const bool nativeUnit = m_native->enabled && vuData && codeSize == (m_unit == Unit::VU1 ? PS2_VU1_CODE_SIZE : PS2_VU0_CODE_SIZE);
+    // GOW_VU0_NATIVE_OFF=1: VU0 microprograms (VCALLMS) on the exact interpreter, VU1 stays native (diagnostic).
+    static const bool vu0NativeOff = std::getenv("GOW_VU0_NATIVE_OFF") != nullptr;
+    const bool nativeUnit = m_native->enabled && vuData && !(vu0NativeOff && m_unit == Unit::VU0) &&
+                            codeSize == (m_unit == Unit::VU1 ? PS2_VU1_CODE_SIZE : PS2_VU0_CODE_SIZE);
     if (m_unit == Unit::VU1 && nativeUnit)
         VU1NativeAccess::recordReplay(*this, &context, maxCycles);
     // Allow bounded verification to start at gameplay instead of exhausting its
