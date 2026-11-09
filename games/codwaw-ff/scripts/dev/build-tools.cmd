@@ -1,7 +1,7 @@
 @echo off
 rem Build PS2Recomp (analyzer, recompiler, runtime) for the CoD:WaW Final Fronts port.
 setlocal
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
+if not defined CC call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 rem Deep submodule paths in FetchContent deps exceed MAX_PATH; enable long paths for this process only.
 set "GIT_CONFIG_COUNT=1"

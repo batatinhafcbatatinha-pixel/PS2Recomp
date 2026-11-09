@@ -107,7 +107,8 @@ def tool(name):
 
 def vc_env():
     """The Visual C++ environment (when cl is not already on PATH)."""
-    if os.name != 'nt' or shutil.which('cl'):
+    # llvm-mingw: setup puts clang on PATH and sets CC/CXX; no Visual Studio environment is needed.
+    if os.name != 'nt' or os.environ.get('CC') or shutil.which('cl'):
         return None
     vswhere = Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Microsoft Visual Studio/Installer/vswhere.exe'
     if not vswhere.is_file():

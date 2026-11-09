@@ -11,6 +11,11 @@ endif()
 
 project(PS2RetroX)
 
+# llvm-mingw: the C++ runtime is linked into every program (no libc++/libunwind DLLs next to the tools).
+if(MINGW)
+    add_link_options(-static)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PS2X_BUILD_RECOMP "Build ps2xRecomp" ON)

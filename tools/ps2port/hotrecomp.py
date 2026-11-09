@@ -151,11 +151,11 @@ def main():
                                    .replace('@SIG@', ', '.join(str(b) for b in sig)))
     flags = ninja_flags(port)
     dll = out / (f'hot_{hexaddr}.dll' if os.name == 'nt' else f'hot_{hexaddr}.so')
-    if os.name == 'nt':
+    if os.name == 'nt' and not os.environ.get('CC'):   # MSVC; llvm-mingw (CC=clang) takes the branch below
         run(['cl', '/nologo', '/LD', '/I', work / 'gen'] + flags + [src, work / 'shim.cpp', '/Fe:' + str(dll),
              '/Fo:' + str(work) + os.sep, '/link', '/NOIMPLIB', '/NOEXP'], cwd=work)
     else:
-        run([os.environ.get('CXX', 'c++'), '-shared', '-fPIC', '-I', work / 'gen'] + flags +
+        run([os.environ.get('CXX', 'c++'), '-shared'] + ([] if os.name == 'nt' else ['-fPIC']) + ['-I', work / 'gen'] + flags +
             [src, work / 'shim.cpp', '-o', dll], cwd=work)
     log.write(f'ok {dll}\n')
     log.close()

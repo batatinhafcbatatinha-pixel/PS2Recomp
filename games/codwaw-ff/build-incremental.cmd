@@ -12,7 +12,7 @@ if not exist "%~dp0build\game\build.ninja" (
   echo Configure once with build-game.cmd full before using this command.
   exit /b 1
 )
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
+if not defined CC call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 set "JOBS=%~2"
 if not defined JOBS (

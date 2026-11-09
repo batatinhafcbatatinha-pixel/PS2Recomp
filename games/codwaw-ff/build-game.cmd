@@ -13,8 +13,8 @@ set "VSLANG=1033"
 rem BUILD_JOBS: parallel compile jobs (default 12).
 if not defined BUILD_JOBS set "BUILD_JOBS=12"
 set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-if not exist "%VCVARS%" for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
-call "%VCVARS%" >nul
+if not defined CC if not exist "%VCVARS%" for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+if not defined CC call "%VCVARS%" >nul
 if errorlevel 1 exit /b 1
 rem PS2Recomp: the submodule when checked out, else the author's shared checkout next to the game folders.
 set "PS2R=%~dp0..\.."

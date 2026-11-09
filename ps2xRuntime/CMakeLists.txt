@@ -685,7 +685,7 @@ if(NOT MSVC AND NOT PS2X_IS_ARM_TARGET AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_6
 endif()
 if(WIN32)
     # Native GS renderer (gs/gpu): its own WGL context on the GS thread.
-    target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32)
+    target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32 dbghelp)   # dbghelp: the sampling profiler (MinGW ignores its #pragma comment)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
     target_link_libraries(ps2_runtime PRIVATE OpenGL::EGL OpenGL::OpenGL ${CMAKE_DL_LIBS})
@@ -815,6 +815,11 @@ if(MSVC)
     target_link_options(ps2EntryRunner PRIVATE "/FORCE:MULTIPLE")
     # Function address map for the built-in sampling profiler (PS2X_PROFILE=1).
     target_link_options(ps2EntryRunner PRIVATE "/MAP:$<TARGET_FILE_DIR:ps2EntryRunner>/ps2EntryRunner.map")
+elseif(MINGW)
+    # llvm-mingw: the same 64 MB stack, the same first-definition-wins rule as /FORCE:MULTIPLE
+    # (sceSifSearchModuleByName is defined in both Stubs/SIF.cpp and Stubs/Services.cpp), and the map.
+    target_link_options(ps2EntryRunner PRIVATE "-Wl,--stack,67108864" "-Wl,--allow-multiple-definition"
+                        "-Wl,-Map,$<TARGET_FILE_DIR:ps2EntryRunner>/ps2EntryRunner.map")
 endif()
 
 # Vita: Work around for GCC 10's LTO plugin

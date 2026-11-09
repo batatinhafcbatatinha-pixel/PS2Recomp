@@ -6,6 +6,7 @@
   "download_gb": 1,
   "minutes": "60-180",
   "tools": [
+    "llvm-mingw",
     "cmake",
     "ninja",
     "ghidra"
@@ -35,5 +36,6 @@
       ],
       "retry_if": "build/native/build.ninja"
     }
-  ]
+  ],
+  "buildtools": false
 }
