@@ -10,6 +10,24 @@
 
 // PS2X_VIF_SEQLOG=<seconds>:<count>: after <seconds>, logs <count> VIF1 BASE/OFFSET/MSCAL/MSCNT/STCYCL/UNPACK commands in
 // order with TOPS/DBF, to follow a double-buffered upload against the program that reads it.
+// Unpack history for diagnostics: the last 256 UNPACKs (VU range, TOPS, first 64 source bytes), written next to a
+// VU1 dump by ps2VifWriteUnpackHistory.
+namespace
+{
+    struct UnpackHistoryEntry
+    {
+        uint32_t vuStart, vuCount, tops, opcode;
+        uint8_t bytes[64];
+    };
+    UnpackHistoryEntry g_unpackHistory[256];
+    uint32_t g_unpackHistoryNext = 0;
+}
+void ps2VifWriteUnpackHistory(FILE *file)
+{
+    for (uint32_t i = 0; i < 256u; ++i)
+        std::fwrite(&g_unpackHistory[(g_unpackHistoryNext + i) & 255u], 1, sizeof(UnpackHistoryEntry), file);
+}
+
 static bool vifSeqLogOn()
 {
     static const char *spec = std::getenv("PS2X_VIF_SEQLOG");
@@ -847,9 +865,34 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                 vuAddr = (vuAddr + (vif1_regs.tops & 0x3FFu)) & 0x3FFu;
 
             const bool zeroExtend = (imm & 0x4000u) != 0u;
+            {
+                static const bool keepHistory = std::getenv("GOW_VU1_KICKPRIM") != nullptr;
+                if (keepHistory)
+                {
+                    UnpackHistoryEntry &h = g_unpackHistory[g_unpackHistoryNext++ & 255u];
+                    h.vuStart = vuAddr;
+                    h.vuCount = writeVectorCount;
+                    h.tops = vif1_regs.tops & 0x3FFu;
+                    h.opcode = opcode;
+                    std::memset(h.bytes, 0, sizeof(h.bytes));
+                    std::memcpy(h.bytes, data + pos, std::min<uint32_t>(64u, sizeBytes - pos));
+                }
+            }
             if (vifSeqLogOn())
-                std::fprintf(stderr, "[vifseq] UNPACK op=%02x num=%u imm=%04x -> vu %x..%x (tops %x) cl=%u wl=%u\n", opcode, num, imm, vuAddr,
-                             vuAddr + writeVectorCount - 1u, vif1_regs.tops & 0x3FFu, cl, wl);
+            {
+                float maxAbs = 0.0f;
+                if (opcode == 0x6Cu && m_rdram)
+                    for (uint32_t w = 0; w < std::min<uint32_t>(sourceVectorCount * 4u, (sizeBytes - pos) / 4u); ++w)
+                    {
+                        float f;
+                        std::memcpy(&f, data + pos + w * 4u, 4);
+                        if (f == f && std::fabs(f) > maxAbs && std::fabs(f) < 1.0e30f)
+                            maxAbs = std::fabs(f);
+                    }
+                const unsigned src = (m_rdram && data + pos >= m_rdram && data + pos < m_rdram + PS2_RAM_SIZE) ? static_cast<unsigned>(data + pos - m_rdram) : 0u;
+                std::fprintf(stderr, "[vifseq] UNPACK op=%02x num=%u imm=%04x -> vu %x..%x (tops %x) cl=%u wl=%u src=%x max=%g\n", opcode, num, imm, vuAddr,
+                             vuAddr + writeVectorCount - 1u, vif1_regs.tops & 0x3FFu, cl, wl, src, maxAbs);
+            }
             {
                 // PS2X_VIF_UNPACKLOG=<seconds>:<count>: from <seconds> after the first UNPACK, logs <count> UNPACK
                 // commands with their destination, cycle/mode/mask and the first source words as floats

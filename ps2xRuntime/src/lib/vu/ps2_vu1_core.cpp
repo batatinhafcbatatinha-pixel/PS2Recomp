@@ -1146,6 +1146,8 @@ void VU1Interpreter::progressXgkick()
     }
 }
 
+void ps2VifWriteUnpackHistory(FILE *file);
+
 namespace
 {
     // GOW_VU1N_VERIFY: GIF packets produced by a silent (A/B) run, for comparison.
@@ -1222,6 +1224,11 @@ void VU1Interpreter::finishXgkick()
                                             std::fwrite(m_activeMemory->getScratchpad(), 1, PS2_SCRATCHPAD_SIZE, ram);
                                         std::fclose(ram);
                                     }
+                                if (FILE *hist = std::fopen(("analysis/vu-negz-" + std::to_string(badDumps - 1) + ".unpacks").c_str(), "wb"))
+                                {
+                                    ps2VifWriteUnpackHistory(hist);
+                                    std::fclose(hist);
+                                }
                             }
                         }
                     }

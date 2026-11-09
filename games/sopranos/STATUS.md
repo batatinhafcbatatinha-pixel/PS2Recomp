@@ -194,3 +194,9 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
 - Diagnósticos: PS2X_VIF_SEQLOG=<s>:<n> (sequência BASE/OFFSET/UNPACK/MSCAL com TOPS/DBF), PS2X_VIF_UNPACKLOG +
   PS2X_VIF_UNPACK_ADDR=<hex> (só UNPACKs que cobrem esse endereço, com src na RAM), PS2X_VU_DUMP_N=<execuções>,
   PS2X_VIF_DBF_INVERT=1, GOW_VU0_NATIVE_OFF=1, dump vu-negz (GOW_VU1_KICKPRIM + GOW_VU1_NEGZ_AFTER).
+- **Faixas corrigidas (09/11 04:10)**: o VCALLMS do VU0 tinha teto de 4096 ciclos no runtime
+  (executeVU0Microprogram). O microprograma 0x738 converte o quatérnio de cada osso em matriz numa chamada só
+  (~89 ciclos/osso); com 57 ossos ele era cortado no osso ~46, e os ossos seguintes ficavam como quatérnio cru no
+  scratchpad -> multiplicados pela matriz do pai viravam faixas. Teto agora igual ao do VU1 (1<<22). Caminho do
+  diagnóstico: vu-negz -> pacote 0x152b920 -> watch (FUN_001c1690 copia de 0x70000000+i*0x40) -> watch no scratchpad
+  (PS2X_WATCH=7000xxxx agora vale para o scratchpad) -> FUN_00149af8/00156604/00156a38 (Ghidra) -> VCALLMS cortado.

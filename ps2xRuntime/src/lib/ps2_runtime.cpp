@@ -1986,10 +1986,13 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
         dumpVu0("in");
     m_vu0.reset();
     copyVu0ContextToState(ctx, m_vu0.state());
+    // A VCALLMS program runs to its E bit, like on the VU. The old 4096-cycle cap cut long programs short: The Sopranos
+    // converts every bone's quaternion to a matrix in one call (~89 cycles per bone), so bones past ~46 stayed
+    // unconverted and the skinned limbs stretched across the screen. Same safety cap as VU1 programs.
     m_vu0.execute(vu0Code, PS2_VU0_CODE_SIZE,
                   vu0Data, PS2_VU0_DATA_SIZE,
                   m_gs, &m_memory,
-                  startPC, 0u, ctx->vu0_itop, 4096);
+                  startPC, 0u, ctx->vu0_itop, kVu1ProgramCycleCap);
     copyVu0StateToContext(m_vu0.state(), ctx);
     if (vu0Dump)
     {

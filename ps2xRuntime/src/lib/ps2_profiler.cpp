@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include "runtime/ps2_memory.h"
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
 #include <dbghelp.h>
@@ -410,10 +411,16 @@ void ps2WatchInstall(uint8_t *rdram, uint32_t (*currentPc)(), void (*dump)())
         return;
     g_watchHost = rdram;
     g_watchGuest = guest & 0x1FFFFFFu;
+    // A 0x7000xxxx address watches the scratchpad (offsets are then reported within the 16 KB scratchpad).
+    if ((guest >> 28) == 7u && ps2GetScratchpadHostPtr())
+    {
+        g_watchHost = ps2GetScratchpadHostPtr();
+        g_watchGuest = guest & 0x3FFFu;
+    }
     g_watchLength = length;
     g_watchPc = currentPc;
     g_watchDump = dump;
-    g_watchPage = reinterpret_cast<uintptr_t>(rdram + g_watchGuest) & ~uintptr_t(0xFFF);
+    g_watchPage = reinterpret_cast<uintptr_t>(g_watchHost + g_watchGuest) & ~uintptr_t(0xFFF);
     AddVectoredExceptionHandler(1, watchHandler);
     DWORD old = 0;
     VirtualProtect(reinterpret_cast<void *>(g_watchPage), 0x1000, PAGE_READONLY, &old);
