@@ -2007,6 +2007,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 if (mode == 0 && qwc > 0)
                 {
                     enqueueTransfer(madr, qwc);
+                    // The transfer completes at once here: MADR ends after the data (QWC is
+                    // cleared on completion), as the DMAC leaves it.
+                    m_ioRegisters[channelBase + 0x10] = (madr + qwc * 16u) & 0x7FFFFFF0u;
                 }
                 else if (mode == 1)
                 {
@@ -2095,6 +2098,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                     int tagsProcessed = 0;
                     uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
+                    // MADR as the DMAC leaves it: the end of the last tag's payload (PCSX2 hwDmacSrcChain).
+                    uint32_t endMadr = 0u;
+                    bool endMadrValid = false;
 
                     while (tagsProcessed < kMaxChainTags)
                     {
@@ -2205,6 +2211,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                         if (transferTagData)
                             appendVifTagData(currentTagAddr);
+                        if (id <= 7u)
+                        {
+                            endMadr = (dataAddr + static_cast<uint32_t>(tagQwc) * 16u) & 0x7FFFFFF0u;
+                            endMadrValid = true;
+                        }
 
                         if (hasPayload)
                             appendData(dataAddr, tagQwc);
@@ -2222,6 +2233,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                                       << " tadr=0x" << tagAddr << std::dec << std::endl;
                     }
                     m_ioRegisters[channelBase + 0x30] = tagAddr;
+                    if (endMadrValid)
+                        m_ioRegisters[channelBase + 0x10] = endMadr;
                     m_ioRegisters[channelBase + 0x40] = asr0;
                     m_ioRegisters[channelBase + 0x50] = asr1;
                     chcr = (chcr & ~(0x3u << 4)) | ((asp & 0x3u) << 4);
