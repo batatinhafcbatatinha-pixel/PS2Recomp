@@ -151,7 +151,8 @@ static int vuDumpBegin()
     if (left == 0u && countdown++ % 256u == 0u && std::filesystem::exists("analysis/vu-dump.trigger"))
     {
         std::filesystem::remove("analysis/vu-dump.trigger");
-        left = 24u;
+        static const uint32_t runs = std::getenv("PS2X_VU_DUMP_N") ? static_cast<uint32_t>(std::atoi(std::getenv("PS2X_VU_DUMP_N"))) : 24u;
+        left = runs ? runs : 24u; // PS2X_VU_DUMP_N=<runs> (default 24)
     }
     if (left == 0u)
         return -1;

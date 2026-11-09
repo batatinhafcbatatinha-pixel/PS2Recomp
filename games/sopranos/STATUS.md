@@ -180,8 +180,17 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
 - ABERTO: (1) faixas longas saindo dos personagens (membros esticados até a câmera; triângulos com vértice atrás da
   câmera, z negativo, que o ADC deveria descartar); (2) bug do hw nos passes render-to-texture; (3) blocos escuros no
   fundo do menu principal.
-- Corrigido de passagem (geral, não era a causa aqui): recompilador VOPMSUB usava os embaralhamentos do VOPMULA
-  (produto vetorial sempre 0). Outros jogos PS2 precisam ser regenerados. ps2port generate: troca da linha output por
-  regex (configs antigos com caminho absoluto falhavam).
+- VOPMSUB do recompilador NÃO tinha bug (idioma OPMULA ACC,a,b / OPMSUB d,b,a; mesmas lanes do OPMULA). A troca
+  feita em 4411458 foi revertida em cad901d. ps2port generate: troca da linha output por regex (configs antigos).
 - Diagnósticos novos: PS2X_DMA_STATS=1 (+ analysis/dma-log.trigger percorre as tags das cadeias), GOW_VU1_KICKPRIM=800
   (resumo por segundo de vértices desenhados/ADC nos pacotes do VU1).
+- Faixas (membros esticados), investigação 09/11 03:00: o vértice que vira faixa tem X de tela > 16 bits (dá a volta
+  no GS) e Z negativo, e sai com ADC=0 porque a matriz de clip por osso explode junto com a de desenho (escala
+  ~1e2..1e5 nos ossos 0-3/6-7 de um personagem; os índices de osso nos pesos estão certos). As matrizes chegam ao
+  VU1 por UNPACK relativo ao TOPS (área 0x84-0x143 sobreposta aos buffers 0x64/0xfd); nenhuma execução do VU1 as
+  escreve; não estão na RAM como floats (pacote temporário). Descartado: VU0 nativo (GOW_VU0_NATIVE_OFF=1 igual),
+  VU1 nativo (verify igual ao interpretador), paridade DBF (PS2X_VIF_DBF_INVERT=1 igual), OPMSUB (correto).
+  Próximo: achar no EE quem monta esses ossos (pacote 0x15xxxxx/0x17xxxxx) e comparar com o PCSX2 na mesma cena.
+- Diagnósticos: PS2X_VIF_SEQLOG=<s>:<n> (sequência BASE/OFFSET/UNPACK/MSCAL com TOPS/DBF), PS2X_VIF_UNPACKLOG +
+  PS2X_VIF_UNPACK_ADDR=<hex> (só UNPACKs que cobrem esse endereço, com src na RAM), PS2X_VU_DUMP_N=<execuções>,
+  PS2X_VIF_DBF_INVERT=1, GOW_VU0_NATIVE_OFF=1, dump vu-negz (GOW_VU1_KICKPRIM + GOW_VU1_NEGZ_AFTER).

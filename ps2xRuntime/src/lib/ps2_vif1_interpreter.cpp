@@ -8,6 +8,23 @@
 #include <iostream>
 #include <emmintrin.h>
 
+// PS2X_VIF_SEQLOG=<seconds>:<count>: after <seconds>, logs <count> VIF1 BASE/OFFSET/MSCAL/MSCNT/STCYCL/UNPACK commands in
+// order with TOPS/DBF, to follow a double-buffered upload against the program that reads it.
+static bool vifSeqLogOn()
+{
+    static const char *spec = std::getenv("PS2X_VIF_SEQLOG");
+    if (!spec)
+        return false;
+    static const double at = std::atof(spec);
+    static const int maxLogs = std::strchr(spec, ':') ? std::atoi(std::strchr(spec, ':') + 1) : 400;
+    static const auto t0 = std::chrono::steady_clock::now();
+    static int logs = 0;
+    if (logs >= maxLogs || std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < at)
+        return false;
+    ++logs;
+    return true;
+}
+
 enum VIFCmd : uint8_t
 {
     VIF_NOP = 0x00,
@@ -594,12 +611,22 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
             vif1_regs.ofst = imm & 0x3FFu;
             vif1_regs.tops = vif1_regs.base & 0x3FFu;
             vif1_regs.stat &= ~(1u << 7); // clear DBF
+            static const bool dbfInvert = std::getenv("PS2X_VIF_DBF_INVERT") != nullptr; // diagnostic: start on the other buffer
+            if (dbfInvert)
+            {
+                vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
+                vif1_regs.stat |= (1u << 7);
+            }
+            if (vifSeqLogOn())
+                std::fprintf(stderr, "[vifseq] OFFSET %x (base %x) tops=%x\n", vif1_regs.ofst, vif1_regs.base, vif1_regs.tops);
             continue;
         }
         else if (opcode == VIF_BASE)
         {
             // BASE only updates the base register. TOPS changes on OFFSET/MSCAL.
             vif1_regs.base = imm & 0x3FFu;
+            if (vifSeqLogOn())
+                std::fprintf(stderr, "[vifseq] BASE %x\n", vif1_regs.base);
             continue;
         }
         else if (opcode == VIF_ITOP)
@@ -637,6 +664,9 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
         else if (opcode == VIF_MSCAL || opcode == VIF_MSCALF)
         {
             uint32_t startPC = (uint32_t)imm * 8u;
+            if (vifSeqLogOn())
+                std::fprintf(stderr, "[vifseq] MSCAL %x top=%x dbf=%u -> next tops=%x\n", startPC, vif1_regs.tops & 0x3FFu,
+                             (vif1_regs.stat >> 7) & 1u, ((vif1_regs.stat >> 7) & 1u) ? vif1_regs.base : (vif1_regs.base + vif1_regs.ofst) & 0x3FFu);
 
             const uint32_t runTop = vif1_regs.tops & 0x3FFu;
             const uint32_t runItop = vif1_regs.itops & 0x3FFu;
@@ -817,6 +847,9 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                 vuAddr = (vuAddr + (vif1_regs.tops & 0x3FFu)) & 0x3FFu;
 
             const bool zeroExtend = (imm & 0x4000u) != 0u;
+            if (vifSeqLogOn())
+                std::fprintf(stderr, "[vifseq] UNPACK op=%02x num=%u imm=%04x -> vu %x..%x (tops %x) cl=%u wl=%u\n", opcode, num, imm, vuAddr,
+                             vuAddr + writeVectorCount - 1u, vif1_regs.tops & 0x3FFu, cl, wl);
             {
                 // PS2X_VIF_UNPACKLOG=<seconds>:<count>: from <seconds> after the first UNPACK, logs <count> UNPACK
                 // commands with their destination, cycle/mode/mask and the first source words as floats
@@ -825,13 +858,18 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                 static const int maxLogs = spec && std::strchr(spec, ':') ? std::atoi(std::strchr(spec, ':') + 1) : 200;
                 static const auto t0 = std::chrono::steady_clock::now();
                 static int logs = 0;
-                if (at >= 0.0 && logs < maxLogs && pos + totalBytes <= sizeBytes &&
+                // PS2X_VIF_UNPACK_ADDR=<hex qword>: only UNPACKs whose destination range covers that VU address
+                static const long onlyAddr = std::getenv("PS2X_VIF_UNPACK_ADDR") ? std::strtol(std::getenv("PS2X_VIF_UNPACK_ADDR"), nullptr, 16) : -1;
+                const bool addrMatch = onlyAddr < 0 || (static_cast<uint32_t>(onlyAddr) >= vuAddr && static_cast<uint32_t>(onlyAddr) < vuAddr + writeVectorCount);
+                if (at >= 0.0 && logs < maxLogs && addrMatch && pos + totalBytes <= sizeBytes &&
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= at)
                 {
                     ++logs;
                     std::fprintf(stderr, "[vif1:unpack] op=%02x vn=%u vl=%u num=%u addr=0x%x (imm=%04x tops=0x%x) cl=%u wl=%u mode=%u mask=%08x usn=%d bytes=%u:",
                                  opcode, vn, vl, num, vuAddr, imm, vif1_regs.tops & 0x3FFu, cl, wl, vif1_regs.mode, maskEnable ? vif1_regs.mask : 0u,
                                  zeroExtend ? 1 : 0, totalBytes);
+                    if (m_rdram && data + pos >= m_rdram && data + pos < m_rdram + PS2_RAM_SIZE)
+                        std::fprintf(stderr, " src=0x%x", static_cast<unsigned>(data + pos - m_rdram));
                     for (uint32_t w = 0; w < std::min<uint32_t>(totalBytes / 4u, 16u); ++w)
                     {
                         float f;
