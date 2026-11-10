@@ -328,6 +328,9 @@ public:
     void resetEeTimers() noexcept;
 
     using GifPacketCallback = std::function<void(const uint8_t *, uint32_t)>;
+    // Wakes the EE scheduler when a device raises an interrupt off the EE thread (VIF1 I bit): without it a sleeping EE
+    // (idle or pacing wait) took the interrupt only at its next timer deadline, and the stalled VIF1 list waited with it.
+    void setIntcWakeCallback(std::function<void()> wake) { m_intcWake = std::move(wake); }
     void setGifPacketCallback(GifPacketCallback cb) { m_gifPacketCallback = std::move(cb); }
     void setGifArbiter(GifArbiter *arbiter) { m_gifArbiter = arbiter; }
 
@@ -370,6 +373,8 @@ public:
     // jobs the EE queues meanwhile, so PATH3 work an interrupt handler starts lands before the rest of the VIF list.
     void stallVif1ForInterrupt();
     std::vector<uint32_t> consumeIntcCauses();
+    // Cheap test before taking the queue mutex (guest loads from I/O registers deliver pending interrupts).
+    bool hasPendingCauses() const { return m_causesPending.load(std::memory_order_acquire); }
 
     int pollDmaRegisters();
 
@@ -466,6 +471,8 @@ public:
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;
     std::vector<uint32_t> m_pendingIntcCauses;
+    std::function<void()> m_intcWake;
+    std::atomic<bool> m_causesPending{false};
     std::atomic<bool> m_vif1IrqStall{false};
     std::atomic<int> m_gifStatBusyReads{0}; // GIF_STAT reads that still show PATH3 active after a GIF DMA kick
 

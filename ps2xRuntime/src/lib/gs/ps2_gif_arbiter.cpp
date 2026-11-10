@@ -33,8 +33,7 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
     pkt.pathId = pathId;
     pkt.path2DirectHl = (pathId == GifPathId::Path2) && path2DirectHl;
     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
-    pkt.data.resize(sizeBytes);
-    std::memcpy(pkt.data.data(), data, sizeBytes);
+    pkt.data.assign(data, data + sizeBytes); // one pass (resize zero-filled first)
     if (Ps2GifOrderTraceEnabled())
     {
         char detail[128];

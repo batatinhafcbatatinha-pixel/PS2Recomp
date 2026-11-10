@@ -925,6 +925,10 @@ bool PS2Runtime::syncCoreSubsystems()
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
     m_gs.setInterruptCallback([this]()
                               { postEeEvent(EeEvent{EeEventType::GsInterrupt, 0, 0}); });
+    // PS2X_INTC_WAKE=1: a VIF1 interrupt raised off the EE thread wakes a sleeping EE at once (no-op event). Experimental:
+    // no fps change in MotorStorm AE (2026-11-10), and its race stalled once with it.
+    if (std::getenv("PS2X_INTC_WAKE"))
+        m_memory.setIntcWakeCallback([this]() { postEeEvent(EeEvent{EeEventType::Dmac, 0, 0}); });
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     {
                                         if (m_memory.queueGsPacket(data, size))

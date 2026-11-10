@@ -126,6 +126,10 @@ namespace
     using GLchar = char;
     using GLintptr = std::ptrdiff_t;
     using GLsizeiptr = std::ptrdiff_t;
+    using GLuint64 = unsigned long long;
+    using GLsync = struct __GLsync *;
+    constexpr GLenum GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_STREAM_READ = 0x88E1;
+    constexpr GLbitfield GL_SYNC_FLUSH_COMMANDS_BIT = 0x1;
 
     constexpr GLenum GL_SHADER_STORAGE_BUFFER = 0x90D2;
     constexpr GLenum GL_COMPUTE_SHADER = 0x91B9;
@@ -174,6 +178,10 @@ namespace
     X(void, NamedBufferData, (GLuint, GLsizeiptr, const void *, GLenum))                          \
     X(void, NamedBufferSubData, (GLuint, GLintptr, GLsizeiptr, const void *))                     \
     X(void, GetNamedBufferSubData, (GLuint, GLintptr, GLsizeiptr, void *))                        \
+    X(void, CopyNamedBufferSubData, (GLuint, GLuint, GLintptr, GLintptr, GLsizeiptr))             \
+    X(GLsync, FenceSync, (GLenum, GLbitfield))                                                    \
+    X(GLenum, ClientWaitSync, (GLsync, GLbitfield, GLuint64))                                     \
+    X(void, DeleteSync, (GLsync))                                                                 \
     X(void, BindBufferBase, (GLenum, GLuint, GLuint))                                             \
     X(void, DispatchCompute, (GLuint, GLuint, GLuint))                                            \
     X(void, MemoryBarrier, (GLbitfield))                                                          \
@@ -858,6 +866,7 @@ struct GSGpuBackend::Impl
 
     // Bounded diagnostics for bring-up: GL errors and work counts.
     uint32_t errorLogs = 0, workLogs = 0, readbackLogs = 0;
+    bool readbackPrimed = false; // one synchronous readback before PS2X_GS_ASYNC_READBACK serves stale ones
     void checkErrors(const char *what, uint32_t count)
     {
         const GLenum error = gl.GetError();
@@ -865,6 +874,33 @@ struct GSGpuBackend::Impl
             std::cerr << "[gs:gpu] GL error 0x" << std::hex << error << std::dec << " after " << what << std::endl;
         if (workLogs++ < 24u)
             std::cerr << "[gs:gpu] " << what << " count=" << count << std::endl;
+    }
+
+    // PS2X_GS_ASYNC_READBACK: the VRAM is copied on the GPU into a staging buffer behind the queued work (fence), and
+    // collected into the shadow at the next request: neither the GL thread nor the EE waits for the GPU to drain.
+    GLuint readbackStage = 0;
+    GLsync readbackFence = nullptr;
+    void readbackAsync()
+    {
+        if (!shadow)
+            return;
+        const GLsizeiptr size = std::min<uint32_t>(shadowSize, kVramSize);
+        if (!readbackStage)
+        {
+            gl.CreateBuffers(1, &readbackStage);
+            gl.NamedBufferData(readbackStage, size, nullptr, GL_STREAM_READ);
+        }
+        if (readbackFence)
+        {
+            gl.ClientWaitSync(readbackFence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+            gl.DeleteSync(readbackFence);
+            readbackFence = nullptr;
+            std::lock_guard<std::mutex> lock(shadowMutex);
+            gl.GetNamedBufferSubData(readbackStage, 0, size, shadow);
+        }
+        gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+        gl.CopyNamedBufferSubData(vramBuffer, readbackStage, 0, 0, size);
+        readbackFence = gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
     }
 
     void readbackShadow()
@@ -1269,7 +1305,19 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
     else if (command.direction == 1u)
     {
         // Local-to-host reads the current GPU contents through the CPU backend.
-        impl.runSyncLocked("local-to-host", [&impl]() { impl.readbackShadow(); });
+        // PS2X_GS_ASYNC_READBACK=1: serve the previous readback and queue the next one behind the GPU work, instead of
+        // draining the GPU first (MotorStorm AE reads a 256x128 image back ~20x/s: 6-15 ms each, in series with the EE).
+        static const bool asyncReadback = std::getenv("PS2X_GS_ASYNC_READBACK") != nullptr;
+        if (asyncReadback && impl.readbackPrimed)
+        {
+            impl.flushPrimsLocked();
+            impl.enqueue([&impl]() { impl.readbackAsync(); }, "readback-async");
+        }
+        else
+        {
+            impl.runSyncLocked("local-to-host", [&impl]() { impl.readbackShadow(); });
+            impl.readbackPrimed = true;
+        }
         std::lock_guard<std::mutex> shadowLock(impl.shadowMutex);
         impl.cpu.BeginTransfer(command);
         impl.localToHostActive = true;

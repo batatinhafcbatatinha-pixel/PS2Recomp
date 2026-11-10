@@ -449,7 +449,8 @@ void PS2Memory::stallVif1ForInterrupt()
         m_gifArbiter->drain();
     // PS2X_VIF1_IRQ_WAIT_US: longest stall (default 20000 us); the EE delivers the interrupt at its next dispatch.
     static const long waitUs = std::getenv("PS2X_VIF1_IRQ_WAIT_US") ? std::atol(std::getenv("PS2X_VIF1_IRQ_WAIT_US")) : 20000;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(waitUs);
+    const auto stallStart = std::chrono::steady_clock::now();
+    const auto deadline = stallStart + std::chrono::microseconds(waitUs);
     // The EE runs ahead of this worker, so the handler's GIF kick can land behind the next frame's VIF1 list in the
     // queue: take the GIF-only jobs queued during the stall wherever they are. One more pass after STC catches a kick
     // that came just before the release.
@@ -491,7 +492,14 @@ void PS2Memory::stallVif1ForInterrupt()
             continue;
         }
         if (stalled)
-            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        {
+            // The EE handler usually releases the list within microseconds; sleep_for(50us) slept ~1 ms on Windows
+            // (timer resolution), ~100 stalls a second in MotorStorm AE races = 15% of this thread. Yield first.
+            if (std::chrono::steady_clock::now() - stallStart < std::chrono::milliseconds(2))
+                std::this_thread::yield();
+            else
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
     }
     static const bool irqLog = std::getenv("PS2X_VIF1_IRQ_LOG") != nullptr;
     if (irqLog)
@@ -2879,13 +2887,19 @@ void PS2Memory::queueCompletedDmacCause(uint32_t cause)
 {
     std::lock_guard<std::mutex> lock(m_completedDmacMutex);
     m_completedDmacCauses.push_back(cause);
+    m_causesPending.store(true, std::memory_order_release);
 }
 
 void PS2Memory::queueIntcCause(uint32_t cause)
 {
     raiseIntcStat(1u << cause);
-    std::lock_guard<std::mutex> lock(m_completedDmacMutex);
-    m_pendingIntcCauses.push_back(cause);
+    {
+        std::lock_guard<std::mutex> lock(m_completedDmacMutex);
+        m_pendingIntcCauses.push_back(cause);
+        m_causesPending.store(true, std::memory_order_release);
+    }
+    if (m_intcWake)
+        m_intcWake();
 }
 
 std::vector<uint32_t> PS2Memory::consumeIntcCauses()
@@ -2893,6 +2907,7 @@ std::vector<uint32_t> PS2Memory::consumeIntcCauses()
     std::lock_guard<std::mutex> lock(m_completedDmacMutex);
     std::vector<uint32_t> causes;
     causes.swap(m_pendingIntcCauses);
+    m_causesPending.store(!m_completedDmacCauses.empty(), std::memory_order_release);
     return causes;
 }
 
@@ -2901,6 +2916,7 @@ std::vector<uint32_t> PS2Memory::consumeCompletedDmacCauses()
     std::lock_guard<std::mutex> lock(m_completedDmacMutex);
     std::vector<uint32_t> causes;
     causes.swap(m_completedDmacCauses);
+    m_causesPending.store(!m_pendingIntcCauses.empty(), std::memory_order_release);
     return causes;
 }
 
