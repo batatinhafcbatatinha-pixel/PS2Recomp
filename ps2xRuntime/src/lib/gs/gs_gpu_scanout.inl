@@ -147,8 +147,10 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
     static const bool readbackAlways = std::getenv("PS2X_GS_PRESENT_READBACK") != nullptr;
     if (sharedMainContext && !request.forceReadback && !readbackAlways)
     {
+        const GLuint target = scanoutTextures[scanoutNext];
+        scanoutNext = (scanoutNext + 1u) % static_cast<uint32_t>(scanoutTextures.size());
         gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, scanoutBuffer);
-        gl.TextureSubImage2D(scanoutTexture, 0, 0, 0, static_cast<GLsizei>(stride), static_cast<GLsizei>(maxHeight), GL_RGBA,
+        gl.TextureSubImage2D(target, 0, 0, 0, static_cast<GLsizei>(stride), static_cast<GLsizei>(maxHeight), GL_RGBA,
                              GL_UNSIGNED_BYTE, nullptr);
         gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0u);
         {
@@ -156,6 +158,7 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
             if (handoffFence)
                 gl.DeleteSync(handoffFence);
             handoffFence = gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
+            scanoutTexture = target;
             ++handoffFrames;
         }
         gl.Flush(); // the fence must reach the GPU before another context waits on it

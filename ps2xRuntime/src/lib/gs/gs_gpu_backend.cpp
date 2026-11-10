@@ -142,6 +142,8 @@ namespace
     constexpr GLenum GL_DYNAMIC_STORAGE_BIT = 0x0100;
     constexpr GLenum GL_STREAM_DRAW = 0x88E0;
     constexpr GLbitfield GL_ALL_BARRIER_BITS = 0xFFFFFFFFu;
+    // GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT; PS2X_GS_FULL_BARRIERS=1 restores all bits.
+    const GLbitfield kStorageBarrier = std::getenv("PS2X_GS_FULL_BARRIERS") ? 0xFFFFFFFFu : (0x2000u | 0x200u);
     constexpr GLenum GL_TRIANGLES = 0x0004;
     constexpr GLenum GL_FRAMEBUFFER = 0x8D40;
     constexpr GLenum GL_FRAMEBUFFER_DEFAULT_WIDTH = 0x9310;
@@ -424,6 +426,11 @@ struct GSGpuBackend::Impl
     // Producer state: everything the frontend submits, in order.
     std::mutex producerMutex;
     std::vector<GpuPrim> prims;
+    // Deferred TEXFLUSH: the batch is cut only when a textured primitive reads VRAM the batch has drawn into
+    // (bytes [batchWriteLo, batchWriteHi): its frame and Z buffers). Cutting at every TEXFLUSH left batches of a few
+    // primitives, each followed by a GPU-wide barrier. PS2X_GS_TEXFLUSH_SPLIT=1 cuts at every TEXFLUSH again.
+    bool texBarrierPending = false;
+    uint64_t batchWriteLo = ~0ull, batchWriteHi = 0;
     std::vector<GpuState> states;
     GSTransferCommand transfer{};
     GSTransferSnapshot transferState{};
@@ -449,7 +456,11 @@ struct GSGpuBackend::Impl
     uint32_t presenceStreak = 0;
     std::mutex handoffMutex;
     uint64_t handoffFrames = 0;
-    GLuint scanoutTexture = 0;
+    GLuint scanoutTexture = 0; // the latest handed-off picture (one of scanoutTextures)
+    // Three in rotation: the GS thread writes one the window is not drawing (a single texture made the driver
+    // serialize the two contexts: the GS thread waited for the window's draws and swaps).
+    std::array<GLuint, 3> scanoutTextures{};
+    uint32_t scanoutNext = 0;
     uint32_t nativePresentationWidth = 0, nativePresentationHeight = 0;
     GLuint vao = 0, fbo = 0;
 
@@ -491,7 +502,10 @@ struct GSGpuBackend::Impl
     void flushPrimsLocked()
     {
         if (prims.empty())
+        {
+            texBarrierPending = false;
             return;
+        }
         std::string metadata = "{}";
         static const bool capturing = std::getenv("PS2X_GS_CAPTURE_DIR") != nullptr;
         if (capturing)
@@ -510,6 +524,9 @@ struct GSGpuBackend::Impl
         enqueue([this, p = std::move(prims), s = std::move(states)]() { drawBatch(p, s); }, "draw", std::move(metadata));
         prims.clear();
         states.clear();
+        texBarrierPending = false;
+        batchWriteLo = ~0ull;
+        batchWriteHi = 0u;
     }
 
     // Caller holds producerMutex; runs job on the GS thread after all prior work.
@@ -635,7 +652,8 @@ struct GSGpuBackend::Impl
         }
         if (journalFile) { std::fclose(journalFile); journalFile = nullptr; }
         gl.Finish();
-        if (scanoutTexture) gl.DeleteTextures(1, &scanoutTexture);
+        for (GLuint &texture : scanoutTextures)
+            if (texture) gl.DeleteTextures(1, &texture);
         glfwMakeContextCurrent(nullptr);
     }
 
@@ -765,12 +783,16 @@ struct GSGpuBackend::Impl
         gl.CreateBuffers(1, &scanoutPresenceBuffer);
         gl.NamedBufferStorage(scanoutPresenceBuffer, 3u * sizeof(uint32_t), zeros.data(), GL_DYNAMIC_STORAGE_BIT);
 #if PS2X_GPU_TEXTURE_HANDOFF
-        gl.CreateTextures(GL_TEXTURE_2D, 1, &scanoutTexture);
-        gl.TextureStorage2D(scanoutTexture, 1, GL_RGBA8, 640, 512);
-        gl.TextureParameteri(scanoutTexture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        gl.TextureParameteri(scanoutTexture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        gl.TextureParameteri(scanoutTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        gl.TextureParameteri(scanoutTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        for (GLuint &texture : scanoutTextures)
+        {
+            gl.CreateTextures(GL_TEXTURE_2D, 1, &texture);
+            gl.TextureStorage2D(texture, 1, GL_RGBA8, 640, 512);
+            gl.TextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.TextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        scanoutTexture = scanoutTextures[0];
 #endif
 #endif
         gl.CreateVertexArrays(1, &vao);
@@ -850,7 +872,9 @@ struct GSGpuBackend::Impl
         gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
         gl.Viewport(0, 0, 2048, 2048);
         gl.DrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(p.size() * 6u));
-        gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+        // The next draw or dispatch reads VRAM as a storage buffer: that is all it waits for. Readbacks, copies and the
+        // scanout issue their own full barrier.
+        gl.MemoryBarrier(kStorageBarrier);
         checkErrors("draw", static_cast<uint32_t>(p.size()));
         if (workLogs < 24u)
         {
@@ -873,7 +897,7 @@ struct GSGpuBackend::Impl
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, stagingBuffer);
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, paramBuffer);
         gl.DispatchCompute((invocations + localSize - 1u) / localSize, 1, 1);
-        gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+        gl.MemoryBarrier(kStorageBarrier);
         checkErrors(program == uploadProgram ? "upload" : (program == clutProgram ? "clut" : "copy"), invocations);
     }
 
@@ -909,9 +933,15 @@ struct GSGpuBackend::Impl
         }
         if (readbackFence)
         {
-            gl.ClientWaitSync(readbackFence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+            // Not waited for: while the GPU has not reached the previous copy, it stays pending and this request is
+            // served from the older shadow (waiting here kept the GL thread from feeding the GPU).
+            const GLenum status = gl.ClientWaitSync(readbackFence, GL_SYNC_FLUSH_COMMANDS_BIT, 0u);
+            if (status == 0x911Bu /* GL_TIMEOUT_EXPIRED */ && collect)
+                return;
             gl.DeleteSync(readbackFence);
             readbackFence = nullptr;
+            if (status == 0x911Bu)
+                collect = false; // a synchronous readback refreshed the shadow; the old stage is dropped
             std::lock_guard<std::mutex> lock(shadowMutex);
             if (collect && stagedEnd > stagedStart)
                 gl.GetNamedBufferSubData(readbackStage, stagedStart, stagedEnd - stagedStart, shadow + stagedStart);
@@ -1044,6 +1074,7 @@ bool GSGpuBackend::GetNativePresentation(NativePresentation &out) {
     auto *backend = s_mainThreadNativeBackend;
     if (backend && glfwGetCurrentContext() == backend->m_impl->sharedMainContext) {
         auto &impl = *backend->m_impl;
+        std::lock_guard<std::mutex> lock(impl.handoffMutex);
         out.texture = impl.scanoutTexture;
         out.sequence = impl.handoffFrames;
         out.width = impl.nativePresentationWidth;
@@ -1138,6 +1169,25 @@ void GSGpuBackend::Submit(const GSPrimitiveBatch &batch)
     const int ofy = ctx.xyoffset.ofy >> 4;
     const auto lock = GsSyncStats::lockTimed(impl.producerMutex);
     traceSubmit(batch);
+    {
+        // Deferred TEXFLUSH (see texBarrierPending): a textured primitive that reads what this batch drew cuts it.
+        const auto pageRows = [](uint32_t lines) { return (static_cast<uint64_t>(lines) + 31u) / 32u + 1u; };
+        if (impl.texBarrierPending && state.prim.tme)
+        {
+            const GSTex0Reg &t = ctx.tex0;
+            const bool mipmapped = ((ctx.tex1 >> 2) & 7u) != 0u;
+            const uint64_t lo = static_cast<uint64_t>(t.tbp0) * 256u;
+            const uint64_t hi = lo + static_cast<uint64_t>(std::max<uint32_t>(t.tbw, 1u)) * 8192u * pageRows(1u << std::min<uint32_t>(t.th, 11u));
+            if (mipmapped || hi > kVramSize || (lo < impl.batchWriteHi && impl.batchWriteLo < hi))
+                impl.flushPrimsLocked();
+        }
+        const uint64_t rows = pageRows(static_cast<uint32_t>(ctx.scissor.y1) + 1u);
+        const uint64_t frameLo = static_cast<uint64_t>(ctx.frame.fbp) * 8192u;
+        const uint64_t zLo = static_cast<uint64_t>(ctx.zbuf.zbp) * 8192u;
+        const uint64_t span = static_cast<uint64_t>(std::max<uint32_t>(ctx.frame.fbw, 1u)) * 8192u * rows;
+        impl.batchWriteLo = std::min({impl.batchWriteLo, frameLo, zLo});
+        impl.batchWriteHi = std::max({impl.batchWriteHi, frameLo + span, zLo + span});
+    }
 
     switch (state.prim.type)
     {
@@ -1448,9 +1498,13 @@ void GSGpuBackend::Flush()
 
 void GSGpuBackend::TextureFlush()
 {
-    // Split the batch so later draws sample what earlier ones rendered.
+    // Later draws must sample what earlier ones rendered: Submit cuts the batch when one reads what it drew.
     std::lock_guard<std::mutex> lock(m_impl->producerMutex);
-    m_impl->flushPrimsLocked();
+    static const bool splitAlways = std::getenv("PS2X_GS_TEXFLUSH_SPLIT") != nullptr;
+    if (splitAlways)
+        m_impl->flushPrimsLocked();
+    else if (!m_impl->prims.empty())
+        m_impl->texBarrierPending = true;
 }
 
 void GSGpuBackend::Sync(GSSyncReason)
