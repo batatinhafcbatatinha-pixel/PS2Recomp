@@ -89,12 +89,15 @@ namespace host_video {
         apply(initial, false);
     }
     // Game frames per second, counted as changes of the displayed framebuffer.
-    inline void countFrame(uint32_t displayBuffer, bool displayWritten = false) {
+    inline void countFrame(uint32_t displayBuffer, bool displayWritten = false, uint64_t vblank = 0) {
         static uint32_t lastBuffer = 0, frames = 0, presents = 0;
+        static uint64_t lastCountedVblank = ~0ull; // a flip and a front-buffer write in one vblank are one frame
         static double windowStart = GetTime();
         static double lastFlip = GetTime(), worstGap = 0.0; static uint32_t hitches = 0; // longest wait between flips in this window
-        if (displayBuffer != lastBuffer || displayWritten) {
-            lastBuffer = displayBuffer; ++frames;
+        const bool flipped = displayBuffer != lastBuffer;
+        lastBuffer = displayBuffer;
+        if ((flipped || displayWritten) && (vblank == 0 || vblank != lastCountedVblank)) {
+            lastCountedVblank = vblank; ++frames;
             const double t = GetTime(), gap = t - lastFlip;
             lastFlip = t;
             worstGap = std::max(worstGap, gap);

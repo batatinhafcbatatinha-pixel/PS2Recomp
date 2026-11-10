@@ -3508,7 +3508,7 @@ void PS2Runtime::run()
             const bool newTick = tick != lastCountTick; // at most one written-buffer frame per vblank
             lastCountTick = tick;
             host_video::countFrame(static_cast<uint32_t>(gsr.dispfb1) ^ (static_cast<uint32_t>(gsr.dispfb2) * 0x9E3779B1u),
-                                   newTick && g_gsDisplayWritten.exchange(false, std::memory_order_relaxed));
+                                   newTick && g_gsDisplayWritten.exchange(false, std::memory_order_relaxed), tick + 1u);
         }
         {
             // Stall diagnostic: when the game stops flipping frames for 8 s, log the
