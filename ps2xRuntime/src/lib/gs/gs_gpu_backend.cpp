@@ -249,6 +249,50 @@ namespace
     };
     static_assert(sizeof(GpuPrim) == 32 * 4, "GpuPrim must match the GLSL layout");
 
+    // A few disjoint VRAM byte ranges (a batch's frame, Z and render targets, or the textures it samples). One
+    // interval spanning them all made every CLUT load inside it look like a hazard. Full: the closest two merge.
+    struct RangeSet
+    {
+        static constexpr uint32_t kMax = 8u;
+        uint64_t lo[kMax] = {}, hi[kMax] = {};
+        uint32_t count = 0u;
+        void clear() { count = 0u; }
+        bool overlaps(uint64_t a, uint64_t b) const
+        {
+            for (uint32_t i = 0; i < count; ++i)
+                if (a < hi[i] && lo[i] < b)
+                    return true;
+            return false;
+        }
+        void add(uint64_t a, uint64_t b)
+        {
+            for (uint32_t i = 0; i < count; ++i)
+                if (a <= hi[i] && lo[i] <= b) // overlapping or touching: grow it
+                {
+                    lo[i] = std::min(lo[i], a);
+                    hi[i] = std::max(hi[i], b);
+                    return;
+                }
+            if (count < kMax)
+            {
+                lo[count] = a;
+                hi[count] = b;
+                ++count;
+                return;
+            }
+            uint32_t best = 0u;
+            uint64_t bestGrow = ~0ull;
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint64_t grow = (std::max(hi[i], b) - std::min(lo[i], a)) - (hi[i] - lo[i]);
+                if (grow < bestGrow)
+                    bestGrow = grow, best = i;
+            }
+            lo[best] = std::min(lo[best], a);
+            hi[best] = std::max(hi[best], b);
+        }
+    };
+
     struct GpuState
     {
         uint32_t fbp, fbw, fpsm, fbmsk;
@@ -427,25 +471,26 @@ struct GSGpuBackend::Impl
     std::mutex producerMutex;
     std::vector<GpuPrim> prims;
     // Deferred TEXFLUSH: the batch is cut only when a textured primitive reads VRAM the batch has drawn into
-    // (bytes [batchWriteLo, batchWriteHi): its frame and Z buffers). Cutting at every TEXFLUSH left batches of a few
+    // (batchWrite: its frame and Z buffers). Cutting at every TEXFLUSH left batches of a few
     // primitives, each followed by a GPU-wide barrier. PS2X_GS_TEXFLUSH_SPLIT=1 cuts at every TEXFLUSH again.
     bool texBarrierPending = false;
     // Bytes of VRAM the pending batch samples as textures: an upload or copy into them (or into what it draws) must
     // cut the batch first; any other one may run before the batch's draw (it touches nothing the batch uses).
-    uint64_t batchReadLo = ~0ull, batchReadHi = 0;
+    RangeSet batchRead;
     // CLUT ring: every load fills the next slot (a copy of the current one, then the loaded entries), states point at
     // their slot, so a CLUT load no longer cuts the batch. Cut only when the ring would reuse a slot the batch reads.
     static constexpr uint32_t kClutSlots = 64u, kClutSlotWords = 512u;
     uint32_t clutSlot = 0u, clutLoadsInBatch = 0u;
     bool overlapsBatch(uint64_t lo, uint64_t hi) const
     {
-        return (lo < batchWriteHi && batchWriteLo < hi) || (lo < batchReadHi && batchReadLo < hi);
+        return batchWrite.overlaps(lo, hi) || batchRead.overlaps(lo, hi);
     }
     // PS2X_GS_RB_ORDER=1: how many draw batches a GS->EE download still waits for after the last one that wrote
     // its rectangle (the readback drains the whole queue; few after = the rectangle is drawn late in the frame).
     uint64_t rbBatches = 0, rbLastHit = 0, rbSamples = 0, rbAfterSum = 0, rbTotalSum = 0, rbFrameStart = 0;
     uint64_t rbLo = 0, rbHi = 0;
-    uint64_t batchWriteLo = ~0ull, batchWriteHi = 0;
+    uint64_t flushReasons[16] = {}; // batch cuts by cause (PS2X_GS_RB_ORDER report)
+    RangeSet batchWrite;
     std::vector<GpuState> states;
     GSTransferCommand transfer{};
     GSTransferSnapshot transferState{};
@@ -514,7 +559,7 @@ struct GSGpuBackend::Impl
     }
 
     // Caller holds producerMutex.
-    void flushPrimsLocked()
+    void flushPrimsLocked(uint32_t reason = 0u)
     {
         if (prims.empty())
         {
@@ -522,6 +567,7 @@ struct GSGpuBackend::Impl
             clutLoadsInBatch = 0u;
             return;
         }
+        ++flushReasons[std::min<uint32_t>(reason, 15u)];
         std::string metadata = "{}";
         static const bool capturing = std::getenv("PS2X_GS_CAPTURE_DIR") != nullptr;
         if (capturing)
@@ -538,16 +584,14 @@ struct GSGpuBackend::Impl
             metadata += "]}";
         }
         ++rbBatches;
-        if (rbHi > rbLo && batchWriteLo < rbHi && rbLo < batchWriteHi)
+        if (rbHi > rbLo && batchWrite.overlaps(rbLo, rbHi))
             rbLastHit = rbBatches;
         enqueue([this, p = std::move(prims), s = std::move(states)]() { drawBatch(p, s); }, "draw", std::move(metadata));
         prims.clear();
         states.clear();
         texBarrierPending = false;
-        batchWriteLo = ~0ull;
-        batchWriteHi = 0u;
-        batchReadLo = ~0ull;
-        batchReadHi = 0u;
+        batchWrite.clear();
+        batchRead.clear();
         clutLoadsInBatch = 0u;
     }
 
@@ -555,7 +599,7 @@ struct GSGpuBackend::Impl
     void runSyncLocked(const char *reason, std::function<void()> job, std::string metadata = "{}")
     {
         GsSyncStats::Scope scope(reason);
-        flushPrimsLocked();
+        flushPrimsLocked(1);
         std::promise<void> done;
         std::future<void> finished = done.get_future();
         enqueue([&]() {
@@ -578,7 +622,7 @@ struct GSGpuBackend::Impl
     {
         prims.push_back(p);
         if (prims.size() >= kMaxBatchPrims)
-            flushPrimsLocked();
+            flushPrimsLocked(2);
     }
 
     // Diagnostic metadata is opt-in; the original parameter order is preserved.
@@ -1166,7 +1210,7 @@ void GSGpuBackend::Reset()
 {
     Impl &impl = *m_impl;
     std::lock_guard<std::mutex> lock(impl.producerMutex);
-    impl.flushPrimsLocked();
+    impl.flushPrimsLocked(3);
     impl.transfer = {};
     impl.transfer.direction = 3u;
     impl.transferState = {};
@@ -1204,17 +1248,22 @@ void GSGpuBackend::Submit(const GSPrimitiveBatch &batch)
             uint64_t hi = lo + static_cast<uint64_t>(std::max<uint32_t>(t.tbw, 1u)) * 8192u * pageRows(1u << std::min<uint32_t>(t.th, 11u));
             if (mipmapped || hi > kVramSize)
                 lo = 0u, hi = kVramSize; // mip levels anywhere: the whole VRAM
-            if (impl.texBarrierPending && (mipmapped || (lo < impl.batchWriteHi && impl.batchWriteLo < hi)))
-                impl.flushPrimsLocked();
-            impl.batchReadLo = std::min(impl.batchReadLo, lo);
-            impl.batchReadHi = std::max(impl.batchReadHi, hi);
+            if (impl.texBarrierPending && (mipmapped || impl.batchWrite.overlaps(lo, hi)))
+                impl.flushPrimsLocked(4);
+            impl.batchRead.add(lo, hi);
         }
-        const uint64_t rows = pageRows(static_cast<uint32_t>(ctx.scissor.y1) + 1u);
+        // Frame and Z buffers start on a page: a row of fbw pages holds 32 lines (32-bit) or 64 (16-bit formats).
+        const uint32_t lines = static_cast<uint32_t>(ctx.scissor.y1) + 1u;
+        const auto bufferSpan = [&](uint32_t psm) {
+            const bool sixteen = (psm & 0xFu) == 0x2u || (psm & 0xFu) == 0xAu;
+            const uint32_t perRow = sixteen ? 64u : 32u;
+            return static_cast<uint64_t>(std::max<uint32_t>(ctx.frame.fbw, 1u)) * 8192u * ((lines + perRow - 1u) / perRow);
+        };
         const uint64_t frameLo = static_cast<uint64_t>(ctx.frame.fbp) * 8192u;
         const uint64_t zLo = static_cast<uint64_t>(ctx.zbuf.zbp) * 8192u;
-        const uint64_t span = static_cast<uint64_t>(std::max<uint32_t>(ctx.frame.fbw, 1u)) * 8192u * rows;
-        impl.batchWriteLo = std::min({impl.batchWriteLo, frameLo, zLo});
-        impl.batchWriteHi = std::max({impl.batchWriteHi, frameLo + span, zLo + span});
+        impl.batchWrite.add(frameLo, frameLo + bufferSpan(ctx.frame.psm));
+        if (!ctx.zbuf.zmask)
+            impl.batchWrite.add(zLo, zLo + bufferSpan(ctx.zbuf.psm));
     }
 
     switch (state.prim.type)
@@ -1384,9 +1433,18 @@ void GSGpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     // would reuse a slot the batch still reads.
     {
         const uint64_t cbpLo = static_cast<uint64_t>(tex0.cbp) * 256u;
-        if ((cbpLo < impl.batchWriteHi && impl.batchWriteLo < cbpLo + 8192u * 2u) ||
+        static int clutCutLog = std::getenv("PS2X_GS_RB_ORDER") ? 12 : 0;
+        if (clutCutLog > 0 && impl.batchWrite.overlaps(cbpLo, cbpLo + 8192u * 2u))
+        {
+            --clutCutLog;
+            std::fprintf(stderr, "[gs:clut-cut] cbp=%u (byte %llx) csm=%u csa=%u writes:", tex0.cbp, (unsigned long long)cbpLo, tex0.csm, tex0.csa);
+            for (uint32_t i = 0; i < impl.batchWrite.count; ++i)
+                std::fprintf(stderr, " %llx-%llx", (unsigned long long)impl.batchWrite.lo[i], (unsigned long long)impl.batchWrite.hi[i]);
+            std::fprintf(stderr, "\n");
+        }
+        if (impl.batchWrite.overlaps(cbpLo, cbpLo + 8192u * 2u) ||
             impl.clutLoadsInBatch + 1u >= Impl::kClutSlots)
-            impl.flushPrimsLocked();
+            impl.flushPrimsLocked(5);
     }
     const uint32_t previousSlot = impl.clutSlot;
     impl.clutSlot = (impl.clutSlot + 1u) % Impl::kClutSlots;
@@ -1424,7 +1482,7 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
         const uint32_t total = impl.transferState.totalPixels;
         if (total != 0u)
         {
-            impl.flushPrimsLocked();
+            impl.flushPrimsLocked(6);
             std::array<uint32_t, 15> params = {0u, total, command.trxreg.rrw, command.trxreg.rrh, command.trxpos.dir,
                                                command.bitbltbuf.spsm, command.bitbltbuf.sbp, std::max<uint32_t>(command.bitbltbuf.sbw, 1u),
                                                command.trxpos.ssax, command.trxpos.ssay,
@@ -1450,7 +1508,7 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
         static const bool rbOrder = std::getenv("PS2X_GS_RB_ORDER") != nullptr;
         if (rbOrder)
         {
-            impl.flushPrimsLocked();
+            impl.flushPrimsLocked(6);
             if (impl.rbLo == start && impl.rbHi == end)
             {
                 ++impl.rbSamples;
@@ -1467,6 +1525,14 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
                 std::fprintf(stderr, "[gs:rb-order] downloads=%llu batches/frame=%.0f after-last-write=%.0f range=%llx-%llx\n",
                              (unsigned long long)impl.rbSamples, double(impl.rbTotalSum) / impl.rbSamples,
                              double(impl.rbAfterSum) / impl.rbSamples, (unsigned long long)start, (unsigned long long)end);
+                static const char *names[16] = {"other", "sync-job", "max-prims", "reset", "tex-hazard", "clut", "transfer", "upload",
+                                                "flush", "texflush", "sync", "present", "", "", "", ""};
+                std::fprintf(stderr, "[gs:cuts]");
+                for (uint32_t r = 0; r < 16u; ++r)
+                    if (impl.flushReasons[r])
+                        std::fprintf(stderr, " %s=%llu", names[r], (unsigned long long)impl.flushReasons[r]);
+                std::fprintf(stderr, "\n");
+                std::fill(std::begin(impl.flushReasons), std::end(impl.flushReasons), 0ull);
                 impl.rbSamples = impl.rbAfterSum = impl.rbTotalSum = 0;
             }
         }
@@ -1479,7 +1545,7 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
         impl.asyncEnd = e;
         if (asyncReadback && impl.readbackPrimed && sameRange)
         {
-            impl.flushPrimsLocked();
+            impl.flushPrimsLocked(6);
             impl.enqueue([&impl, s, e]() { impl.readbackAsync(s, e); }, "readback-async");
         }
         else
@@ -1492,7 +1558,7 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
             impl.readbackPrimed = true;
             if (asyncReadback) // stage this rectangle for the next request
             {
-                impl.flushPrimsLocked();
+                impl.flushPrimsLocked(6);
                 impl.enqueue([&impl, s, e]() { impl.readbackAsync(s, e, false); }, "readback-async");
             }
         }
@@ -1544,7 +1610,7 @@ void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
         const uint64_t lo = static_cast<uint64_t>(tr.bitbltbuf.dbp & ~31u) * 256u + (tr.trxpos.dsay / 32u) * rowBytes;
         const uint64_t hi = static_cast<uint64_t>(tr.bitbltbuf.dbp) * 256u + ((tr.trxpos.dsay + tr.trxreg.rrh) / 32u + 1u) * rowBytes + 8192u;
         if (hi > kVramSize || impl.overlapsBatch(lo, hi))
-            impl.flushPrimsLocked();
+            impl.flushPrimsLocked(7);
     }
     impl.enqueue([&impl, copy, bytes = std::vector<uint8_t>(data, data + usedBytes)]() mutable {
         impl.uploadPixels(std::move(bytes), copy.data());
@@ -1566,7 +1632,7 @@ void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 void GSGpuBackend::Flush()
 {
     std::lock_guard<std::mutex> lock(m_impl->producerMutex);
-    m_impl->flushPrimsLocked();
+    m_impl->flushPrimsLocked(8);
 }
 
 void GSGpuBackend::TextureFlush()
@@ -1575,7 +1641,7 @@ void GSGpuBackend::TextureFlush()
     std::lock_guard<std::mutex> lock(m_impl->producerMutex);
     static const bool splitAlways = std::getenv("PS2X_GS_TEXFLUSH_SPLIT") != nullptr;
     if (splitAlways)
-        m_impl->flushPrimsLocked();
+        m_impl->flushPrimsLocked(9);
     else if (!m_impl->prims.empty())
         m_impl->texBarrierPending = true;
 }
@@ -1584,7 +1650,7 @@ void GSGpuBackend::Sync(GSSyncReason)
 {
     // Readers that need GPU results wait themselves (Present, ReadVram, ...).
     std::lock_guard<std::mutex> lock(m_impl->producerMutex);
-    m_impl->flushPrimsLocked();
+    m_impl->flushPrimsLocked(10);
 }
 
 PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
@@ -1597,7 +1663,7 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     {
         // Queued in order under the lock, waited for without it: the frontend keeps submitting while the GS thread catches up.
         std::lock_guard<std::mutex> lock(impl.producerMutex);
-        impl.flushPrimsLocked();
+        impl.flushPrimsLocked(11);
         impl.enqueue([&]() {
             frame = impl.presentGpu(request);
             done.set_value();
