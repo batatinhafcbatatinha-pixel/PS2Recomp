@@ -331,6 +331,8 @@ public:
     // Wakes the EE scheduler when a device raises an interrupt off the EE thread (VIF1 I bit): without it a sleeping EE
     // (idle or pacing wait) took the interrupt only at its next timer deadline, and the stalled VIF1 list waited with it.
     void setIntcWakeCallback(std::function<void()> wake) { m_intcWake = std::move(wake); }
+    // GS->EE download bytes (VIF1 DMA towards memory): fills dst, returns the bytes written.
+    void setGsDownloadCallback(std::function<uint32_t(uint8_t *, uint32_t)> fn) { m_gsDownload = std::move(fn); }
     void setGifPacketCallback(GifPacketCallback cb) { m_gifPacketCallback = std::move(cb); }
     void setGifArbiter(GifArbiter *arbiter) { m_gifArbiter = arbiter; }
 
@@ -472,6 +474,7 @@ public:
     std::vector<uint32_t> m_completedDmacCauses;
     std::vector<uint32_t> m_pendingIntcCauses;
     std::function<void()> m_intcWake;
+    std::function<uint32_t(uint8_t *, uint32_t)> m_gsDownload;
     std::atomic<bool> m_causesPending{false};
     std::atomic<bool> m_vif1IrqStall{false};
     std::atomic<int> m_gifStatBusyReads{0}; // GIF_STAT reads that still show PATH3 active after a GIF DMA kick

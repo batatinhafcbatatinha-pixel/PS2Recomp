@@ -2111,6 +2111,22 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
             PS2TL(TL_KICK, channelBase, qwc);
 
+            // VIF1 with CHCR.DIR=0 runs towards memory: the GS->EE download (BUSDIR=1, VIF1_STAT.FDR). It was sent
+            // the other way, into VIF1, so the destination buffer's contents became VIF codes and the game never got
+            // the picture (MotorStorm AE downloads 256x128 every frame).
+            if (channelBase == 0x10009000u && (value & 0x1u) == 0u && ((value >> 2) & 0x3u) == 0u)
+            {
+                gifVifSync(); // the GS must have reached the download (TRXDIR=1) and drawn what it reads
+                const uint32_t phys = madr & (PS2_RAM_SIZE - 1u);
+                const uint32_t bytes = std::min<uint32_t>(qwc * 16u, PS2_RAM_SIZE - phys);
+                if (m_rdram && bytes && m_gsDownload && !isScratchpad(madr))
+                    m_gsDownload(m_rdram + phys, bytes);
+                m_ioRegisters[channelBase + 0x10] = (madr + qwc * 16u) & 0x7FFFFFF0u;
+                m_ioRegisters[channelBase + 0x20] = 0u;
+                completeDmacChannel(channelBase, 1u);
+                return true;
+            }
+
             if (tryProcessScratchpadDma(channelBase, value))
             {
                 return true;

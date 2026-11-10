@@ -898,7 +898,7 @@ void EeScheduler::sleepCurrent()
 int EeScheduler::wakeupThread(int id, bool interruptSafe)
 {
     assertExecutor();
-    if (id == 0 || id == m_currentThreadId)
+    if (id == 0 || (id == m_currentThreadId && !interruptSafe))
     {
         return KE_ILLEGAL_THID;
     }
@@ -906,6 +906,15 @@ int EeScheduler::wakeupThread(int id, bool interruptSafe)
     if (!target)
     {
         return KE_UNKNOWN_THID;
+    }
+    // iWakeupThread from a handler that interrupted the target itself (an alarm due between its SetAlarm and its
+    // SleepThread) counts a wakeup, as on the EE kernel: rejecting it lost the wakeup and the SleepThread that followed
+    // never returned (MotorStorm AE's frame limiter 0x284340 froze the game on menus and loading screens).
+    if (id == m_currentThreadId)
+    {
+        ++target->wakeupCount;
+        publishSnapshot();
+        return KE_OK;
     }
     if (target->status == EeThreadStatus::Dormant)
     {
