@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <unordered_set>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -2008,7 +2010,16 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             std::snprintf(name, sizeof(name), captureVu0 ? "/vu0_%016llx.bin" : "/vu1_%016llx.bin",
                           static_cast<unsigned long long>(hashMicrocode(vuCode, codeSize)));
             const std::string path = std::string(captureDir) + name;
-            if (!std::filesystem::exists(path))
+            // Saved once per distinct micro memory: the filesystem is asked only for code not seen in this run (it
+            // was asked at every code change: ~1-2% of the VIF and EE threads in MotorStorm AE test runs).
+            static std::mutex savedMutex;
+            static std::unordered_set<std::string> saved;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> lock(savedMutex);
+                fresh = saved.insert(path).second;
+            }
+            if (fresh && !std::filesystem::exists(path))
                 if (std::FILE *file = std::fopen(path.c_str(), "wb"))
                 {
                     std::fwrite(vuCode, 1, codeSize, file);
@@ -2587,7 +2598,8 @@ VU1Interpreter::CompiledProgramFn VU1Interpreter::compiledProgramFor(uint8_t *vu
             char name[64];
             std::snprintf(name, sizeof(name), "/vu1_%016llx.bin", static_cast<unsigned long long>(hashMicrocode(vuCode, codeSize)));
             const std::string path = std::string(captureDir) + name;
-            if (!std::filesystem::exists(path))
+            static std::unordered_set<std::string> savedCompiled; // this thread only (VU1 runs on the VIF worker)
+            if (savedCompiled.insert(path).second && !std::filesystem::exists(path))
             {
                 std::FILE *file = std::fopen(path.c_str(), "wb");
                 if (file != nullptr)

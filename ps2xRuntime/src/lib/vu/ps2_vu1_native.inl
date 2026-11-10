@@ -860,6 +860,7 @@ bool VU1Interpreter::runNative(StepContext &context)
     uint32_t loopCycId = 0u;
     uint64_t loopCycles = 0u;
     std::array<uint64_t, 4> loopScalar{};
+    bool loopScalarValid = false; // the streak's FDIV/EFU/XGKICK distances are known (from its second iteration)
     const auto scalarDistances = [&](const NativeState::Slot &s, uint64_t start) {
         std::array<uint64_t, 4> d{};
         const NativeState::BlockTiming &bt = *s.bt;
@@ -940,16 +941,22 @@ bool VU1Interpreter::runNative(StepContext &context)
         uint32_t cycId = 0u;
         const uint8_t *cyc = sl.idle;
         std::array<uint64_t, 4> scalar{};
+        bool haveScalar = false; // computed only for a block that repeats (the distances cost as much as blockTiming)
         if (sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid)
         {
-            scalar = scalarDistances(sl, start);
-            if (loopReuseOn && &sl == loopSlot && loopCycles >= 2ull * ns.maxLat + 16u && ns.arraysReadyBy <= start &&
-                scalar == loopScalar)
+            bool reused = false;
+            if (loopReuseOn && &sl == loopSlot)
             {
-                cyc = loopCyc;
-                cycId = loopCycId;
+                scalar = scalarDistances(sl, start);
+                haveScalar = true;
+                if (loopScalarValid && loopCycles >= 2ull * ns.maxLat + 16u && ns.arraysReadyBy <= start && scalar == loopScalar)
+                {
+                    cyc = loopCyc;
+                    cycId = loopCycId;
+                    reused = true;
+                }
             }
-            else
+            if (!reused)
                 cyc = VU1NativeAccess::blockTiming(*this, sl, cycId);
         }
         ctx.cyc = cyc;
@@ -964,14 +971,20 @@ bool VU1Interpreter::runNative(StepContext &context)
         }
         const uint32_t result = fn(ctx);
         VU1NativeAccess::finishBlockTiming(*this, sl, cyc, cycId, start);
-        if (&sl == loopSlot && cyc == loopCyc && cycId == loopCycId && scalar == loopScalar)
+        if (&sl == loopSlot && cyc == loopCyc && cycId == loopCycId && haveScalar && loopScalarValid && scalar == loopScalar)
             loopCycles += m_cycle - start;
+        else if (&sl == loopSlot && cyc == loopCyc && cycId == loopCycId && haveScalar)
+        {
+            loopScalar = scalar; // the streak starts here, with known distances
+            loopScalarValid = true;
+            loopCycles = m_cycle - start;
+        }
         else
         {
             loopSlot = &sl;
             loopCyc = cyc;
             loopCycId = cycId;
-            loopScalar = scalar;
+            loopScalarValid = false;
             loopCycles = m_cycle - start;
         }
         if (m_cycle >= m_nextCommitCycle)
