@@ -2232,7 +2232,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         if (!why.empty())
         {
             ++bad;
-            const bool bisectMismatch = why.find("0000ffff") != std::string::npos || std::getenv("GOW_VU1N_BISECT_ANY");
+            static const char *bisectPcEnv = std::getenv("GOW_VU1N_BISECT_PC"); // only programs starting here (hex)
+            const bool bisectPcOk = !bisectPcEnv || std::strtoul(bisectPcEnv, nullptr, 16) == startPc;
+            const bool bisectMismatch = bisectPcOk && (why.find("0000ffff") != std::string::npos || std::getenv("GOW_VU1N_BISECT_ANY"));
             if (reports++ < 40u || (bisectMismatch && bisected < 6u))
                 std::fprintf(stderr, "[vu1n-verify] run %u (bad %u) startPc=%x MISMATCH:%s\n", checked, bad, startPc, why.c_str());
             if (bisectMismatch && bisected++ < 6u)

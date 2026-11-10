@@ -5,6 +5,9 @@ name = "FlatOut 2"
 [env]
 # The hw renderer shows nothing of this game (16-bit display buffer at FBP 0); the gpu one runs it to races.
 PS2X_GS = "gpu"
+# Native VU1 blocks 0x7A8 (car shader: scrambled car textures) and 0x2D0 (wrong ADC bit: giant dark triangles)
+# differ from the exact engine (GOW_VU1N_VERIFY + BISECT_PC). They run on the exact engine until the generator is fixed.
+PS2X_VU1N_SKIP = "7a8,2d0"
 
 [sdk]
 # As the old profile (reached races): runtime sceGsSyncV/sceGsResetGraph, the game's own sceMpegIsEnd/sceMpegDelete

@@ -113,6 +113,18 @@ void VU1Interpreter::nativeTiming(const uint8_t *code, uint32_t pc, uint32_t cou
     }
 }
 
+// vf0/vi0 are constants: the interpreter's step loop restores them after every pair, single-op callouts must too
+// (FlatOut 2 wrote vf0 through one; every later program reading it as zero drew giant dark triangles).
+static inline void restoreConstRegs(VU1Interpreter &vu)
+{
+    VU1State &st = vu.state();
+    st.vf[0][0] = 0.0f;
+    st.vf[0][1] = 0.0f;
+    st.vf[0][2] = 0.0f;
+    st.vf[0][3] = 1.0f;
+    st.vi[0] = 0;
+}
+
 void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper)
 {
     VU1Interpreter &vu = *n.vu;
@@ -120,6 +132,7 @@ void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, ui
     vu.m_state.pc = pc;
     vu.execLower(lower, c.vuData, c.dataSize, *c.gs, c.memory, upper);
     VU1NativeAccess::commitValuesKeepTiming(vu);
+    restoreConstRegs(vu);
     VU1NativeAccess::importFlags(vu); // the callout's flag writes join the native blocks' ones
 }
 
@@ -133,6 +146,7 @@ void VU1NativeAccess::callEfu(VU1NativeCtx &n, uint32_t rel, uint32_t pc, uint32
     vu.m_state.pc = pc;
     vu.execLower(lower, c.vuData, c.dataSize, *c.gs, c.memory, upper);
     vu.m_cycle = keep;
+    restoreConstRegs(vu);
 }
 
 void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
@@ -141,6 +155,7 @@ void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
     vu.m_state.pc = pc;
     vu.execUpper(upper);
     VU1NativeAccess::commitValuesKeepTiming(vu);
+    restoreConstRegs(vu);
     VU1NativeAccess::importFlags(vu); // the callout's flag writes join the native blocks' ones
 }
 
@@ -825,6 +840,25 @@ bool VU1Interpreter::runNative(StepContext &context)
         if (!sl.known)
             VU1NativeAccess::slotFor(*this, context.vuCode, context.codeSize, pc);
         VU1NativeFn fn = sl.fn;
+        // PS2X_VU1N_SKIP=<pc>[,<pc>...]: VU1 blocks starting at these pcs run on the exact engine (a game's native
+        // block that GOW_VU1N_VERIFY reports as differing, e.g. FlatOut 2's car shader block 0x7A8).
+        static const std::vector<uint32_t> skipPcs = []
+        {
+            std::vector<uint32_t> list;
+            if (const char *env = std::getenv("PS2X_VU1N_SKIP"))
+                for (const char *p = env; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 16);
+                    if (end == p)
+                        break;
+                    list.push_back(static_cast<uint32_t>(v) & ~7u);
+                    p = *end == ',' ? end + 1 : end;
+                }
+            return list;
+        }();
+        if (fn && m_unit == Unit::VU1 && !skipPcs.empty() && std::find(skipPcs.begin(), skipPcs.end(), pc) != skipPcs.end())
+            fn = nullptr;
         if (!fn)
         {
             ++ns.missBlocks;

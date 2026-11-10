@@ -697,10 +697,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     }
 
     if (frameDump && *frameDump && width && height && !s_scratch.empty() &&
-        (lastFrameDumpTick == std::numeric_limits<uint64_t>::max() || currentTick >= lastFrameDumpTick + 120u)) {
+        (lastFrameDumpTick == std::numeric_limits<uint64_t>::max() || currentTick >= lastFrameDumpTick + dumpTicks)) {
         Image frame{s_scratch.data(), static_cast<int>(width), static_cast<int>(height), 1,
                     PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-        ExportImage(frame, frameDump);
+        // A '%' in PS2X_FRAME_DUMP (e.g. D:/f/frame_%06llu.bmp) numbers the files by vsync tick instead of
+        // overwriting one, so a run with PS2X_FRAME_DUMP_TICKS=1 keeps every frame (finds one-frame flicker).
+        if (std::strchr(frameDump, '%'))
+        {
+            char path[1024];
+            std::snprintf(path, sizeof(path), frameDump, static_cast<unsigned long long>(currentTick));
+            ExportImage(frame, path);
+        }
+        else
+            ExportImage(frame, frameDump);
         lastFrameDumpTick = currentTick;
     }
     if (sharedFrames)
