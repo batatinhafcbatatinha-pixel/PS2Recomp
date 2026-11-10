@@ -746,6 +746,10 @@ if(PS2X_IS_VITA)
 
     if(PS2X_VITA_CREATE_PACKAGE)
         set(PS2X_VITA_VPK_FILES "")
+        # Third-party driver modules (PowerVR SGX via PVR_PSP2, gl4es4vita) staged by vita/setup.sh outside the
+        # repository; they are not distributed with PS2Recomp.
+        set(PS2X_VITA_MODULE_DIR "$ENV{VITASDK}/arm-vita-eabi/share/ps2x-vita-modules" CACHE PATH
+            "Folder with the Vita .suprx modules staged by vita/setup.sh")
 
         foreach(PS2X_VITA_MODULE IN ITEMS
             libgpu_es4_ext.suprx
@@ -753,7 +757,10 @@ if(PS2X_IS_VITA)
             libGLESv2.suprx
             libpvrPSP2_WSEGL.suprx
             libGL.suprx)
-            set(PS2X_VITA_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vita/module/${PS2X_VITA_MODULE}")
+            set(PS2X_VITA_MODULE_PATH "${PS2X_VITA_MODULE_DIR}/${PS2X_VITA_MODULE}")
+            if(NOT EXISTS "${PS2X_VITA_MODULE_PATH}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vita/module/${PS2X_VITA_MODULE}")
+                set(PS2X_VITA_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vita/module/${PS2X_VITA_MODULE}") # older local setups
+            endif()
 
             if(EXISTS "${PS2X_VITA_MODULE_PATH}")
                 list(APPEND PS2X_VITA_VPK_FILES FILE "${PS2X_VITA_MODULE_PATH}" "module/${PS2X_VITA_MODULE}")

@@ -2,8 +2,10 @@
 # Setup of the PS Vita GL toolchain that the PS2 runtime needs.
 #
 # Installs, into $VITASDK, the full PowerVR OpenGL ES stack the runtime's raylib
-# backend depends on, plus stages the runtime .suprx modules into the repo so the
-# vpk can bundle them. Run this ONCE per machine (idempotent; safe to re-run).
+# backend depends on, plus stages the runtime .suprx modules into the VitaSDK tree
+# ($VITASDK/arm-vita-eabi/share/ps2x-vita-modules, or $PS2X_VITA_MODULE_DIR) so the vpk can bundle them.
+# They are third-party driver binaries (PowerVR via PVR_PSP2, gl4es4vita): they are downloaded on each
+# machine and never committed to this repository. Run this ONCE per machine (idempotent; safe to re-run).
 #
 #   Prerequisites: VitaSDK installed with $VITASDK exported, plus curl/unzip/cmake.
 #   Usage: ./vita/setup.sh
@@ -27,7 +29,7 @@ command -v cmake >/dev/null || fail "cmake not found"
 export PATH="$VITASDK/bin:$PATH"
 PREFIX="$VITASDK/arm-vita-eabi"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODULE_DEST="$REPO_ROOT/ps2xRuntime/vita/module"
+MODULE_DEST="${PS2X_VITA_MODULE_DIR:-$PREFIX/share/ps2x-vita-modules}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -91,7 +93,7 @@ make -C raylib/src PLATFORM=PLATFORM_VITA -j"$(nproc)" >/dev/null
 make -C raylib/src install >/dev/null
 
 echo ""
-echo "==> setup complete. Modules staged in ps2xRuntime/vita/module/:"
+echo "==> setup complete. Modules staged in $MODULE_DEST:"
 ls "$MODULE_DEST"
 echo ""
 echo "Now build the vpk with:  ./vita/build.sh <boot-elf-path-on-vita>"

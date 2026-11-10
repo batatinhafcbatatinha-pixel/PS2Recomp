@@ -30,3 +30,5 @@ ps2xRuntime/src/lib/codwaw_*_chunk_*.cpp
 /.local/
 
 __pycache__/
+# Third-party Vita driver modules (PVR_PSP2, gl4es4vita): staged by vita/setup.sh, never committed
+ps2xRuntime/vita/module/
