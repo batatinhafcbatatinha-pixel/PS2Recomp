@@ -110,9 +110,10 @@ void VU1Interpreter::setDirectRegisterWrites(bool enabled)
     m_statusQuiet = false;
 }
 
-void VU1Interpreter::resetScheduler()
+void VU1Interpreter::resetScheduler(bool commitFlags)
 {
-    commitReadyFlags(); // GOW-Port: las ya listas se habrían confirmado en su ciclo
+    if (commitFlags)
+        commitReadyFlags(); // GOW-Port: las ya listas se habrían confirmado en su ciclo
     m_lastRunHitBudget = false; // GOW-Port
     m_nextCommitCycle = ~0ull;
     // Only live entries are cleared: an entry is in use exactly while its flag-queue slot or pending bit is (commits reset
@@ -168,6 +169,15 @@ void VU1Interpreter::reset()
     m_state.r = 0x3F800000u;
     m_cycle = 0;
     resetScheduler();
+}
+
+void VU1Interpreter::beginOneShotCall()
+{
+    m_cycle = 0;
+    if (m_native)
+        m_native->cleanCycle = ~0ull; // m_cycle went back: the readiness arrays must be cleared
+    resetScheduler(false);
+    m_oneShotPrepared = true;
 }
 
 float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
@@ -1940,7 +1950,16 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
                              uint32_t startPC, uint32_t top, uint32_t itop,
                              uint32_t maxCycles)
 {
-    resetScheduler();
+    if (m_oneShotPrepared)
+    {
+        // The scheduler was cleared by beginOneShotCall() and nothing ran since; only the part of resetScheduler that
+        // depends on the state the caller loaded in between is left.
+        m_oneShotPrepared = false;
+        m_workingClip = m_state.clip;
+        m_discardReadyOnEnd = true;
+    }
+    else
+        resetScheduler();
     m_state.pc = startPC & microAddressMask();
     m_state.ebit = false;
     m_state.haltAfterDelaySlot = false;
@@ -1956,6 +1975,7 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
+    m_discardReadyOnEnd = false;
 }
 
 void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
