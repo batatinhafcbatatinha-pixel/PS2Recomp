@@ -132,13 +132,22 @@ void VU1Interpreter::resetScheduler()
     m_storePending = m_vfPending = m_viPending = m_accPending = 0u;
     m_flagHead = m_flagCount = 0u;
     m_xgkick.reset();
-    m_vfReady = {};
-    m_viReady = {};
-    m_accReady = {};
+    // Every reader takes max(m_cycle, ready) (calculatePairReadyCycle, blockTiming's note/walkHistory, the native entry
+    // scan), and m_cycle never goes back between programs, so entries <= m_cycle behave exactly like zeroed ones.
+    // cleanCycle == m_cycle proves arraysReadyBy bounds every entry (see run()); then the 1.2 KB clear is redundant.
+    const bool arraysAlreadyReady = m_native && m_native->cleanCycle == m_cycle && m_native->arraysReadyBy <= m_cycle;
+    if (!arraysAlreadyReady)
+    {
+        m_vfReady = {};
+        m_viReady = {};
+        m_accReady = {};
+    }
     if (m_native) // GOW-Port: native backend bookkeeping of these arrays (ps2_vu1_native.inl)
     {
         m_native->arraysReadyBy = 0u;
         m_native->exitCycle = m_cycle;
+        m_native->histCount = 0u; // a program-end exit leaves its history unsynced (see runNative)
+        m_native->cleanCycle = ~0ull;
     }
     // m_*LatestWrite keep their values: m_nextWriteSequence keeps counting, so no new write can match an old sequence.
     m_efuResourceReady = 0;
@@ -1958,6 +1967,14 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     m_state.itop = itop;
     m_state.stoppedByD = false;
     m_state.stoppedByT = false;
+    // Unlike execute(), no resetScheduler(): a program that ended left its in-flight native results only in the block
+    // history (runNative skips the array sync on program end); the exact engine needs them in the readiness arrays.
+    if (m_native)
+    {
+        if (m_native->histCount != 0u)
+            VU1NativeAccess::syncInflight(*this);
+        m_native->cleanCycle = ~0ull;
+    }
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -2057,12 +2074,14 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     };
     if (dumpThisRun)
         dumpData("in");
+    // A plain lambda reference instead of std::function: nothing is constructed for the (usual) runs without dumping.
+    const auto dumpOut = [&] { dumpData("out"); ++dataDumped; };
     struct DumpAfter
     {
         bool on;
-        std::function<void()> fn;
+        const decltype(dumpOut) &fn;
         ~DumpAfter() { if (on) fn(); }
-    } dumpAfter{dumpThisRun, [&] { dumpData("out"); ++dataDumped; }};
+    } dumpAfter{dumpThisRun, dumpOut};
     // GOW-Port: native backend first (translated blocks, immediate semantics); the exact engine steps one pair whenever the
     // current pc has no native block and is the fallback for everything else.
     const auto runExact = [&](StepContext &ctx)
@@ -2365,7 +2384,13 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
 
     if (programEnded)
     {
+        // No exact-engine step since the last native exit (m_cycle == exitCycle) means arraysReadyBy is exact and no
+        // native block wrote the arrays (the program-end sync is skipped): flushPipelines only advances m_cycle, so the
+        // next resetScheduler() may leave the arrays alone when they are all <= that cycle.
+        const bool arraysExact = m_native && m_native->exitCycle == m_cycle;
         flushPipelines();
+        if (m_native)
+            m_native->cleanCycle = arraysExact ? m_cycle : ~0ull;
         m_state.ebit = false;
         m_state.haltAfterDelaySlot = false;
         m_pendingHaltD = false;

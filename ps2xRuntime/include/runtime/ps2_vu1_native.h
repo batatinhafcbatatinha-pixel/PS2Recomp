@@ -175,6 +175,9 @@ struct VU1Interpreter::NativeState
     // Every lane of the exact engine's readiness arrays is ready by arraysReadyBy (the arrays are cleared at every program
     // start; recomputed at native entry when the exact engine ran since the last native exit at exitCycle).
     uint64_t arraysReadyBy = 0, exitCycle = ~0ull;
+    // m_cycle at the end of the last program that ended with arraysReadyBy exact (no exact-engine step since the last
+    // native exit); ~0 otherwise. resetScheduler() then skips clearing the readiness arrays when all are <= m_cycle.
+    uint64_t cleanCycle = ~0ull;
     std::vector<uint16_t> sig; // scratch: (lane << 8 | slack) of the in-flight lanes a block reads
     using FlagRing = VU1FlagRing;
     FlagRing macRing, clipRing;
