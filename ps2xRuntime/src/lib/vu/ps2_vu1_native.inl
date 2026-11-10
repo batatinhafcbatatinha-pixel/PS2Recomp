@@ -1004,7 +1004,10 @@ bool VU1Interpreter::runNative(StepContext &context)
     m_state.cycles = m_cycle; // only read outside the blocks (diagnostics)
     if (armed)
     {
-        VU1NativeAccess::syncInflight(*this); // the exact engine continues: its readiness arrays become current
+        // The exact engine continues: its readiness arrays become current. Not when the program ended: flushPipelines()
+        // never reads them and the next execute() clears them; resume() syncs the (kept) history if it follows instead.
+        if (!context.programEnded)
+            VU1NativeAccess::syncInflight(*this);
         VU1NativeAccess::exportFlags(*this);
         ns.exitCycle = m_cycle;
     }
