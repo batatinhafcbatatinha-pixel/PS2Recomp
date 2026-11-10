@@ -2397,7 +2397,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                     if (!chainBuf.empty())
                     {
-                        lastChainBytes.store(chainBuf.size(), std::memory_order_relaxed);
+                        // High-water mark: a smaller chain between big ones must not make the next big kick regrow the buffer.
+                        if (chainBuf.size() > lastChainBytes.load(std::memory_order_relaxed))
+                            lastChainBytes.store(chainBuf.size(), std::memory_order_relaxed);
                         PendingTransfer pt;
                         pt.fromScratchpad = false;
                         pt.srcAddr = 0;

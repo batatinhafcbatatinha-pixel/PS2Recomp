@@ -2028,7 +2028,8 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
     };
     if (vu0Dump)
         dumpVu0("in");
-    m_vu0.reset();
+    // copyVu0ContextToState memsets and fills the whole state, so reset()'s memset would be dead work.
+    m_vu0.beginOneShotCall();
     copyVu0ContextToState(ctx, m_vu0.state());
     // A VCALLMS program runs to its E bit, like on the VU. The old 4096-cycle cap cut long programs short: The Sopranos
     // converts every bone's quaternion to a matrix in one call (~89 cycles per bone), so bones past ~46 stayed

@@ -66,6 +66,11 @@ public:
     explicit VU1Interpreter(Unit unit = Unit::VU1);
 
     void reset();
+    // For callers that overwrite the whole VU1State right afterwards and then call execute() (VU0 VCALLMS on the EE
+    // thread): same as reset() minus the state memset, and the scheduler is cleared without committing leftover flags
+    // (they would only land in a state that is about to be overwritten). The next execute() skips its own
+    // resetScheduler() (nothing to clear) and, when the program ends, the native exit does not rebuild readiness arrays.
+    void beginOneShotCall();
 
     void execute(uint8_t *vuCode, uint32_t codeSize,
                  uint8_t *vuData, uint32_t dataSize,
@@ -384,7 +389,9 @@ private:
     void queueAccWrite(uint8_t laneMask, const float value[4], uint32_t latency);
     void startXgkick(uint32_t qwordAddress);
 
-    void resetScheduler();
+    void resetScheduler(bool commitFlags = true);
+    bool m_oneShotPrepared = false;  // beginOneShotCall() ran, execute() has not consumed it yet
+    bool m_discardReadyOnEnd = false; // inside such an execute(): readiness arrays die with the run
     void commitReadyPipelines();
     // GOW-Port: los flags MAC/estado/clip se confirman cuando alguien los lee (FS*/FM*/FC*), al final de una
     // ejecución o cuando lo hace commitReadyPipelines por otra cola, aplicando las entradas ya listas en este

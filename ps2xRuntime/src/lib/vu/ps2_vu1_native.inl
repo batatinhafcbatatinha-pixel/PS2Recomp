@@ -1004,7 +1004,10 @@ bool VU1Interpreter::runNative(StepContext &context)
     m_state.cycles = m_cycle; // only read outside the blocks (diagnostics)
     if (armed)
     {
-        VU1NativeAccess::syncInflight(*this); // the exact engine continues: its readiness arrays become current
+        if (m_discardReadyOnEnd && context.programEnded)
+            ns.histCount = 0u; // one-shot call: the next call's scheduler reset zeroes the arrays, nobody reads them before
+        else
+            VU1NativeAccess::syncInflight(*this); // the exact engine continues: its readiness arrays become current
         VU1NativeAccess::exportFlags(*this);
         ns.exitCycle = m_cycle;
     }
