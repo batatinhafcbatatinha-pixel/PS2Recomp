@@ -903,6 +903,18 @@ struct GSGpuBackend::Impl
         readbackFence = gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
     }
 
+    // Only the bytes [offset, offset + bytes) of the VRAM (a GS->EE transfer reads a few pages, not 4 MB).
+    void readbackShadowRange(uint32_t offset, uint32_t bytes)
+    {
+        const uint32_t size = std::min<uint32_t>(shadowSize, kVramSize);
+        if (!shadow || offset >= size)
+            return;
+        bytes = std::min(bytes, size - offset);
+        gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
+        std::lock_guard<std::mutex> lock(shadowMutex);
+        gl.GetNamedBufferSubData(vramBuffer, offset, bytes, shadow + offset);
+    }
+
     void readbackShadow()
     {
         if (!shadow)
@@ -1315,7 +1327,17 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
         }
         else
         {
-            impl.runSyncLocked("local-to-host", [&impl]() { impl.readbackShadow(); });
+            // The pages the rectangle can touch: from the page row of its first line to the one after its last, a row
+            // being sbw pages (64 px wide CT32 pages; narrower formats need fewer, so this covers them). Wraps: all.
+            const uint32_t rowPages = std::max<uint32_t>(command.bitbltbuf.sbw, 1u);
+            const uint32_t y0 = command.trxpos.ssay, y1 = y0 + std::max<uint32_t>(command.trxreg.rrh, 1u) - 1u;
+            const uint64_t start = static_cast<uint64_t>(command.bitbltbuf.sbp & ~31u) * 256u + (y0 / 32u) * rowPages * 8192ull;
+            const uint64_t end = static_cast<uint64_t>(command.bitbltbuf.sbp) * 256u + (y1 / 32u + 1u) * rowPages * 8192ull + 8192u;
+            if (end <= kVramSize)
+                impl.runSyncLocked("local-to-host", [&impl, start, end]() {
+                    impl.readbackShadowRange(static_cast<uint32_t>(start), static_cast<uint32_t>(end - start)); });
+            else
+                impl.runSyncLocked("local-to-host", [&impl]() { impl.readbackShadow(); });
             impl.readbackPrimed = true;
         }
         std::lock_guard<std::mutex> shadowLock(impl.shadowMutex);
