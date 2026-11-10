@@ -257,11 +257,11 @@ uint lookupClut(State s, uint index)
     if (!sixteenBit && s.csm == 0u && isEightBit(s.tpsm))
         clutIndex = min((sourceIndex & 0xF0u) + clutBase, 240u) + (sourceIndex & 0x0Fu);
     if (s.cpsm == 0u)
-        return applyTexa(s, 0u, clut[clutIndex] | (clut[clutIndex + 256u] << 16u));
+        return applyTexa(s, 0u, clut[s.pad0 + clutIndex] | (clut[s.pad0 + clutIndex + 256u] << 16u));
     if (s.cpsm == 1u)
-        return applyTexa(s, 1u, (clut[clutIndex] | (clut[clutIndex + 256u] << 16u)) & 0x00FFFFFFu);
+        return applyTexa(s, 1u, (clut[s.pad0 + clutIndex] | (clut[s.pad0 + clutIndex + 256u] << 16u)) & 0x00FFFFFFu);
     if (sixteenBit)
-        return applyTexa(s, s.cpsm, rgba5551To8888(clut[clutIndex]));
+        return applyTexa(s, s.cpsm, rgba5551To8888(clut[s.pad0 + clutIndex]));
     return 0xFFFF00FFu;
 }
 
@@ -701,7 +701,7 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Clut { uint clut[]; };
 layout(std430, binding = 6) readonly buffer Params
 {
-    uint fourBit, sixteenBit, csm, cpsm, cbp, csa, cbw, cou, cov;
+    uint fourBit, sixteenBit, csm, cpsm, cbp, csa, cbw, cou, cov, slotBase;
 };
 uint swizzleCsm1(uint index) { return (index & ~0x18u) | ((index & 0x08u) << 1u) | ((index & 0x10u) >> 1u); }
 void main()
@@ -730,12 +730,12 @@ void main()
     const uint destination = (suffix ? entry : destinationBase + entry) & (sixteenBit != 0u ? 0x1FFu : 0x0FFu);
     if (sixteenBit != 0u)
     {
-        clut[destination] = raw & 0xFFFFu;
+        clut[slotBase + destination] = raw & 0xFFFFu;
     }
     else
     {
-        clut[destination] = raw & 0xFFFFu;
-        clut[destination + 256u] = raw >> 16u;
+        clut[slotBase + destination] = raw & 0xFFFFu;
+        clut[slotBase + destination + 256u] = raw >> 16u;
     }
 }
 )GLSL";
