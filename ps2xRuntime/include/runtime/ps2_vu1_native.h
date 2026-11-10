@@ -148,7 +148,8 @@ struct VU1Interpreter::NativeState
         // Entry timing by predecessors (blocks that read entry flags): when the unbroken run of blocks before this one spans
         // maxLat cycles or more and nothing from the exact engine is still in flight, those blocks and their timing tables
         // alone decide the entry state; the timing found for that run is reused.
-        struct Memo { uint64_t key = 0; const uint8_t *cyc = nullptr; uint32_t id = 0; };
+        // idx: the BlockTiming cache entry the table lives in (~0u: the idle table); valid while that entry still has `id`
+        struct Memo { uint64_t key = 0; const uint8_t *cyc = nullptr; uint32_t id = 0; uint32_t idx = ~0u; };
         alignas(64) Memo memo[4];
         uint32_t memoNext = 0;
     };

@@ -534,7 +534,7 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
         // The run of blocks that ends where this one starts, back to maxLat cycles or to the first block since the arrays
         // were last current (nothing older is in flight then): their tables give every lane's ready cycle. FDIV, EFU and
         // XGKICK are part of the key as the block sees them.
-        const uint32_t n = std::min<uint32_t>({ns.histCount, NS::kHist, 16u});
+        const uint32_t n = std::min<uint32_t>(std::min<uint32_t>(ns.histCount, NS::kHist), 16u);
         uint64_t key = 0x9E3779B97F4A7C15ull, expected = start;
         bool complete = n == ns.histCount;
         for (uint32_t k = 0; k < n; ++k)
@@ -573,12 +573,21 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
         for (const NS::Slot::Memo &m : sl.memo)
             if (m.key == memoKey && m.cyc)
             {
-                cycId = m.id;
-                return m.cyc;
+                if (m.idx == ~0u)
+                {
+                    cycId = m.id;
+                    return m.cyc;
+                }
+                // a cache entry replaced since gets a new id (ids are never reused)
+                if (m.idx < bt.cache.size() && bt.cache[m.idx].id == m.id)
+                {
+                    cycId = m.id;
+                    return bt.cache[m.idx].cyc.data();
+                }
             }
-    const auto remember = [&](const uint8_t *cyc, uint32_t id) {
+    const auto remember = [&](const uint8_t *cyc, uint32_t id, uint32_t idx) {
         if (memoKey != 0u)
-            sl.memo[sl.memoNext++ & 3u] = NS::Slot::Memo{memoKey, cyc, id};
+            sl.memo[sl.memoNext++ & 3u] = NS::Slot::Memo{memoKey, cyc, id, idx};
         cycId = id;
         return cyc;
     };
@@ -619,10 +628,10 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
                 ns.sig.push_back(static_cast<uint16_t>(((200u + k) << 8) | std::min<uint64_t>(ready[k] - start - bt.scalarAt[k], 255u)));
     }
     if (ns.sig.empty())
-        return remember(bt.idle, 0u);
-    for (const auto &c : bt.cache)
-        if (c.sig == ns.sig)
-            return remember(c.cyc.data(), c.id);
+        return remember(bt.idle, 0u, ~0u);
+    for (uint32_t k = 0; k < bt.cache.size(); ++k)
+        if (bt.cache[k].sig == ns.sig)
+            return remember(bt.cache[k].cyc.data(), bt.cache[k].id, k);
     // simulate on the exact engine's pipeline state (synced; this also drops the history, whose timing tables may be
     // cache slots replaced below), then restore it
     syncInflight(vu);
@@ -667,15 +676,12 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     vu.m_efu = efu;
     vu.m_efuResourceReady = efuResource;
     vu.m_xgkick.active = xgkick;
-    NS::BlockTiming::Cached &slot = bt.cache.size() < 16u ? bt.cache.emplace_back() : bt.cache[bt.next++ % 16u];
+    const uint32_t idx = bt.cache.size() < 16u ? static_cast<uint32_t>(bt.cache.size()) : bt.next++ % 16u;
+    NS::BlockTiming::Cached &slot = idx == bt.cache.size() ? bt.cache.emplace_back() : bt.cache[idx];
     slot.sig = ns.sig;
     slot.cyc = std::move(cyc);
-    slot.id = ns.nextCycId++;
-    for (NS::Slot &other : ns.slots) // may point into the cache slot replaced here
-        if (other.bt == &bt)
-            for (NS::Slot::Memo &m : other.memo)
-                m.cyc = nullptr;
-    return remember(slot.cyc.data(), slot.id);
+    slot.id = ns.nextCycId++; // memos of the entry replaced here no longer match (see the lookup above)
+    return remember(slot.cyc.data(), slot.id, idx);
 }
 
 // After a native block: it joins the history (its results that outlive it are found there when needed).
@@ -825,6 +831,24 @@ bool VU1Interpreter::runNative(StepContext &context)
     ctx.macRing = &ns.macRing;
     ctx.clipRing = &ns.clipRing;
 
+    // PS2X_VU1N_SKIP=<pc>[,<pc>...]: VU1 blocks starting at these pcs run on the exact engine (a game's native
+    // block that GOW_VU1N_VERIFY reports as differing, e.g. FlatOut 2's car shader block 0x7A8).
+    static const std::vector<uint32_t> skipPcs = []
+    {
+        std::vector<uint32_t> list;
+        if (const char *env = std::getenv("PS2X_VU1N_SKIP"))
+            for (const char *p = env; *p;)
+            {
+                char *end = nullptr;
+                const unsigned long v = std::strtoul(p, &end, 16);
+                if (end == p)
+                    break;
+                list.push_back(static_cast<uint32_t>(v) & ~7u);
+                p = *end == ',' ? end + 1 : end;
+            }
+        return list;
+    }();
+    const bool skipAny = m_unit == Unit::VU1 && !skipPcs.empty();
     bool handled = false;
     for (;;)
     {
@@ -840,24 +864,7 @@ bool VU1Interpreter::runNative(StepContext &context)
         if (!sl.known)
             VU1NativeAccess::slotFor(*this, context.vuCode, context.codeSize, pc);
         VU1NativeFn fn = sl.fn;
-        // PS2X_VU1N_SKIP=<pc>[,<pc>...]: VU1 blocks starting at these pcs run on the exact engine (a game's native
-        // block that GOW_VU1N_VERIFY reports as differing, e.g. FlatOut 2's car shader block 0x7A8).
-        static const std::vector<uint32_t> skipPcs = []
-        {
-            std::vector<uint32_t> list;
-            if (const char *env = std::getenv("PS2X_VU1N_SKIP"))
-                for (const char *p = env; *p;)
-                {
-                    char *end = nullptr;
-                    const unsigned long v = std::strtoul(p, &end, 16);
-                    if (end == p)
-                        break;
-                    list.push_back(static_cast<uint32_t>(v) & ~7u);
-                    p = *end == ',' ? end + 1 : end;
-                }
-            return list;
-        }();
-        if (fn && m_unit == Unit::VU1 && !skipPcs.empty() && std::find(skipPcs.begin(), skipPcs.end(), pc) != skipPcs.end())
+        if (skipAny && fn && std::find(skipPcs.begin(), skipPcs.end(), pc) != skipPcs.end())
             fn = nullptr;
         if (!fn)
         {
