@@ -89,11 +89,11 @@ namespace host_video {
         apply(initial, false);
     }
     // Game frames per second, counted as changes of the displayed framebuffer.
-    inline void countFrame(uint32_t displayBuffer) {
+    inline void countFrame(uint32_t displayBuffer, bool displayWritten = false) {
         static uint32_t lastBuffer = 0, frames = 0, presents = 0;
         static double windowStart = GetTime();
         static double lastFlip = GetTime(), worstGap = 0.0; static uint32_t hitches = 0; // longest wait between flips in this window
-        if (displayBuffer != lastBuffer) {
+        if (displayBuffer != lastBuffer || displayWritten) {
             lastBuffer = displayBuffer; ++frames;
             const double t = GetTime(), gap = t - lastFlip;
             lastFlip = t;

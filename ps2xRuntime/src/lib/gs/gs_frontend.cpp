@@ -509,6 +509,10 @@ void GS::refreshDisplaySnapshot()
 }
 
 std::atomic<bool> g_gsForceReadback{false}; // next presentation returns pixels (test frame dumps)
+// Games that never flip (GTA LCS draws into one displayed buffer): a vblank in which a draw or transfer wrote the displayed
+// buffer counts as a game frame for the fps counter (host_video::countFrame).
+std::atomic<uint32_t> g_gsDisplayFbp{0xFFFFFFFFu};
+std::atomic<bool> g_gsDisplayWritten{false};
 
 GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 {
@@ -521,6 +525,10 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.display1 = m_privRegs->display1;
     request.dispfb2 = m_privRegs->dispfb2;
     request.display2 = m_privRegs->display2;
+    {
+        const bool circuit1 = (request.pmode & 1u) != 0u || (request.pmode & 2u) == 0u;
+        g_gsDisplayFbp.store(static_cast<uint32_t>((circuit1 ? request.dispfb1 : request.dispfb2) & 0x1FFu), std::memory_order_relaxed);
+    }
     request.bgcolor = m_privRegs->bgcolor;
     request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
     request.contextFrames[0] = m_ctx[0].frame;
@@ -535,8 +543,9 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     {
         static uint64_t last[6] = {};
         static int changes = 0;
+        static const int maxChanges = std::max(32, std::atoi(std::getenv("PS2X_GS_DISPLAY_LOG"))); // =<n>: log n changes
         const uint64_t now[6] = {request.pmode, request.smode2, request.dispfb1, request.display1, request.dispfb2, request.display2};
-        if (std::memcmp(last, now, sizeof(now)) != 0 && changes < 32)
+        if (std::memcmp(last, now, sizeof(now)) != 0 && changes < maxChanges)
         {
             ++changes;
             std::memcpy(last, now, sizeof(now));
@@ -1423,6 +1432,8 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TRXDIR:
     {
         m_trxdir = static_cast<uint32_t>(value & 0x3);
+        if (m_trxdir != 1u && m_bitbltbuf.dbp == g_gsDisplayFbp.load(std::memory_order_relaxed) * 32u)
+            g_gsDisplayWritten.store(true, std::memory_order_relaxed);
         {
             // PS2X_GS_XFER_TRACE=N: log the first N transfers (then every 256th).
             static const long traceLimit = std::getenv("PS2X_GS_XFER_TRACE") ? std::atol(std::getenv("PS2X_GS_XFER_TRACE")) : 0;
@@ -1708,6 +1719,8 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
+        if (batch.state.context.frame.fbp == g_gsDisplayFbp.load(std::memory_order_relaxed))
+            g_gsDisplayWritten.store(true, std::memory_order_relaxed);
         m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
     }

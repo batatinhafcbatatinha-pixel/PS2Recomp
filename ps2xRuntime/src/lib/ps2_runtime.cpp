@@ -3499,7 +3499,17 @@ void PS2Runtime::run()
         EndDrawing();
         PS2TL(TL_SWAP_END);
         ps2TimelinePoll();
-        host_video::countFrame(static_cast<uint32_t>(m_memory.gs().dispfb1));
+        {
+            // a flip on either read circuit counts (GTA LCS flips DISPFB2; circuit 1 off or fixed)
+            const auto &gsr = m_memory.gs();
+            extern std::atomic<bool> g_gsDisplayWritten;
+            static uint64_t lastCountTick = 0;
+            const uint64_t tick = eeScheduler().currentVSyncTick();
+            const bool newTick = tick != lastCountTick; // at most one written-buffer frame per vblank
+            lastCountTick = tick;
+            host_video::countFrame(static_cast<uint32_t>(gsr.dispfb1) ^ (static_cast<uint32_t>(gsr.dispfb2) * 0x9E3779B1u),
+                                   newTick && g_gsDisplayWritten.exchange(false, std::memory_order_relaxed));
+        }
         {
             // Stall diagnostic: when the game stops flipping frames for 8 s, log the
             // EE thread and semaphore states once per stall.

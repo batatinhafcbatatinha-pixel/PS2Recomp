@@ -709,7 +709,8 @@ def step_smoke(port, args):
     out.mkdir(parents=True)
     env = game_env(port, args)
     frame = out / 'frame.png'
-    env['PS2X_FRAME_DUMP'] = str(frame)
+    if '%' not in env.get('PS2X_FRAME_DUMP', ''):  # a numbered pattern (every frame kept) is the caller's; no shots then
+        env['PS2X_FRAME_DUMP'] = str(frame)
     env.setdefault('PS2X_FRAME_DUMP_TICKS', '30')
     logf = (out / 'run.log').open('w', encoding='utf-8', errors='replace')
     proc = subprocess.Popen([str(exe), str(port.elf_path)], cwd=port.observed.parent, env=env, stdout=logf, stderr=subprocess.STDOUT)

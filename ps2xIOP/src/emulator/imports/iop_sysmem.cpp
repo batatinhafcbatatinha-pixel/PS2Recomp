@@ -68,7 +68,8 @@ namespace ps2x::iop::detail
         case 7: // QueryMaxFreeMemSize
         case 8: // QueryTotalFreeMemSize
             setV0(m_memory.maxFreeMemory(ordinal == 8));
-            if (std::getenv("PS2X_TRACE_IOPMEM"))
+            static const bool traceIopMem = std::getenv("PS2X_TRACE_IOPMEM") != nullptr;
+            if (traceIopMem)
                 m_host.log(LogLevel::Info, "[iop-mem] query" + std::to_string(ordinal) + " -> 0x" + hex(cpu.gpr[2]) +
                                                " ra=0x" + hex(cpu.gpr[31]));
             return true;

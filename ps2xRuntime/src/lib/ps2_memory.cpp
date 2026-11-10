@@ -438,7 +438,7 @@ void PS2Memory::stallVif1ForInterrupt()
         m_vif1IrqStall.store(false, std::memory_order_release);
         static std::atomic<unsigned> offWorker{0};
         const unsigned n = ++offWorker;
-        if (std::getenv("PS2X_VIF1_IRQ_LOG") && (n & (n - 1)) == 0)
+        if ((n & (n - 1)) == 0 && std::getenv("PS2X_VIF1_IRQ_LOG"))
             std::fprintf(stderr, "[vif1-irq] off-worker=%u\n", n);
         return;
     }
@@ -1289,6 +1289,9 @@ uint32_t PS2Memory::read32(uint32_t address)
         static const bool asyncPaths = std::getenv("PS2X_ASYNC_PATHS") != nullptr;
         if (asyncPaths && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
             return static_cast<uint32_t>(((gs_regs.csr.load() | 2u) >> ((address & 7u) * 8u)) & 0xFFFFFFFFull);
+        static const bool csrNoSync32 = std::getenv("PS2X_CSR_NOSYNC") != nullptr;
+        if (csrNoSync32 && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
+            return static_cast<uint32_t>((gs_regs.csr.load() >> ((address & 7u) * 8u)) & 0xFFFFFFFFull);
         gifVifSync();
         uint32_t off = address & 7;
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
@@ -1338,8 +1341,31 @@ uint64_t PS2Memory::read64(uint32_t address)
 
     if (isGsPrivReg(address))
     {
-        gifVifSync();
+        // PS2X_GSREAD_STATS=1: count 64-bit privileged-register reads per register (each one waits for VIF and GS)
+        static const bool readStats = std::getenv("PS2X_GSREAD_STATS") != nullptr;
+        if (readStats)
+        {
+            static std::atomic<uint32_t> counts[32];
+            static auto last = std::chrono::steady_clock::now();
+            const uint32_t off = address - PS2_GS_PRIV_REG_BASE;
+            ++counts[((off >> 8) & 0x10u) | ((off >> 4) & 15u)];
+            if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5))
+            {
+                last = std::chrono::steady_clock::now();
+                std::fprintf(stderr, "[gsread64]");
+                for (uint32_t i = 0; i < 32u; ++i)
+                    if (const uint32_t c = counts[i].exchange(0))
+                        std::fprintf(stderr, " %04x:%u", ((i & 0x10u) << 8) | ((i & 15u) << 4), c);
+                std::fputc('\n', stderr);
+            }
+        }
         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
+        // PS2X_CSR_NOSYNC=1: CSR reads return the current value without draining the VIF/GS queues first. A loop polling
+        // FINISH/SIGNAL still sees them once the workers get there; GTA LCS reads CSR ~100x/s and waited for every one.
+        static const bool csrNoSync = std::getenv("PS2X_CSR_NOSYNC") != nullptr;
+        if (regOff == kGsCsrRegOffset && csrNoSync)
+            return gs_regs.csr.load();
+        gifVifSync();
         if (regOff == kGsCsrRegOffset)
         {
             return gs_regs.csr.load();

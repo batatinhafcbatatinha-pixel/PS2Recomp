@@ -514,7 +514,7 @@ void PS2Memory::processVIF1Stream(const uint8_t *data, uint32_t sizeBytes)
                     m_vif1PendingPath2DirectHl = opcode == VIF_DIRECTHL;
                 }
             }
-            const char *trace = std::getenv("PS2X_VIF_TRACE");
+            static const char *const trace = std::getenv("PS2X_VIF_TRACE"); // once: getenv per IMAGE chunk cost GTA LCS a third of its VIF thread
             static uint32_t continuationLogs = 0;
             if (trace && std::strcmp(trace, "1") == 0 && continuationLogs++ < 24u) {
                 std::cerr << "[ff-vif-image-cont] pending=" << m_vif1PendingPath2ImageQwc
