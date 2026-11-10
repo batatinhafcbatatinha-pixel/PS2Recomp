@@ -849,6 +849,31 @@ bool VU1Interpreter::runNative(StepContext &context)
         return list;
     }();
     const bool skipAny = m_unit == Unit::VU1 && !skipPcs.empty();
+    // Steady loops: a block that ran back to back with the same timing table, contiguously, over more than twice the
+    // longest latency, sees the same entry state again (its history is only itself) unless the FDIV/EFU/XGKICK in
+    // flight are at other distances: then it gets the same table, which blockTiming's memo would hand out after hashing
+    // the history. MotorStorm AE's hottest VU1 block is such a loop (an FDIV in flight across iterations).
+    // PS2X_VU1N_LOOP_REUSE=0 turns it off.
+    static const bool loopReuseOn = [] { const char *e = std::getenv("PS2X_VU1N_LOOP_REUSE"); return !e || e[0] != '0'; }();
+    const NativeState::Slot *loopSlot = nullptr;
+    const uint8_t *loopCyc = nullptr;
+    uint32_t loopCycId = 0u;
+    uint64_t loopCycles = 0u;
+    std::array<uint64_t, 4> loopScalar{};
+    const auto scalarDistances = [&](const NativeState::Slot &s, uint64_t start) {
+        std::array<uint64_t, 4> d{};
+        const NativeState::BlockTiming &bt = *s.bt;
+        if (!bt.scalarRead)
+            return d;
+        uint64_t ready[4] = {m_fdiv.valid ? m_fdiv.readyCycle : 0u, m_efuResourceReady, 0u, ns.kickReady};
+        for (const ScalarPipelineEntry &e : m_efu)
+            if (e.valid)
+                ready[2] = std::max(ready[2], e.readyCycle);
+        for (uint32_t k = 0; k < 4u; ++k)
+            if ((bt.scalarRead & (1u << k)) && ready[k] > start + bt.scalarAt[k])
+                d[k] = ready[k] - start - bt.scalarAt[k];
+        return d;
+    };
     bool handled = false;
     for (;;)
     {
@@ -913,9 +938,20 @@ bool VU1Interpreter::runNative(StepContext &context)
         // their idle-pipeline table and only hand their results and flags in flight on. A division in flight needs the
         // real cycle count until it retires (EFU too): their readers do not interlock, so stalls decide what they see.
         uint32_t cycId = 0u;
-        const uint8_t *cyc = sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid
-                                 ? VU1NativeAccess::blockTiming(*this, sl, cycId)
-                                 : sl.idle;
+        const uint8_t *cyc = sl.idle;
+        std::array<uint64_t, 4> scalar{};
+        if (sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid)
+        {
+            scalar = scalarDistances(sl, start);
+            if (loopReuseOn && &sl == loopSlot && loopCycles >= 2ull * ns.maxLat + 16u && ns.arraysReadyBy <= start &&
+                scalar == loopScalar)
+            {
+                cyc = loopCyc;
+                cycId = loopCycId;
+            }
+            else
+                cyc = VU1NativeAccess::blockTiming(*this, sl, cycId);
+        }
         ctx.cyc = cyc;
         ctx.start = start;
         if (sl.tail)
@@ -928,6 +964,16 @@ bool VU1Interpreter::runNative(StepContext &context)
         }
         const uint32_t result = fn(ctx);
         VU1NativeAccess::finishBlockTiming(*this, sl, cyc, cycId, start);
+        if (&sl == loopSlot && cyc == loopCyc && cycId == loopCycId && scalar == loopScalar)
+            loopCycles += m_cycle - start;
+        else
+        {
+            loopSlot = &sl;
+            loopCyc = cyc;
+            loopCycId = cycId;
+            loopScalar = scalar;
+            loopCycles = m_cycle - start;
+        }
         if (m_cycle >= m_nextCommitCycle)
             commitReadyPipelines(); // FDIV/EFU entries kept for timing retire when ready (values are written already)
         ns.nativePairs += sl.pairs;
