@@ -237,7 +237,7 @@ private:
     // Present skipping (latchHostPresentationFrame): pages of the buffers the last present showed, and a counter of draws,
     // transfers and clears that touched them. Equal display registers and no touch: the picture has not changed.
     struct WatchRange { uint32_t page = 0, pages = 0; };
-    std::array<WatchRange, 3> m_presentWatch{};
+    std::array<WatchRange, 5> m_presentWatch{};
     uint64_t m_presentTouch = 0;
     uint64_t m_lastPresentTouch = ~0ull;
     GSPresentationRequest m_lastPresentRequest{};

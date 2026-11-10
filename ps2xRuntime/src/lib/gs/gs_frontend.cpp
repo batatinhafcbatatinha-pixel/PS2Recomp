@@ -599,9 +599,14 @@ void GS::latchHostPresentationFrame()
                                      request.bgcolor == last.bgcolor && request.hasPreferredSource == last.hasPreferredSource &&
                                      (!request.hasPreferredSource || (request.preferredSource == last.preferredSource &&
                                                                       request.preferredDestFbp == last.preferredDestFbp));
+            // A circuit at FBP 0 may show a drawing context's buffer instead (the black-FBP0 fallback): then those
+            // buffers are watched too and must be the same registers. (Skipping never applied with FBP 0 before:
+            // MotorStorm AE flips between FBP 0 and 140, so every other frame was presented at each vblank.)
             const bool fbpZero = (request.dispfb1 & 0x1FFu) == 0u || (request.dispfb2 & 0x1FFu) == 0u;
+            const bool sameContexts = !fbpZero || (request.contextFrames[0] == last.contextFrames[0] &&
+                                                   request.contextFrames[1] == last.contextFrames[1]);
             const bool fieldMode = (request.smode2 & 3u) == 3u;
-            if (!presentAll && sameDisplay && !fbpZero && !fieldMode && !request.forceReadback &&
+            if (!presentAll && sameDisplay && sameContexts && !fieldMode && !request.forceReadback &&
                 m_presentTouch == m_lastPresentTouch && m_presentSkips < 3u)
             {
                 std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
@@ -625,6 +630,11 @@ void GS::latchHostPresentationFrame()
             m_presentWatch[2] = {};
             if (request.hasPreferredSource) // block units
                 m_presentWatch[2] = {request.preferredSource.fbp / 32u, (request.preferredSource.fbw ? request.preferredSource.fbw : 10u) * 33u};
+            m_presentWatch[3] = m_presentWatch[4] = {};
+            if (fbpZero)
+                for (uint32_t k = 0; k < 2u; ++k)
+                    m_presentWatch[3 + k] = {request.contextFrames[k].fbp,
+                                             (request.contextFrames[k].fbw ? request.contextFrames[k].fbw : 10u) * 16u};
         }
         // Queued presents must enter the renderer's queue at the point the display registers were read: the frontend
         // holds this lock per packet, and left free it would queue the first draws of the next frame into the buffer that

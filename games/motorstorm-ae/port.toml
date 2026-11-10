@@ -6,3 +6,6 @@ name = "MotorStorm: Arctic Edge"
 # The intro and menu movies are written by the IPU straight into the displayed framebuffer; only the gpu renderer
 # shows them (the hw one keeps its own copy of that render target).
 PS2X_GS = "gpu"
+# A VIF1 interrupt raised while the EE busy-polls CSR (loads only, no dispatch point) waited ~1 ms for the next
+# scheduler checkpoint, ~150 times a second: this wakes the EE at once (2026-11-10: VIF1 stall 1.2 -> 0.2 ms each).
+PS2X_INTC_WAKE = "1"
