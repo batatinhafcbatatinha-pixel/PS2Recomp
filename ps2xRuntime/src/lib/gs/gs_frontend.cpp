@@ -169,6 +169,7 @@ void GS::reset()
         m_backend->Flush();
         m_backend->Sync(GSSyncReason::Reset);
         m_backend->Reset();
+        ++m_presentTouch;
     }
     {
         std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
@@ -557,6 +558,17 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     return request;
 }
 
+void GS::notePresentTouchUnlocked(uint32_t page, uint32_t fbw, uint32_t lines)
+{
+    const uint32_t pages = std::max<uint32_t>(fbw, 1u) * ((lines + 31u) / 32u + 1u); // +1 row: offsets inside a page
+    for (const WatchRange &w : m_presentWatch)
+        if (w.pages != 0u && page < w.page + w.pages && w.page < page + pages)
+        {
+            ++m_presentTouch;
+            return;
+        }
+}
+
 void GS::latchHostPresentationFrame()
 {
     GSPresentationRequest request{};
@@ -573,6 +585,47 @@ void GS::latchHostPresentationFrame()
             return;
         }
         request = buildPresentationRequestUnlocked();
+        // Skip the present when the picture cannot have changed: same display registers, nothing drawn, transferred or
+        // cleared into the buffers shown last time. A present waits for the renderer to drain and (GPU backend) reads
+        // the shown buffers back, holding this lock; games below 60 fps repeated that for every unchanged vblank.
+        // Interlaced field mode, the FBP-0 fallback and captures always present; at most 3 skips in a row.
+        // PS2X_GS_PRESENT_ALL=1 presents every vblank.
+        {
+            static const bool presentAll = std::getenv("PS2X_GS_PRESENT_ALL") != nullptr;
+            const GSPresentationRequest &last = m_lastPresentRequest;
+            const bool sameDisplay = request.pmode == last.pmode && request.smode2 == last.smode2 &&
+                                     request.dispfb1 == last.dispfb1 && request.display1 == last.display1 &&
+                                     request.dispfb2 == last.dispfb2 && request.display2 == last.display2 &&
+                                     request.bgcolor == last.bgcolor && request.hasPreferredSource == last.hasPreferredSource &&
+                                     (!request.hasPreferredSource || (request.preferredSource == last.preferredSource &&
+                                                                      request.preferredDestFbp == last.preferredDestFbp));
+            const bool fbpZero = (request.dispfb1 & 0x1FFu) == 0u || (request.dispfb2 & 0x1FFu) == 0u;
+            const bool fieldMode = (request.smode2 & 3u) == 3u;
+            if (!presentAll && sameDisplay && !fbpZero && !fieldMode && !request.forceReadback &&
+                m_presentTouch == m_lastPresentTouch && m_presentSkips < 3u)
+            {
+                std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+                if (m_hasHostPresentationFrame || m_hostPresentationHandedOff || m_backend->UsesSharedPresentation())
+                {
+                    ++m_presentSkips;
+                    return;
+                }
+            }
+            m_presentSkips = 0u;
+            m_lastPresentRequest = request;
+            m_lastPresentTouch = m_presentTouch;
+            const auto watchCircuit = [&](WatchRange &w, uint64_t dispfb, uint64_t display) {
+                const uint32_t fbw = uint32_t((dispfb >> 9) & 0x3Fu);
+                const uint32_t lines = uint32_t((dispfb >> 43) & 0x7FFu) + uint32_t((display >> 44) & 0x7FFu) + 1u;
+                w.page = uint32_t(dispfb & 0x1FFu);
+                w.pages = (fbw ? fbw : 10u) * ((std::min<uint32_t>(lines, 2048u) + 31u) / 32u);
+            };
+            watchCircuit(m_presentWatch[0], request.dispfb1, request.display1);
+            watchCircuit(m_presentWatch[1], request.dispfb2, request.display2);
+            m_presentWatch[2] = {};
+            if (request.hasPreferredSource) // block units
+                m_presentWatch[2] = {request.preferredSource.fbp / 32u, (request.preferredSource.fbw ? request.preferredSource.fbw : 10u) * 33u};
+        }
         // Queued presents must enter the renderer's queue at the point the display registers were read: the frontend
         // holds this lock per packet, and left free it would queue the first draws of the next frame into the buffer that
         // is about to be shown, which then appears half drawn for one frame.
@@ -603,6 +656,7 @@ void GS::latchHostPresentationFrame()
     const uint32_t width = frame.width;
     const uint32_t height = frame.height;
     const bool usedPreferred = frame.usedPreferred;
+    const bool handedOff = frame.handedOff;
     {
         std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
         m_hostPresentationFrame = std::move(frame.pixels);
@@ -612,6 +666,7 @@ void GS::latchHostPresentationFrame()
         m_hostPresentationSourceFbp = sourceFbp;
         m_hostPresentationUsedPreferred = usedPreferred;
         m_hasHostPresentationFrame = hasFrame;
+        m_hostPresentationHandedOff = handedOff;
     }
 
     if (hasFrame)
@@ -1464,6 +1519,8 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             command.trxpos = m_trxpos;
             command.trxreg = m_trxreg;
             command.direction = m_trxdir;
+            if (m_trxdir != 1u) // host-to-local and local-to-local write VRAM
+                notePresentTouchUnlocked(m_bitbltbuf.dbp / 32u, m_bitbltbuf.dbw, m_trxpos.dsay + m_trxreg.rrh);
             m_backend->BeginTransfer(command);
         }
         recordTransferDebugEventUnlocked();
@@ -1721,6 +1778,8 @@ void GS::vertexKick(bool drawing)
         updatePreferredDisplaySourceForDraw(batch);
         if (batch.state.context.frame.fbp == g_gsDisplayFbp.load(std::memory_order_relaxed))
             g_gsDisplayWritten.store(true, std::memory_order_relaxed);
+        notePresentTouchUnlocked(batch.state.context.frame.fbp, batch.state.context.frame.fbw,
+                                 static_cast<uint32_t>(batch.state.context.scissor.y1) + 1u);
         m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
     }
@@ -1781,12 +1840,14 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    ++m_presentTouch;
     return m_backend && m_backend->ClearFramebuffer(m_ctx[(contextIndex != 0u) ? 1 : 0], rgba);
 }
 
 bool GS::clearActiveFramebuffer(uint32_t rgba)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    ++m_presentTouch;
     return m_backend && m_backend->ClearFramebuffer(activeContext(), rgba);
 }
 

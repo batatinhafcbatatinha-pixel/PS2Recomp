@@ -233,6 +233,26 @@ private:
     uint32_t m_hostPresentationSourceFbp = 0;
     bool m_hostPresentationUsedPreferred = false;
     bool m_hasHostPresentationFrame = false;
+    bool m_hostPresentationHandedOff = false; // the last present went to the GPU backend's shared texture
+    // Present skipping (latchHostPresentationFrame): pages of the buffers the last present showed, and a counter of draws,
+    // transfers and clears that touched them. Equal display registers and no touch: the picture has not changed.
+    struct WatchRange { uint32_t page = 0, pages = 0; };
+    std::array<WatchRange, 3> m_presentWatch{};
+    uint64_t m_presentTouch = 0;
+    uint64_t m_lastPresentTouch = ~0ull;
+    GSPresentationRequest m_lastPresentRequest{};
+    uint32_t m_presentSkips = 0;
+    void notePresentTouchUnlocked(uint32_t page, uint32_t fbw, uint32_t lines);
+
+public:
+    // The last latched present was handed off as a texture (GSGpuBackend::GetNativePresentation), not as pixels.
+    bool latchedFrameHandedOff()
+    {
+        std::lock_guard<std::mutex> lock(m_presentationMutex);
+        return m_hostPresentationHandedOff;
+    }
+
+private:
     uint64_t m_nativeImageUploadCount = 0;
     uint64_t m_nativePackedGIFPacketCount = 0;
 

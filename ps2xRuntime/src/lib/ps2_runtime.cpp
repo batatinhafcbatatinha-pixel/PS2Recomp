@@ -600,7 +600,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         outHeight = s_lastHeight != 0u ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
         return;
     }
-    if (dumpDue && sharedFrames)
+    if (dumpDue) // a dump needs pixels: shared frames and the GPU backend's texture handoff keep them on the GPU
         g_gsForceReadback.store(true, std::memory_order_relaxed);
     const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick || dumpDue;
     if (needsLatch)
@@ -614,6 +614,33 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
         outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
         return;
+    }
+
+    // GPU backend texture handoff: the picture stays on the GPU (scanout texture shared with this context). The
+    // window's own texture is kept to come back to when a frame arrives as pixels (captures, other backends).
+    static unsigned s_ownTextureId = 0u;
+    {
+        GSGpuBackend::NativePresentation native;
+        if (rt->gs().latchedFrameHandedOff() && GSGpuBackend::PrepareNativePresentation() &&
+            GSGpuBackend::GetNativePresentation(native))
+        {
+            if (s_ownTextureId == 0u)
+                s_ownTextureId = tex.id;
+            tex.id = native.texture;
+            tex.width = static_cast<int>(native.storageWidth);
+            tex.height = static_cast<int>(native.storageHeight);
+            outWidth = s_lastWidth = native.width;
+            outHeight = s_lastHeight = native.height;
+            s_hasUploadedFrame = true;
+            return;
+        }
+        if (s_ownTextureId != 0u)
+        {
+            tex.id = s_ownTextureId;
+            tex.width = FB_WIDTH;
+            tex.height = FB_HEIGHT;
+            s_ownTextureId = 0u;
+        }
     }
 
     s_scratch.clear();

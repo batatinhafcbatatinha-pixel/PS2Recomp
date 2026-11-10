@@ -85,6 +85,14 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
     setSource(0u, first);
     setSource(1u, second);
     std::array<uint32_t, 3> presence{};
+    // The presence bits only matter to the black-FBP0 fallback below; reading them back waits for the GPU.
+    // Once the same display registers showed FBP 0 non-black 8 presents in a row, it is taken as non-black until
+    // they change (a game that flips to FBP 0 every other frame otherwise drained the GPU on each of those presents).
+    const uint64_t presenceKey = request.dispfb1 * 0x9E3779B97F4A7C15ull ^ request.dispfb2 ^ (request.pmode << 48);
+    bool needPresence = (first.frame.fbp == 0u && !result.usedPreferred) || (dual && second.frame.fbp == 0u);
+    const bool presenceAssumed = needPresence && presenceKey == lastPresenceKey && presenceStreak >= 8u;
+    if (presenceAssumed)
+        needPresence = false;
     auto render = [&]() {
         presence.fill(0u);
         gl.NamedBufferSubData(scanoutPresenceBuffer, 0, sizeof(presence), presence.data());
@@ -96,9 +104,18 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, scanoutPresenceBuffer);
         gl.DispatchCompute((stride * maxHeight + 63u) / 64u, 1u, 1u);
         gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
-        gl.GetNamedBufferSubData(scanoutPresenceBuffer, 0, sizeof(presence), presence.data());
+        if (needPresence)
+            gl.GetNamedBufferSubData(scanoutPresenceBuffer, 0, sizeof(presence), presence.data());
     };
     render();
+    if (presenceAssumed)
+        presence[1] = presence[2] = 1u;
+    else if (needPresence)
+    {
+        const bool nonblack = (first.frame.fbp != 0u || presence[1]) && (!dual || second.frame.fbp != 0u || presence[2]);
+        presenceStreak = presenceKey == lastPresenceKey && nonblack ? presenceStreak + 1u : (nonblack ? 1u : 0u);
+        lastPresenceKey = presenceKey;
+    }
     // Preserve the existing black-FBP0 workaround using GPU presence bits;
     // it never invokes the CPU rasterizer or decodes pixels on the host.
     auto selectNonblack = [&](Source &source, uint32_t slot) {
@@ -125,6 +142,28 @@ PresentationFrame presentGpu(const GSPresentationRequest &request)
     if (dual)
         selectNonblack(second, 1u);
     result.sourceFbp = first.frame.fbp;
+#if PS2X_GPU_TEXTURE_HANDOFF
+    // PS2X_GS_PRESENT_READBACK=1: always read the picture back (the old path).
+    static const bool readbackAlways = std::getenv("PS2X_GS_PRESENT_READBACK") != nullptr;
+    if (sharedMainContext && !request.forceReadback && !readbackAlways)
+    {
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, scanoutBuffer);
+        gl.TextureSubImage2D(scanoutTexture, 0, 0, 0, static_cast<GLsizei>(stride), static_cast<GLsizei>(maxHeight), GL_RGBA,
+                             GL_UNSIGNED_BYTE, nullptr);
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0u);
+        {
+            std::lock_guard<std::mutex> lock(handoffMutex);
+            if (handoffFence)
+                gl.DeleteSync(handoffFence);
+            handoffFence = gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
+            ++handoffFrames;
+        }
+        gl.Flush(); // the fence must reach the GPU before another context waits on it
+        result.handedOff = true;
+        checkErrors("scanout-handoff", result.width * result.height);
+        return result;
+    }
+#endif
     result.pixels.resize(stride * maxHeight * 4u);
     gl.GetNamedBufferSubData(scanoutBuffer, 0, static_cast<GLsizeiptr>(result.pixels.size()), result.pixels.data());
     checkErrors("scanout", result.width * result.height);

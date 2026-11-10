@@ -332,6 +332,7 @@ struct PresentationFrame
     uint32_t displayFbp = 0;
     uint32_t sourceFbp = 0;
     bool usedPreferred = false;
+    bool handedOff = false; // GPU backend texture handoff: the picture is in its scanout texture, no pixels here
 
     explicit operator bool() const
     {

@@ -15,6 +15,7 @@ public:
     struct NativePresentation {
         uint32_t texture = 0, width = 0, height = 0;
         uint32_t storageWidth = 640, storageHeight = 512;
+        uint64_t sequence = 0; // frames handed off so far (0: none yet)
     };
     // Main-window thread only. Prepare completes preceding consumer draws
     // before the GS thread may replace the single shared scanout texture.

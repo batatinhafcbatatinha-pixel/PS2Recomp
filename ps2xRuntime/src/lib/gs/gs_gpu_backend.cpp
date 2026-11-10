@@ -129,6 +129,8 @@ namespace
     using GLuint64 = unsigned long long;
     using GLsync = struct __GLsync *;
     constexpr GLenum GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_STREAM_READ = 0x88E1;
+    constexpr GLenum GL_PIXEL_UNPACK_BUFFER = 0x88EC, GL_RGBA = 0x1908, GL_UNSIGNED_BYTE = 0x1401;
+    constexpr GLuint64 GL_TIMEOUT_IGNORED = ~0ull;
     constexpr GLbitfield GL_SYNC_FLUSH_COMMANDS_BIT = 0x1;
 
     constexpr GLenum GL_SHADER_STORAGE_BUFFER = 0x90D2;
@@ -198,6 +200,10 @@ namespace
     X(void, TextureParameteri, (GLuint, GLenum, GLint))                                          \
     X(void, BindImageTexture, (GLuint, GLuint, GLint, unsigned char, GLint, GLenum, GLenum))       \
     X(void, DeleteTextures, (GLsizei, const GLuint *))                                            \
+    X(void, BindBuffer, (GLenum, GLuint)) \
+    X(void, TextureSubImage2D, (GLuint, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
+    X(void, WaitSync, (GLsync, GLbitfield, GLuint64)) \
+    X(void, Flush, ()) \
     X(void, Finish, ())                                                                               X(GLenum, GetError, ())                                                                           X(GLenum, CheckNamedFramebufferStatus, (GLuint, GLenum))
 
     struct GlApi
@@ -436,6 +442,13 @@ struct GSGpuBackend::Impl
     GLuint stagingBuffer = 0, paramBuffer = 0, debugBuffer = 0;
     GLuint drawProgram = 0, uploadProgram = 0, copyProgram = 0, clutProgram = 0;
     GLuint scanoutProgram = 0, scanoutBuffer = 0, scanoutPresenceBuffer = 0;
+    // Texture handoff: the last present's picture is in scanoutTexture (copied on the GPU, no readback); the main
+    // thread waits for handoffFence on the GPU before drawing it. handoffFrames counts the frames handed off.
+    GLsync handoffFence = nullptr;
+    uint64_t lastPresenceKey = 0;  // presentGpu: display registers whose FBP-0 picture was non-black lately
+    uint32_t presenceStreak = 0;
+    std::mutex handoffMutex;
+    uint64_t handoffFrames = 0;
     GLuint scanoutTexture = 0;
     uint32_t nativePresentationWidth = 0, nativePresentationHeight = 0;
     GLuint vao = 0, fbo = 0;
@@ -880,7 +893,11 @@ struct GSGpuBackend::Impl
     // collected into the shadow at the next request: neither the GL thread nor the EE waits for the GPU to drain.
     GLuint readbackStage = 0;
     GLsync readbackFence = nullptr;
-    void readbackAsync()
+    uint32_t asyncStart = ~0u, asyncEnd = 0; // producer side: the rectangle the last request staged
+    uint32_t stagedStart = 0, stagedEnd = 0; // the VRAM bytes the pending stage copy holds (same offsets in the stage)
+    // [start, end): the pages the transfer reads (whole VRAM when it wraps); only they are copied and collected.
+    // collect=false: the previous stage is dropped (a synchronous readback just refreshed the shadow).
+    void readbackAsync(uint32_t start, uint32_t end, bool collect = true)
     {
         if (!shadow)
             return;
@@ -896,10 +913,16 @@ struct GSGpuBackend::Impl
             gl.DeleteSync(readbackFence);
             readbackFence = nullptr;
             std::lock_guard<std::mutex> lock(shadowMutex);
-            gl.GetNamedBufferSubData(readbackStage, 0, size, shadow);
+            if (collect && stagedEnd > stagedStart)
+                gl.GetNamedBufferSubData(readbackStage, stagedStart, stagedEnd - stagedStart, shadow + stagedStart);
         }
+        end = std::min<uint32_t>(end, static_cast<uint32_t>(size));
+        if (start >= end)
+            start = 0u, end = static_cast<uint32_t>(size);
         gl.MemoryBarrier(GL_ALL_BARRIER_BITS);
-        gl.CopyNamedBufferSubData(vramBuffer, readbackStage, 0, 0, size);
+        gl.CopyNamedBufferSubData(vramBuffer, readbackStage, start, start, end - start);
+        stagedStart = start;
+        stagedEnd = end;
         readbackFence = gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
     }
 
@@ -1002,10 +1025,14 @@ bool GSGpuBackend::PrepareNativePresentation() {
 #if PS2X_GPU_TEXTURE_HANDOFF
     auto *backend = s_mainThreadNativeBackend;
     if (backend && glfwGetCurrentContext() == backend->m_impl->sharedMainContext) {
-        // Consumer completion is necessary before the producer overwrites the
-        // same texture. This is explicit synchronization, not a pixel readback.
-        backend->m_impl->gl.Finish();
-        return true;
+        // The main context waits on the GPU for the copy into scanoutTexture (no CPU stall, no readback).
+        auto &impl = *backend->m_impl;
+        // The main context's earlier draws of the texture finish before the GS thread may overwrite it.
+        impl.gl.Finish();
+        std::lock_guard<std::mutex> lock(impl.handoffMutex);
+        if (impl.handoffFence)
+            impl.gl.WaitSync(impl.handoffFence, 0u, GL_TIMEOUT_IGNORED);
+        return impl.handoffFrames != 0u;
     }
 #endif
     return false;
@@ -1018,6 +1045,7 @@ bool GSGpuBackend::GetNativePresentation(NativePresentation &out) {
     if (backend && glfwGetCurrentContext() == backend->m_impl->sharedMainContext) {
         auto &impl = *backend->m_impl;
         out.texture = impl.scanoutTexture;
+        out.sequence = impl.handoffFrames;
         out.width = impl.nativePresentationWidth;
         out.height = impl.nativePresentationHeight;
         return out.texture && out.width && out.height;
@@ -1320,25 +1348,37 @@ void GSGpuBackend::BeginTransfer(const GSTransferCommand &command)
         // PS2X_GS_ASYNC_READBACK=1: serve the previous readback and queue the next one behind the GPU work, instead of
         // draining the GPU first (MotorStorm AE reads a 256x128 image back ~20x/s: 6-15 ms each, in series with the EE).
         static const bool asyncReadback = std::getenv("PS2X_GS_ASYNC_READBACK") != nullptr;
-        if (asyncReadback && impl.readbackPrimed)
+        // The pages the rectangle can touch: from the page row of its first line to the one after its last, a row
+        // being sbw pages (64 px wide CT32 pages; narrower formats need fewer, so this covers them). Wraps: all.
+        const uint32_t rowPages = std::max<uint32_t>(command.bitbltbuf.sbw, 1u);
+        const uint32_t y0 = command.trxpos.ssay, y1 = y0 + std::max<uint32_t>(command.trxreg.rrh, 1u) - 1u;
+        const uint64_t start = static_cast<uint64_t>(command.bitbltbuf.sbp & ~31u) * 256u + (y0 / 32u) * rowPages * 8192ull;
+        const uint64_t end = static_cast<uint64_t>(command.bitbltbuf.sbp) * 256u + (y1 / 32u + 1u) * rowPages * 8192ull + 8192u;
+        const uint32_t s = end <= kVramSize ? static_cast<uint32_t>(start) : 0u;
+        const uint32_t e = end <= kVramSize ? static_cast<uint32_t>(end) : kVramSize;
+        // Stale data is served only for the rectangle staged by the previous request (one frame old); another one
+        // reads synchronously and is staged from then on.
+        const bool sameRange = impl.asyncStart == s && impl.asyncEnd == e;
+        impl.asyncStart = s;
+        impl.asyncEnd = e;
+        if (asyncReadback && impl.readbackPrimed && sameRange)
         {
             impl.flushPrimsLocked();
-            impl.enqueue([&impl]() { impl.readbackAsync(); }, "readback-async");
+            impl.enqueue([&impl, s, e]() { impl.readbackAsync(s, e); }, "readback-async");
         }
         else
         {
-            // The pages the rectangle can touch: from the page row of its first line to the one after its last, a row
-            // being sbw pages (64 px wide CT32 pages; narrower formats need fewer, so this covers them). Wraps: all.
-            const uint32_t rowPages = std::max<uint32_t>(command.bitbltbuf.sbw, 1u);
-            const uint32_t y0 = command.trxpos.ssay, y1 = y0 + std::max<uint32_t>(command.trxreg.rrh, 1u) - 1u;
-            const uint64_t start = static_cast<uint64_t>(command.bitbltbuf.sbp & ~31u) * 256u + (y0 / 32u) * rowPages * 8192ull;
-            const uint64_t end = static_cast<uint64_t>(command.bitbltbuf.sbp) * 256u + (y1 / 32u + 1u) * rowPages * 8192ull + 8192u;
             if (end <= kVramSize)
                 impl.runSyncLocked("local-to-host", [&impl, start, end]() {
                     impl.readbackShadowRange(static_cast<uint32_t>(start), static_cast<uint32_t>(end - start)); });
             else
                 impl.runSyncLocked("local-to-host", [&impl]() { impl.readbackShadow(); });
             impl.readbackPrimed = true;
+            if (asyncReadback) // stage this rectangle for the next request
+            {
+                impl.flushPrimsLocked();
+                impl.enqueue([&impl, s, e]() { impl.readbackAsync(s, e, false); }, "readback-async");
+            }
         }
         std::lock_guard<std::mutex> shadowLock(impl.shadowMutex);
         impl.cpu.BeginTransfer(command);
@@ -1443,8 +1483,43 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     return frame;
 #else
     {
+        // Only the buffers the CPU scanout reads come back from the GPU: both read circuits from their read origin, the
+        // preferred source, and the drawing contexts' buffers when a circuit shows FBP 0 (the black-FBP0 fallback reads
+        // them). A whole-VRAM readback (4 MB) per vblank kept the GS frontend waiting while the EE waited on it
+        // (MotorStorm AE). PS2X_GS_PRESENT_FULL=1 reads the whole VRAM as before.
+        static const bool fullReadback = std::getenv("PS2X_GS_PRESENT_FULL") != nullptr;
+        std::array<std::pair<uint64_t, uint64_t>, 5> ranges{};
+        size_t rangeCount = 0;
+        bool whole = fullReadback;
+        const auto addFrame = [&](uint64_t startBytes, uint32_t fbw, uint32_t lines) {
+            const uint64_t rows = (std::min<uint32_t>(lines, 2048u) + 31u) / 32u; // 32-line page rows (16-bit: 64, covered)
+            const uint64_t end = startBytes + rows * std::max<uint32_t>(fbw, 1u) * 8192ull;
+            if (startBytes >= kVramSize || end > kVramSize)
+                whole = true; // wraps around VRAM
+            else
+                ranges[rangeCount++] = {startBytes, end};
+        };
+        const auto addCircuit = [&](uint64_t dispfb, uint64_t display) {
+            const uint32_t fbp = uint32_t(dispfb & 0x1FFu), fbw = uint32_t((dispfb >> 9) & 0x3Fu);
+            const uint32_t dby = uint32_t((dispfb >> 43) & 0x7FFu), dh = uint32_t((display >> 44) & 0x7FFu);
+            addFrame(uint64_t(fbp) * 8192u, fbw ? fbw : 10u, dby + dh + 1u);
+            return fbp;
+        };
+        const bool zero1 = addCircuit(request.dispfb1, request.display1) == 0u;
+        const bool zero2 = addCircuit(request.dispfb2, request.display2) == 0u;
+        if (request.hasPreferredSource) // 256-byte block units, like the CPU backend reads it
+            addFrame(uint64_t(request.preferredSource.fbp) * 256u, request.preferredSource.fbw ? request.preferredSource.fbw : 10u, 1024u);
+        if (zero1 || zero2)
+            for (const GSFrameReg &context : request.contextFrames)
+                addFrame(uint64_t(context.fbp) * 8192u, context.fbw ? context.fbw : 10u, 1024u);
         std::lock_guard<std::mutex> lock(impl.producerMutex);
-        impl.runSyncLocked("present-readback", [&impl]() { impl.readbackShadow(); });
+        if (whole)
+            impl.runSyncLocked("present-readback", [&impl]() { impl.readbackShadow(); });
+        else
+            impl.runSyncLocked("present-readback", [&impl, ranges, rangeCount]() {
+                for (size_t i = 0; i < rangeCount; ++i)
+                    impl.readbackShadowRange(static_cast<uint32_t>(ranges[i].first), static_cast<uint32_t>(ranges[i].second - ranges[i].first));
+            });
     }
     std::lock_guard<std::mutex> shadowLock(impl.shadowMutex);
     PresentationFrame frame = impl.cpu.Present(request);
