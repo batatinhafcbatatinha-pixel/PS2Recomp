@@ -113,13 +113,20 @@ void VU1Interpreter::resetScheduler()
     commitReadyFlags(); // GOW-Port: las ya listas se habrían confirmado en su ciclo
     m_lastRunHitBudget = false; // GOW-Port
     m_nextCommitCycle = ~0ull;
-    m_flagPipeline = {};
+    // Only live entries are cleared: an entry is in use exactly while its flag-queue slot or pending bit is (commits reset
+    // the others), and VU0 runs tens of thousands of short programs per second on the EE thread.
+    for (uint32_t k = 0; k < m_flagCount; ++k)
+        m_flagPipeline[(m_flagHead + k) % kMaxFlagEntries] = {};
     m_fdiv = {};
     m_efu = {};
-    m_storePipeline = {};
-    m_vfWritePipeline = {};
-    m_viWritePipeline = {};
-    m_accWritePipeline = {};
+    for (uint32_t pending = m_storePending; pending != 0u; pending &= pending - 1u)
+        m_storePipeline[std::countr_zero(pending)] = {};
+    for (uint32_t pending = m_vfPending; pending != 0u; pending &= pending - 1u)
+        m_vfWritePipeline[std::countr_zero(pending)] = {};
+    for (uint32_t pending = m_viPending; pending != 0u; pending &= pending - 1u)
+        m_viWritePipeline[std::countr_zero(pending)] = {};
+    for (uint32_t pending = m_accPending; pending != 0u; pending &= pending - 1u)
+        m_accWritePipeline[std::countr_zero(pending)] = {};
     m_storePending = m_vfPending = m_viPending = m_accPending = 0u;
     m_flagHead = m_flagCount = 0u;
     m_xgkick.reset();
@@ -131,10 +138,7 @@ void VU1Interpreter::resetScheduler()
         m_native->arraysReadyBy = 0u;
         m_native->exitCycle = m_cycle;
     }
-    m_vfLatestWrite = {};
-    m_viLatestWrite = {};
-    m_accLatestWrite = {};
-    m_nextWriteSequence = 0;
+    // m_*LatestWrite keep their values: m_nextWriteSequence keeps counting, so no new write can match an old sequence.
     m_efuResourceReady = 0;
     m_workingClip = m_state.clip;
     m_viBranchBackupValue = 0;

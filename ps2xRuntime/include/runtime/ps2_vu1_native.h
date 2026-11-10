@@ -70,6 +70,12 @@ struct VU1FlagRing
         next = 0u;
     }
     uint32_t valueOf(uint32_t k) const { return mask[k] ? vu1n::macValRt(raw[k], mask[k]) : value[k]; }
+    // forced inline: generated blocks call it on every flag write, and MSVC left it a call (~1% of the VIF thread)
+#if defined(_MSC_VER)
+    __forceinline
+#else
+    inline __attribute__((always_inline))
+#endif
     void evict()
     {
         raw[4] = raw[next];
