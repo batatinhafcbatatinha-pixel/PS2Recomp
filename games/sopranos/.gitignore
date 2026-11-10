@@ -84,3 +84,6 @@ setup-log.txt
 !/.github/
 !/port.toml
 !/handlers.cpp
+
+# Hand-written PCSX2-format patches (pnach) for this game
+!/patches/

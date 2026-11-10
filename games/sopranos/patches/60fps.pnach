@@ -1,0 +1,6 @@
+gametitle=The Sopranos - Road to Respect (U) (SLUS-21388)
+
+[60 FPS]
+author=port (PS2Recomp)
+description=Frame swap waits one vsync instead of two (flag 0x3F8020 = 30 fps mode, set at boot by 0x1F4D68).
+patch=1,EE,203F8020,extended,00000000

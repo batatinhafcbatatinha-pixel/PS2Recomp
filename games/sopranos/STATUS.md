@@ -204,3 +204,15 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
 - Backend hw depois da correção do VU0: mundo e personagens aparecem (resolução maior), mas o painel do tutorial
   some (só o texto) e aparecem glifos laranja soltos (texturas 8 bits com CLUT do HUD). O perfil segue com
   PS2X_GS="gpu" (correto, 30 fps); o hw fica como pendência do renderizador.
+
+## 60 fps (2026-11-09)
+- The game runs at 30 fps by design: the frame swap (0x1DD3F4) waits two vsyncs while the flag 0x3F8020 is set
+  (set to 1 at boot by 0x1F4D68; 0x1F6E50 toggles it, no direct caller = debug option). With the flag 0 it waits one.
+- `patches/60fps.pnach` (patch=1, EE 0x3F8020 = 0 every frame) -> menus, pause menu, Bink screens at 58-60 fps.
+- Video-mode init 0x1DB5F8 stores field time 1/60 (0x3F8028) and frame time 1/30 (0x3F802C) (PAL 1/50, 1/25); no
+  direct loads of either were found, so whether game logic is tied to 30 fps is UNVERIFIED (check movement speed
+  once 3D runs above 30).
+- 3D (cut-scenes, gameplay) stays ~29 fps with or without the patch: EE waits for VIF/VU1 (ee_sync 30-40%, VU1
+  blocks partly interpreted) and the IOP's STREAM.IRX MultiStream thread (entry 0x5523C, signals its own semaphore
+  and polls sceSdGetAddr(NAX) for 48 voices) uses ~40% of the game thread. Turning that poll into a 500 us delay cut
+  IOP time to ~11% but LOWERED fps (EE waits for stream answers) -> reverted. Import-stub decode is now cached.

@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ps2x::iop::detail
@@ -44,7 +45,16 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] const ExportLibrary *findLibrary(std::string_view name, std::optional<uint16_t> version) const;
 
+        // decode() results by stub address, checked against the stub's two words and its table's magic on each use
+        // (decoding scans back up to 64 KB for the import table, and drivers call imports in tight loops).
+        struct DecodedStub
+        {
+            uint32_t first = 0, second = 0, table = 0;
+            IopImportCall call;
+        };
+
         IopMemory &m_memory;
         std::map<uint32_t, ExportLibrary> m_libraries;
+        mutable std::unordered_map<uint32_t, DecodedStub> m_decoded;
     };
 }
