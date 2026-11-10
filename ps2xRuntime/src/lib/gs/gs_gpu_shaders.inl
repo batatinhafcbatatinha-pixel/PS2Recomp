@@ -701,18 +701,36 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Clut { uint clut[]; };
 layout(std430, binding = 6) readonly buffer Params
 {
-    uint fourBit, sixteenBit, csm, cpsm, cbp, csa, cbw, cou, cov, slotBase;
+    uint fourBit, sixteenBit, csm, cpsm, cbp, csa, cbw, cou, cov, slotBase, prevBase;
 };
 uint swizzleCsm1(uint index) { return (index & ~0x18u) | ((index & 0x08u) << 1u) | ((index & 0x10u) >> 1u); }
+// One invocation per slot word (512): the words this load writes get the loaded value, all others copy the previous
+// slot. This replaces a separate buffer copy + barrier before the dispatch; the result is identical.
 void main()
 {
-    const uint entry = gl_GlobalInvocationID.x;
+    const uint o = gl_GlobalInvocationID.x;
+    if (o >= 512u)
+        return;
     const uint entryCount = fourBit != 0u ? 16u : 256u;
     const uint destinationBase = (csa & (sixteenBit != 0u ? 0x1Fu : 0x0Fu)) << 4u;
     const bool suffix = csm == 0u && sixteenBit == 0u && fourBit == 0u;
     const uint firstEntry = suffix ? destinationBase : 0u;
+    // Invert destination = (suffix ? entry : destinationBase + entry) & mask to find the source entry of word o.
+    uint entry;
+    uint hiHalf = 0u;
+    if (sixteenBit != 0u)
+        entry = (o - destinationBase) & 0x1FFu;
+    else
+    {
+        hiHalf = o >> 8u;
+        const uint d = o & 0xFFu;
+        entry = suffix ? d : ((d - destinationBase) & 0xFFu);
+    }
     if (entry < firstEntry || entry >= entryCount)
+    {
+        clut[slotBase + o] = clut[prevBase + o];
         return;
+    }
     uint sx, sy, width = 1u;
     if (csm == 0u)
     {
@@ -727,15 +745,6 @@ void main()
         sy = cov;
     }
     const uint raw = vramRead(cpsm, cbp, width, sx, sy);
-    const uint destination = (suffix ? entry : destinationBase + entry) & (sixteenBit != 0u ? 0x1FFu : 0x0FFu);
-    if (sixteenBit != 0u)
-    {
-        clut[slotBase + destination] = raw & 0xFFFFu;
-    }
-    else
-    {
-        clut[slotBase + destination] = raw & 0xFFFFu;
-        clut[slotBase + destination + 256u] = raw >> 16u;
-    }
+    clut[slotBase + o] = hiHalf == 0u ? (raw & 0xFFFFu) : (raw >> 16u);
 }
 )GLSL";

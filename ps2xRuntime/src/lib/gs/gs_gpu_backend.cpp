@@ -542,7 +542,33 @@ struct GSGpuBackend::Impl
     // (counted as queue-full in [gs:sync]) instead of growing the queue without limit.
     static constexpr size_t kMaxQueuedJobs = 2048u;
     std::condition_variable queueSpaceCv;
+    // Every producer path holds producerMutex here. A pending coalesced upload (see UploadImage) is queued first, so
+    // the job order is exactly the order in which the frontend issued the work.
     void enqueue(std::function<void()> job, const char *label = "job", std::string metadata = "{}")
+    {
+        flushPendingUploadLocked();
+        enqueueRaw(std::move(job), label, std::move(metadata));
+    }
+
+    // Consecutive UploadImage chunks of one transfer are contiguous (pixel index start..start+pixels, bytes
+    // back to back): they wait here and become one staging upload + one dispatch instead of one per chunk.
+    bool pendingUploadActive = false;
+    std::array<uint32_t, 8> pendingUploadParams{};
+    std::vector<uint8_t> pendingUploadBytes;
+    void flushPendingUploadLocked()
+    {
+        if (!pendingUploadActive)
+            return;
+        pendingUploadActive = false;
+        std::array<uint32_t, 8> params = pendingUploadParams;
+        const size_t usedBytes = pendingUploadBytes.size();
+        enqueueRaw([this, params, bytes = std::move(pendingUploadBytes)]() mutable {
+            uploadPixels(std::move(bytes), params.data());
+        }, "upload", journalParams(params.data(), params.size(), static_cast<uint32_t>(usedBytes)));
+        pendingUploadBytes = {};
+    }
+
+    void enqueueRaw(std::function<void()> job, const char *label, std::string metadata)
     {
         {
             std::unique_lock<std::mutex> lock(queueMutex);
@@ -561,6 +587,7 @@ struct GSGpuBackend::Impl
     // Caller holds producerMutex.
     void flushPrimsLocked(uint32_t reason = 0u)
     {
+        flushPendingUploadLocked();
         if (prims.empty())
         {
             texBarrierPending = false;
@@ -1449,18 +1476,16 @@ void GSGpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     const uint32_t previousSlot = impl.clutSlot;
     impl.clutSlot = (impl.clutSlot + 1u) % Impl::kClutSlots;
     ++impl.clutLoadsInBatch;
-    const uint32_t params[10] = {fourBit ? 1u : 0u, sixteenBit ? 1u : 0u, tex0.csm, tex0.cpsm, tex0.cbp, tex0.csa,
-                                 texclut.cbw, texclut.cou, texclut.cov, impl.clutSlot * Impl::kClutSlotWords};
-    std::array<uint32_t, 10> copy{};
+    const uint32_t params[11] = {fourBit ? 1u : 0u, sixteenBit ? 1u : 0u, tex0.csm, tex0.cpsm, tex0.cbp, tex0.csa,
+                                 texclut.cbw, texclut.cou, texclut.cov, impl.clutSlot * Impl::kClutSlotWords,
+                                 previousSlot * Impl::kClutSlotWords};
+    std::array<uint32_t, 11> copy{};
     std::memcpy(copy.data(), params, sizeof(params));
-    const uint32_t slotBytes = Impl::kClutSlotWords * sizeof(uint32_t);
-    impl.enqueue([&impl, copy, previousSlot, slotBytes]() {
-        // entries the load does not write keep the previous CLUT's values
-        impl.gl.CopyNamedBufferSubData(impl.clutBuffer, impl.clutBuffer, previousSlot * slotBytes, (copy[9] / Impl::kClutSlotWords) * slotBytes,
-                                       slotBytes);
-        impl.gl.MemoryBarrier(kStorageBarrier);
+    impl.enqueue([&impl, copy]() {
+        // Entries the load does not write keep the previous CLUT's values: the shader copies them itself (512 words),
+        // so no separate buffer copy and barrier per load.
         impl.gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, impl.clutBuffer);
-        impl.dispatch(impl.clutProgram, copy.data(), sizeof(uint32_t) * copy.size(), 256u, 256u);
+        impl.dispatch(impl.clutProgram, copy.data(), sizeof(uint32_t) * copy.size(), 512u, 256u);
     }, "clut", Impl::journalParams(copy.data(), copy.size()));
 }
 
@@ -1612,9 +1637,29 @@ void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
         if (hi > kVramSize || impl.overlapsBatch(lo, hi))
             impl.flushPrimsLocked(7);
     }
-    impl.enqueue([&impl, copy, bytes = std::vector<uint8_t>(data, data + usedBytes)]() mutable {
-        impl.uploadPixels(std::move(bytes), copy.data());
-    }, "upload", Impl::journalParams(copy.data(), copy.size(), usedBytes));
+    // Same transfer, next contiguous pixels: append to the pending upload (nothing was enqueued since, or it would
+    // have been queued). Anything else queues the pending one first. Both bpp layouts index by pixel, so the
+    // concatenated bytes give the same result as separate dispatches.
+    if (impl.pendingUploadActive)
+    {
+        const auto &pp = impl.pendingUploadParams;
+        const bool contiguous = pp[0] + pp[1] == start && pp[2] == copy[2] && pp[3] == copy[3] && pp[4] == copy[4] &&
+                                pp[5] == copy[5] && pp[6] == copy[6] && pp[7] == copy[7] &&
+                                (bytesPerPixel != 0u || (pp[1] & 1u) == 0u);
+        if (contiguous && impl.pendingUploadBytes.size() < (8u << 20))
+        {
+            impl.pendingUploadParams[1] += pixels;
+            impl.pendingUploadBytes.insert(impl.pendingUploadBytes.end(), data, data + usedBytes);
+        }
+        else
+            impl.flushPendingUploadLocked();
+    }
+    if (!impl.pendingUploadActive)
+    {
+        impl.pendingUploadActive = true;
+        impl.pendingUploadParams = copy;
+        impl.pendingUploadBytes.assign(data, data + usedBytes);
+    }
 
     ts.copiedPixels = std::min<uint32_t>(ts.totalPixels, start + pixels);
     if (ts.copiedPixels >= ts.totalPixels)
