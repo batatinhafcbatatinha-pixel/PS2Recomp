@@ -424,8 +424,20 @@ static void flushGsBatch();
 
 bool PS2Memory::onVifWorker() { return t_onVifWorker; }
 
+// PS2X_VIF1_IRQ_STATS=1: every 5 s, VIF1 I-bit stalls: count, total time, time until the EE took the interrupt
+// (consumeIntcCauses), time spent running GIF jobs inside the stall.
+namespace
+{
+    const bool g_irqStats = std::getenv("PS2X_VIF1_IRQ_STATS") != nullptr;
+    std::atomic<int64_t> g_irqStallStartNs{0};
+    std::atomic<uint64_t> g_irqStalls{0}, g_irqTotalNs{0}, g_irqTakeNs{0}, g_irqGifNs{0};
+    int64_t irqNowNs() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
+}
+
 void PS2Memory::stallVif1ForInterrupt()
 {
+    if (g_irqStats && t_onVifWorker)
+        g_irqStallStartNs.store(irqNowNs(), std::memory_order_release);
     g_irqGifTadr.store(t_onVifWorker ? t_vifGifTadr : 0u, std::memory_order_release);
     m_vif1IrqStall.store(true, std::memory_order_release);
     queueIntcCause(5u);
@@ -484,11 +496,14 @@ void PS2Memory::stallVif1ForInterrupt()
             finalPass = false;
         if (have)
         {
+            const int64_t gifStart = g_irqStats ? irqNowNs() : 0;
             runGifTransfers(job.gif);
             if (m_gifArbiter)
                 m_gifArbiter->drain();
             g_vifWorker.done.fetch_add(1, std::memory_order_acq_rel);
             g_vifWorker.idle.notify_all();
+            if (g_irqStats)
+                g_irqGifNs += static_cast<uint64_t>(irqNowNs() - gifStart);
             continue;
         }
         if (stalled)
@@ -510,6 +525,24 @@ void PS2Memory::stallVif1ForInterrupt()
         const unsigned t = timedOut ? ++timeouts : timeouts.load();
         if ((n & (n - 1)) == 0 || (timedOut && (t & (t - 1)) == 0))
             std::fprintf(stderr, "[vif1-irq] stalls=%u timeouts=%u\n", n, t);
+    }
+    if (g_irqStats)
+    {
+        const int64_t now = irqNowNs();
+        ++g_irqStalls;
+        g_irqTotalNs += static_cast<uint64_t>(now - g_irqStallStartNs.exchange(0));
+        static std::atomic<int64_t> lastPrint{0};
+        int64_t last = lastPrint.load();
+        if (now - last > 5'000'000'000ll && lastPrint.compare_exchange_strong(last, now))
+        {
+            const uint64_t n = g_irqStalls.exchange(0);
+            std::fprintf(stderr, "[vif1-irq-stats] stalls=%llu total=%.0fms take=%.0fms gif=%.0fms avg=%.0fus\n",
+                         (unsigned long long)n, g_irqTotalNs.load() / 1e6, g_irqTakeNs.load() / 1e6, g_irqGifNs.load() / 1e6,
+                         n ? g_irqTotalNs.load() / 1e3 / n : 0.0);
+            g_irqTotalNs = 0;
+            g_irqTakeNs = 0;
+            g_irqGifNs = 0;
+        }
     }
     m_vif1IrqStall.store(false, std::memory_order_release);
 }
@@ -2907,6 +2940,14 @@ std::vector<uint32_t> PS2Memory::consumeIntcCauses()
     std::lock_guard<std::mutex> lock(m_completedDmacMutex);
     std::vector<uint32_t> causes;
     causes.swap(m_pendingIntcCauses);
+    if (g_irqStats && !causes.empty())
+        if (const int64_t start = g_irqStallStartNs.load(std::memory_order_acquire))
+            for (const uint32_t cause : causes)
+                if (cause == 5u)
+                {
+                    g_irqTakeNs += static_cast<uint64_t>(irqNowNs() - start);
+                    break;
+                }
     m_causesPending.store(!m_completedDmacCauses.empty(), std::memory_order_release);
     return causes;
 }
