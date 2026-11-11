@@ -24,10 +24,10 @@ namespace ps2x::iop::detail
         // MMIX bits: dry gates of the external input (core 0 -> core 1), the sound data input (ADMA) and the voices.
         constexpr uint16_t kMmixDryExtR = 0x004, kMmixDryExtL = 0x008, kMmixDryInpR = 0x040, kMmixDryInpL = 0x080,
                            kMmixDrySndR = 0x400, kMmixDrySndL = 0x800;
-        // PS2X_SPU2_NEW_MIX=1: the routed mix below (VMIX/MMIX gates, MVOL/AVOL/BVOL). Off by default: tried on The
-        // Sopranos (2026-11-10) it did not fix its clipping and is not validated yet; the default stays the previous
+        // The routed mix below (VMIX/MMIX gates, MVOL/AVOL/BVOL) is the default; tried on The Sopranos (2026-11-10) it
+        // plays sound but its gameplay clipping remains (likely specific to that game). PS2X_SPU2_OLD_MIX=1: the previous
         // mix (every voice and ADMA at full level, no master volume).
-        const bool g_oldMix = [] { const char *e = std::getenv("PS2X_SPU2_NEW_MIX"); return !(e && e[0] == '1'); }();
+        const bool g_oldMix = [] { const char *e = std::getenv("PS2X_SPU2_OLD_MIX"); return e && e[0] == '1'; }();
         bool g_mixSeen = false; // the game wrote the mixer registers: until then the old mix (nothing goes silent)
         int g_mixLogLeft = 48;  // the first mixer register writes go to the log
         // A 15-bit volume register (bit 14 = sign) as a factor of 0x4000; sweep mode (bit 15) is taken at full level.
