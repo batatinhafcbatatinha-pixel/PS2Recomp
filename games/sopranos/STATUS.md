@@ -225,5 +225,5 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
   anterior a 10/11. Próximo passo: comparar com uma build do runtime de 09/11.
 - **Áudio com clipping**: o mixer do SPU2 (ps2xIOP iop_spu2.cpp, tick) somava tudo sem volume mestre nem roteamento.
   A mistura roteada (VMIX/MMIX, MVOL/AVOL/BVOL; o jogo escreve MMIX 0x0FF0/0x0FFC, MVOL 0x3FFF, AVOL do núcleo 1
-  0x7FFF, BVOL 0x6630/0) ficou opcional em PS2X_SPU2_NEW_MIX=1: não resolveu o clipping no teste. Padrão: mistura antiga.
+  0x7FFF, BVOL 0x6630/0) é o padrão: tem som, mas o clipping da gameplay continua (talvez específico deste jogo); PS2X_SPU2_OLD_MIX=1 volta à mistura antiga.
 - A opção de VU1 sem tempo exato (PS2X_VU1N_NOTIMING=1, só medição) não fica ligada: o usuário escolheu o tempo exato.
