@@ -849,6 +849,9 @@ bool VU1Interpreter::runNative(StepContext &context)
         return list;
     }();
     const bool skipAny = m_unit == Unit::VU1 && !skipPcs.empty();
+    // PS2X_VU1N_NOTIMING=1: MEASUREMENT ONLY, results may be wrong. Every block takes its idle-pipeline table and no
+    // history is kept: the upper bound of what removing the per-block timing bookkeeping (superblocks) could save.
+    static const bool noTiming = [] { const char *e = std::getenv("PS2X_VU1N_NOTIMING"); return e && e[0] == '1'; }();
     // Steady loops: a block that ran back to back with the same timing table, contiguously, over more than twice the
     // longest latency, sees the same entry state again (its history is only itself) unless the FDIV/EFU/XGKICK in
     // flight are at other distances: then it gets the same table, which blockTiming's memo would hand out after hashing
@@ -942,7 +945,7 @@ bool VU1Interpreter::runNative(StepContext &context)
         const uint8_t *cyc = sl.idle;
         std::array<uint64_t, 4> scalar{};
         bool haveScalar = false; // computed only for a block that repeats (the distances cost as much as blockTiming)
-        if (sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid)
+        if (!noTiming && (sl.readsEntryFlags || m_fdiv.valid || m_efu[0].valid || m_efu[1].valid))
         {
             bool reused = false;
             if (loopReuseOn && &sl == loopSlot)
@@ -970,6 +973,20 @@ bool VU1Interpreter::runNative(StepContext &context)
             ctx.tail = &t;
         }
         const uint32_t result = fn(ctx);
+        if (noTiming)
+        {
+            m_cycle = start + sl.idleEnd;
+            m_state.pc = result & (context.codeSize - 1u);
+            if (result & kVu1nEnded)
+            {
+                context.programEnded = true;
+                handled = true;
+                break;
+            }
+            if (result & kVu1nBail)
+                break;
+            continue;
+        }
         VU1NativeAccess::finishBlockTiming(*this, sl, cyc, cycId, start);
         if (&sl == loopSlot && cyc == loopCyc && cycId == loopCycId && haveScalar && loopScalarValid && scalar == loopScalar)
             loopCycles += m_cycle - start;

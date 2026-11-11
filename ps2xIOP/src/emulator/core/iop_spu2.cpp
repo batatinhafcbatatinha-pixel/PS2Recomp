@@ -14,6 +14,26 @@ namespace ps2x::iop::detail
                            kKoffLo = 0x1A4, kKoffHi = 0x1A6, kTsaHi = 0x1A8, kTsaLo = 0x1AA, kData = 0x1AC,
                            kAdmas = 0x1B0, kEndxLo = 0x340, kEndxHi = 0x342;
         constexpr uint32_t kIrqInfo = 0x7C2;
+        // Mixer routing and volumes (SPU2 register map as documented publicly and implemented in PCSX2, GPL-3.0):
+        // per core VMIXL/VMIXR (+2: voices 16-23) send voices to the dry output, MMIX gates the core's inputs, and in
+        // the common area each core has MVOL (master), EVOL (effect return), AVOL (external input: core 0's output
+        // into core 1) and BVOL (sound data input: ADMA). Core 1's output is the console's output.
+        constexpr uint32_t kVmixl = 0x188, kVmixr = 0x190, kMmix = 0x198;
+        constexpr uint32_t kCommonCoreStride = 0x28; // core 1's volume block: 0x788 (core 0's: 0x760)
+        constexpr uint32_t kMvol = 0x0, kAvol = 0x8, kBvol = 0xC; // byte offsets inside a core's volume block (L, R+2)
+        // MMIX bits: dry gates of the external input (core 0 -> core 1), the sound data input (ADMA) and the voices.
+        constexpr uint16_t kMmixDryExtR = 0x004, kMmixDryExtL = 0x008, kMmixDryInpR = 0x040, kMmixDryInpL = 0x080,
+                           kMmixDrySndR = 0x400, kMmixDrySndL = 0x800;
+        // PS2X_SPU2_NEW_MIX=1: the routed mix below (VMIX/MMIX gates, MVOL/AVOL/BVOL). Off by default: tried on The
+        // Sopranos (2026-11-10) it did not fix its clipping and is not validated yet; the default stays the previous
+        // mix (every voice and ADMA at full level, no master volume).
+        const bool g_oldMix = [] { const char *e = std::getenv("PS2X_SPU2_NEW_MIX"); return !(e && e[0] == '1'); }();
+        bool g_mixSeen = false; // the game wrote the mixer registers: until then the old mix (nothing goes silent)
+        int g_mixLogLeft = 48;  // the first mixer register writes go to the log
+        // A 15-bit volume register (bit 14 = sign) as a factor of 0x4000; sweep mode (bit 15) is taken at full level.
+        int32_t volumeFactor(uint16_t vol) { return (vol & 0x8000u) ? 0x3FFF : static_cast<int32_t>(static_cast<int16_t>(vol << 1)) / 2; }
+        // AVOL/BVOL are plain signed 16-bit levels (0x7FFF = full; Sopranos writes core 1 AVOL = 0x7FFF), no sweep bit.
+        int32_t levelFactor(uint16_t vol) { return static_cast<int32_t>(static_cast<int16_t>(vol)) / 2; }
         constexpr int32_t kFilter[5][2] = {{0, 0}, {60, 0}, {115, -52}, {98, -55}, {122, -60}};
 
         // SPSC ring of interleaved stereo frames for the host audio thread.
@@ -196,12 +216,25 @@ namespace ps2x::iop::detail
         if (offset >= 0x760u)
         {
             m_common[((offset - 0x760u) >> 1) & 0x3Fu] = value;
+            const uint32_t rel = (offset - 0x760u) % kCommonCoreStride;
+            if (offset < 0x760u + 2u * kCommonCoreStride && (rel < 0x4u || (rel >= kAvol && rel < kBvol + 0x4u)))
+            {
+                g_mixSeen = true;
+                if (g_mixLogLeft > 0 && g_mixLogLeft--)
+                    std::fprintf(stderr, "[spu2-mix] %03x = %04x\n", offset, value);
+            }
             return;
         }
         const int core = offset >= 0x400u ? 1 : 0;
         const uint32_t off = offset & 0x3FFu;
         Core &c = m_core[core];
         c.reg[off >> 1] = value;
+        if (off >= kVmixl && off < kMmix + 2u)
+        {
+            g_mixSeen = true;
+            if (g_mixLogLeft > 0 && g_mixLogLeft--)
+                std::fprintf(stderr, "[spu2-mix] core%d %03x = %04x\n", core, off, value);
+        }
         if (off >= 0x1C0u && off < 0x1C0u + 24u * 0xCu)
         {
             const uint32_t v = (off - 0x1C0u) / 0xCu, field = (off - 0x1C0u) % 0xCu;
@@ -401,9 +434,14 @@ namespace ps2x::iop::detail
             g_stats = Stats{};
         }
         int32_t outL = 0, outR = 0;
+        const bool routed = g_mixSeen && !g_oldMix;
+        int32_t extL = 0, extR = 0; // core 0's output, the external input of core 1
         for (int core = 0; core < 2; ++core)
         {
             Core &c = m_core[core];
+            const uint32_t vmixl = c.reg[kVmixl >> 1] | (static_cast<uint32_t>(c.reg[(kVmixl + 2u) >> 1]) << 16);
+            const uint32_t vmixr = c.reg[kVmixr >> 1] | (static_cast<uint32_t>(c.reg[(kVmixr + 2u) >> 1]) << 16);
+            int32_t sndL = 0, sndR = 0, inpL = 0, inpR = 0;
             for (int vi = 0; vi < 24; ++vi)
             {
                 Voice &v = c.voices[vi];
@@ -418,8 +456,19 @@ namespace ps2x::iop::detail
                     const uint16_t vol = c.reg[(vi * 0x10 + off) >> 1];
                     return (vol & 0x8000u) ? 0x3FFF : static_cast<int32_t>(static_cast<int16_t>(vol << 1)) / 2;
                 };
-                outL += (enveloped * volume(0)) >> 14;
-                outR += (enveloped * volume(2)) >> 14;
+                const int32_t voiceL = (enveloped * volume(0)) >> 14, voiceR = (enveloped * volume(2)) >> 14;
+                if (!routed)
+                {
+                    outL += voiceL;
+                    outR += voiceR;
+                }
+                else
+                {
+                    if (vmixl & (1u << vi))
+                        sndL += voiceL;
+                    if (vmixr & (1u << vi))
+                        sndR += voiceR;
+                }
 
                 uint32_t pitch = c.reg[(vi * 0x10 + 4) >> 1];
                 if (pitch > 0x3FFFu)
@@ -451,9 +500,50 @@ namespace ps2x::iop::detail
             }
             if (c.admaRead < c.admaL.size())
             {
-                outL += c.admaL[c.admaRead];
-                outR += c.admaR[c.admaRead];
+                inpL = c.admaL[c.admaRead];
+                inpR = c.admaR[c.admaRead];
                 ++c.admaRead;
+                if (!routed)
+                {
+                    outL += inpL;
+                    outR += inpR;
+                }
+            }
+            if (routed)
+            {
+                const uint16_t mmix = c.reg[kMmix >> 1];
+                const uint32_t vb = static_cast<uint32_t>(core) * kCommonCoreStride; // this core's volume block
+                const auto common = [&](uint32_t off) { return m_common[((vb + off) >> 1) & 0x3Fu]; };
+                int32_t dryL = 0, dryR = 0;
+                if (mmix & kMmixDrySndL)
+                    dryL += sndL;
+                if (mmix & kMmixDrySndR)
+                    dryR += sndR;
+                if (mmix & kMmixDryInpL)
+                    dryL += (inpL * levelFactor(common(kBvol))) >> 14;
+                if (mmix & kMmixDryInpR)
+                    dryR += (inpR * levelFactor(common(kBvol + 2u))) >> 14;
+                if (core == 1)
+                {
+                    if (mmix & kMmixDryExtL)
+                        dryL += (extL * levelFactor(common(kAvol))) >> 14;
+                    if (mmix & kMmixDryExtR)
+                        dryR += (extR * levelFactor(common(kAvol + 2u))) >> 14;
+                }
+                dryL = std::clamp(dryL, -32768, 32767);
+                dryR = std::clamp(dryR, -32768, 32767);
+                const int32_t coreL = (dryL * volumeFactor(common(kMvol))) >> 14;
+                const int32_t coreR = (dryR * volumeFactor(common(kMvol + 2u))) >> 14;
+                if (core == 0)
+                {
+                    extL = coreL;
+                    extR = coreR;
+                }
+                else
+                {
+                    outL = coreL;
+                    outR = coreR;
+                }
             }
         }
         const uint32_t w = g_write.load(std::memory_order_relaxed);

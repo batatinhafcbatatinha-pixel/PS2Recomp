@@ -216,3 +216,14 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
   blocks partly interpreted) and the IOP's STREAM.IRX MultiStream thread (entry 0x5523C, signals its own semaphore
   and polls sceSdGetAddr(NAX) for 48 voices) uses ~40% of the game thread. Turning that poll into a 500 us delay cut
   IOP time to ~11% but LOWERED fps (EE waits for stream answers) -> reverted. Import-stub decode is now cached.
+
+## Pendências anotadas em 10/11/2026
+- **Sombra dos personagens errada**: sai como silhueta clara em vez de escura (render target de sombra em fbp 336,
+  CT16S). Continua igual com todas as mudanças de GS de 10/11 desligadas (PS2X_GS_TEXFLUSH_SPLIT=1,
+  PS2X_GS_FULL_BARRIERS=1, PS2X_GS_PRESENT_ALL=1, PS2X_GS_PRESENT_READBACK=1, PS2X_VU1N_LOOP_REUSE=0): suspeitos
+  são o anel de CLUT, os uploads agrupados, as mudanças do VU, a transferência GS->EE (VIF1 DIR=0) ou um defeito
+  anterior a 10/11. Próximo passo: comparar com uma build do runtime de 09/11.
+- **Áudio com clipping**: o mixer do SPU2 (ps2xIOP iop_spu2.cpp, tick) somava tudo sem volume mestre nem roteamento.
+  A mistura roteada (VMIX/MMIX, MVOL/AVOL/BVOL; o jogo escreve MMIX 0x0FF0/0x0FFC, MVOL 0x3FFF, AVOL do núcleo 1
+  0x7FFF, BVOL 0x6630/0) ficou opcional em PS2X_SPU2_NEW_MIX=1: não resolveu o clipping no teste. Padrão: mistura antiga.
+- A opção de VU1 sem tempo exato (PS2X_VU1N_NOTIMING=1, só medição) não fica ligada: o usuário escolheu o tempo exato.
