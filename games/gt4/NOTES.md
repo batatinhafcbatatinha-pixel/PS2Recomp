@@ -118,7 +118,7 @@ O conteudo descomprimido e o container do executavel:
 - `ps2_recomp.exe` / `ps2_analyzer.exe`: build compartilhado do `codwaw-ff`
   (`work/codwaw-ff/build/ps2recomp/ps2xRecomp`), localizado por
   `scripts/local_tools.py`.
-- Ghidra: `C:\Users\dudua\Downloads\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC`.
+- Ghidra 12.1.4 (any local install).
 
 ## 03/11 - travamento no handshake do MSIFRPC
 

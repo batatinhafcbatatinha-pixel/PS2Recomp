@@ -8,8 +8,8 @@
 
 [general]
 input = "E:/CodexBuilds/flatout2/game_files/SLUS_212.51"
-output = "C:\\Users\\dudua\\Documents\\Codex\\2026-10-09\\install-rea-and-connect-it-to\\work\\flatout2\\config\\output"
-ghidra_output = "C:\\Users\\dudua\\Documents\\Codex\\2026-10-09\\install-rea-and-connect-it-to\\work\\flatout2\\config\\ghidra-functions.csv"
+output = "config/output"
+ghidra_output = "config/ghidra-functions.csv"
 single_file_output = false
 patch_syscalls = false
 patch_cop0 = true

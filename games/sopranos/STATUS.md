@@ -165,7 +165,7 @@ Iniciado em 03/11/2026 (Claude), no modelo do GTA LCS/GT4/Ben 10 (PS2Recomp). Ru
 - port.toml: libm (sin/cos/atan/atan2/pow/sqrt/floor/fabs/__kernel_*) não ligada aos stubs do runtime (liam floats;
   as do jogo são double em GPRs).
 - ABERTO: na jogabilidade o mundo e os personagens não são desenhados (GS só recebe HUD, VU1 <1%, nenhuma thread
-  bloqueada; cenas no motor funcionam). Referência PCSX2 (C:\Users\dudua\Downloads\pcsx2-v2.9.166-windows-x64-Qt,
+  bloqueada; cenas no motor funcionam). Referência PCSX2 (pcsx2-v2.9.166-windows-x64-Qt,
   portable, BIOS 0230a) mostra o beco iluminado com os personagens. Comparar RAM: .p2s é zip com zstd (eeMemory.bin);
   heap/pools do jogo (0x1514d00-0x1915d00, 0x1a8xxxx) mudam de ordem, só globais comparam.
 - LEMBRETE: `ps2port tools` só reconstrói o recompilador com --force.

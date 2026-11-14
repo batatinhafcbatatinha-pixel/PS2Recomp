@@ -7,9 +7,9 @@
 # - no SCE symbol database is used by this Ghidra script
 
 [general]
-input = "C:/Users/dudua/Documents/Codex/2026-10-09/install-rea-and-connect-it-to/work/codwaw-ff/analysis/disc/SLUS_217.46"
-output = "C:\\Users\\dudua\\Documents\\Codex\\2026-10-09\\install-rea-and-connect-it-to\\work\\codwaw-ff\\config\\output"
-ghidra_output = "C:\\Users\\dudua\\Documents\\Codex\\2026-10-09\\install-rea-and-connect-it-to\\work\\codwaw-ff\\config\\ghidra-functions.csv"
+input = "analysis/disc/SLUS_217.46"
+output = "config/output"
+ghidra_output = "config/ghidra-functions.csv"
 single_file_output = false
 patch_syscalls = false
 patch_cop0 = true
