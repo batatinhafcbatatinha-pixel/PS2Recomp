@@ -1,5 +1,7 @@
 ## PS2Recomp: PlayStation 2 Static Recompiler (fork with game ports)
 
+**Download:** [Windows](https://github.com/batatinhafcbatatinha-pixel/PS2Recomp/releases/latest/download/PS2Recomp-windows.zip) (source + `Launcher.exe`: unzip, open `Launcher.exe`) · [Linux](https://github.com/batatinhafcbatatinha-pixel/PS2Recomp/releases/latest/download/PS2Recomp-linux.zip) · [macOS](https://github.com/batatinhafcbatatinha-pixel/PS2Recomp/releases/latest/download/PS2Recomp-macos.zip) (source only, LF line endings, no launcher: build with the games' `build-linux.sh` / `build-macos.sh`).
+
 Fork of [ran-j/PS2Recomp](https://github.com/ran-j/PS2Recomp) with a faster, more complete runtime, a set of game
 profiles in [`games/`](games/) and a launcher that builds and starts them from **your own disc**. No game content
 (disc image, executable, data or generated code) is in this repository.
