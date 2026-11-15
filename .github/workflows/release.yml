@@ -70,7 +70,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       # Text files as the platform expects them: CRLF in the Windows ZIP, LF in the others (.gitattributes wins).
-      - run: git config --global core.autocrlf ${{ matrix.platform == 'windows' && 'true' || 'input' }}
+      # --system: actions/checkout runs git with its own HOME, so a --global setting would not reach it.
+      - if: matrix.platform == 'windows'
+        run: git config --system core.autocrlf true
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -113,7 +115,10 @@ jobs:
             [ "$(unzip -Z1 "$z" | cut -d/ -f1 | sort -u)" = "$NAME" ]
             if unzip -Z1 "$z" | grep '/$' >/dev/null; then echo "$z has directory entries"; exit 1; fi
             case "$z" in
-              *-windows.zip) [ "$(unzip -p "$z" "$NAME/Launcher.exe" | sha256sum | cut -d' ' -f1)" = "$LSHA" ] ;;
+              *-windows.zip)
+                [ "$(unzip -p "$z" "$NAME/Launcher.exe" | sha256sum | cut -d' ' -f1)" = "$LSHA" ]
+                [ "$(unzip -p "$z" "$NAME/Launcher.cmd" | tr -cd '\r' | wc -c)" -gt 0 ]   # CRLF for cmd.exe
+                ;;
               *) if unzip -Z1 "$z" | grep -x "$NAME/Launcher.exe" >/dev/null; then exit 1; fi ;;
             esac
           done
