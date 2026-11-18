@@ -1,6 +1,7 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <chrono>
 #include <cstdio>

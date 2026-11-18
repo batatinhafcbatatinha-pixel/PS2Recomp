@@ -48,7 +48,9 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 
 #include <iostream>
 #include <immintrin.h>
+#if defined(_WIN32)   // Windows (MSVC, llvm-mingw) intrinsics header; Linux and macOS compilers have them built in
 #include <intrin.h>
+#endif
 #include <stdexcept>
 #include <fstream>
 #include <algorithm>

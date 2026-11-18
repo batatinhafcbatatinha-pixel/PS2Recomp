@@ -1,7 +1,9 @@
 #include "ps2_timed_wait.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_timeline.h"
+#if defined(_WIN32)   // Windows (MSVC, llvm-mingw) intrinsics header; Linux and macOS compilers have them built in
 #include <intrin.h>
+#endif
 #include <condition_variable>
 #include <deque>
 #include <thread>
