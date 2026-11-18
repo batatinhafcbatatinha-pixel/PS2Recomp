@@ -559,5 +559,150 @@
       }
     ],
     "buildtools": false
+  },
+  "linux": {
+    "exe": "build/native/ps2recomp/ps2xRuntime/ps2EntryRunner",
+    "packages": {
+      "apt": [
+        "clang",
+        "pkg-config",
+        "libx11-dev",
+        "libxrandr-dev",
+        "libxinerama-dev",
+        "libxcursor-dev",
+        "libxi-dev",
+        "libgl-dev",
+        "libegl-dev",
+        "libasound2-dev",
+        "libavcodec-dev",
+        "libavformat-dev",
+        "libavutil-dev",
+        "libswscale-dev",
+        "libswresample-dev"
+      ],
+      "dnf": [
+        "clang",
+        "pkgconf-pkg-config",
+        "libX11-devel",
+        "libXrandr-devel",
+        "libXinerama-devel",
+        "libXcursor-devel",
+        "libXi-devel",
+        "mesa-libGL-devel",
+        "mesa-libEGL-devel",
+        "alsa-lib-devel",
+        "ffmpeg-free-devel"
+      ],
+      "pacman": [
+        "clang",
+        "pkgconf",
+        "libx11",
+        "libxrandr",
+        "libxinerama",
+        "libxcursor",
+        "libxi",
+        "mesa",
+        "alsa-lib",
+        "ffmpeg"
+      ],
+      "zypper": [
+        "clang",
+        "pkg-config",
+        "libX11-devel",
+        "libXrandr-devel",
+        "libXinerama-devel",
+        "libXcursor-devel",
+        "libXi-devel",
+        "Mesa-libGL-devel",
+        "Mesa-libEGL-devel",
+        "alsa-devel",
+        "ffmpeg-7-libavcodec-devel",
+        "ffmpeg-7-libavformat-devel",
+        "ffmpeg-7-libavutil-devel",
+        "ffmpeg-7-libswscale-devel",
+        "ffmpeg-7-libswresample-devel"
+      ]
+    },
+    "deps": {
+      "buildtools_gb": 0.5,
+      "python_gb": 0.1,
+      "tools": [
+        {
+          "id": "llvm",
+          "name": "Clang",
+          "check": null,
+          "gb": 0
+        },
+        {
+          "id": "cmake",
+          "name": "CMake 3.31.12",
+          "check": ".local/tools/cmake-3.31.12/bin/cmake",
+          "gb": 0.1
+        },
+        {
+          "id": "ninja",
+          "name": "Ninja 1.13.2",
+          "check": ".local/tools/ninja-1.13.2/ninja",
+          "gb": 0.01
+        },
+        {
+          "id": "jdk",
+          "name": "Java 21 (Temurin) 21.0.13",
+          "check": ".local/tools/jdk-21/bin/java",
+          "gb": 0.35
+        },
+        {
+          "id": "ghidra",
+          "name": "Ghidra + PS2 extension 12.1.4",
+          "check": ".local/tools/ghidra-12.1.4/support/analyzeHeadless",
+          "gb": 1.2
+        }
+      ]
+    }
+  },
+  "macos": {
+    "exe": "build/native/ps2recomp/ps2xRuntime/ps2EntryRunner",
+    "packages": {
+      "brew": [
+        "pkg-config",
+        "ffmpeg"
+      ]
+    },
+    "deps": {
+      "buildtools_gb": 1.5,
+      "python_gb": 0.1,
+      "tools": [
+        {
+          "id": "llvm",
+          "name": "Clang",
+          "check": null,
+          "gb": 0
+        },
+        {
+          "id": "cmake",
+          "name": "CMake 3.31.12",
+          "check": ".local/tools/cmake-3.31.12/CMake.app/Contents/bin/cmake",
+          "gb": 0.1
+        },
+        {
+          "id": "ninja",
+          "name": "Ninja 1.13.2",
+          "check": ".local/tools/ninja-1.13.2/ninja",
+          "gb": 0.01
+        },
+        {
+          "id": "jdk",
+          "name": "Java 21 (Temurin) 21.0.13",
+          "check": ".local/tools/jdk-21/Contents/Home/bin/java",
+          "gb": 0.35
+        },
+        {
+          "id": "ghidra",
+          "name": "Ghidra + PS2 extension 12.1.4",
+          "check": ".local/tools/ghidra-12.1.4/support/analyzeHeadless",
+          "gb": 1.2
+        }
+      ]
+    }
   }
 }
