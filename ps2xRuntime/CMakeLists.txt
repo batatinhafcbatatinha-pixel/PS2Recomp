@@ -858,6 +858,9 @@ elseif(MINGW)
     # (sceSifSearchModuleByName is defined in both Stubs/SIF.cpp and Stubs/Services.cpp), and the map.
     target_link_options(ps2EntryRunner PRIVATE "-Wl,--stack,67108864" "-Wl,--allow-multiple-definition"
                         "-Wl,-Map,$<TARGET_FILE_DIR:ps2EntryRunner>/ps2EntryRunner.map")
+elseif(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
+    # Linux (GNU ld, lld): the same first-definition-wins rule as the Windows builds above.
+    target_link_options(ps2EntryRunner PRIVATE "-Wl,--allow-multiple-definition")
 endif()
 
 # Vita: Work around for GCC 10's LTO plugin
