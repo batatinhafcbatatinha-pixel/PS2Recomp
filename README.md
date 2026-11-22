@@ -24,27 +24,54 @@ Windows 10/11 x64. About 20-40 GB free and one to several hours for the first bu
 5. **PLAY**. **PC settings** in the launcher, or **F1** (Back+Start on a controller) in the game: display mode,
    resolution, frame limit, V-Sync, graphics card, controls, language, volume.
 
-| Game | Disc | State |
-| --- | --- | --- |
-| Ben 10: Alien Force | USA (SLUS-21815) | reaches gameplay |
-| Boku no Natsuyasumi 2 | Japan (SCPS-15026) | title, demo and New Game |
-| Call of Duty: World at War - Final Fronts | USA/Canada (SLUS-21746) | reaches the first mission |
-| FlatOut 2 | USA (SLUS-21251) | reaches races |
-| Grand Theft Auto: Liberty City Stories | USA v1.01 (SLUS-21423) | reaches the first mission |
-| Grand Theft Auto: Vice City Stories | USA (SLUS-21590) | reaches gameplay |
-| Gran Turismo 4 | USA v2.00 (SCUS-97328) | not playable yet |
-| MotorStorm: Arctic Edge | USA (SCUS-97654) | not playable yet |
-| The Sopranos: Road to Respect | USA v1.01 (SLUS-21388) | not playable yet |
+## Screenshots
 
-These discs have a profile (checked by SHA-256, see each `games/<game>/installer.json`). Details per game:
-[`games/`](games/README.md). Saves go to `mc0/` and `mc1/` in the game folder.
+The furthest point each game has reached in the native builds so far, captured from the ports while they run.
 
-### Any other game
+<table>
+<tr>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/codwaw-ff.jpg" alt="Call of Duty: World at War - Final Fronts" width="100%"><br>
+<b>Call of Duty: World at War - Final Fronts</b><br>
+<sub>First mission</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/gta-vcs.jpg" alt="Grand Theft Auto: Vice City Stories" width="100%"><br>
+<b>Grand Theft Auto: Vice City Stories</b><br>
+<sub>Gameplay</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/flatout2.jpg" alt="FlatOut 2" width="100%"><br>
+<b>FlatOut 2</b><br>
+<sub>Race start</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/boku2.jpg" alt="Boku no Natsuyasumi 2" width="100%"><br>
+<b>Boku no Natsuyasumi 2</b><br>
+<sub>Demo gameplay (built with no game-specific code)</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/gta-lcs.jpg" alt="Grand Theft Auto: Liberty City Stories" width="100%"><br>
+<b>Grand Theft Auto: Liberty City Stories</b><br>
+<sub>City behind the title screen (built with no game-specific fixes)</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<img src="docs/screenshots/sopranos.jpg" alt="The Sopranos: Road to Respect" width="100%"><br>
+<b>The Sopranos: Road to Respect</b><br>
+<sub>Main menu</sub>
+</td>
+</tr>
+<tr>
+<td align="center" colspan="2">
+<sub>Ben 10: Alien Force screenshot is coming. Gran Turismo 4 and MotorStorm: Arctic Edge do not show a picture yet.</sub>
+</td>
+</tr>
+</table>
 
-Choose any other PlayStation 2 disc the same way: the launcher offers to build it with the generic pipeline
-([`tools/ps2port`](tools/ps2port/README.md)), the same steps for every game, no game-specific code. It may not work
-yet, or stop somewhere; while it runs, code the analysis missed is translated and compiled on the spot (a short
-pause the first time) and goes into the next build. These ports live in `.local/ports/<serial>/`.
 
 ## Differences from upstream
 
@@ -96,52 +123,5 @@ Or step by step inside `games/<game>/`: the `steps` of its `setup.json` in order
 The launcher itself is built from [port-installer](https://github.com/batatinhafcbatatinha-pixel/port-installer)
 (`dotnet build launcher/Launcher.csproj`).
 
-## Screenshots
-
-The furthest point each game has reached in the native builds so far, captured from the ports while they run.
-
-<table>
-<tr>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/codwaw-ff.jpg" alt="Call of Duty: World at War - Final Fronts" width="100%"><br>
-<b>Call of Duty: World at War - Final Fronts</b><br>
-<sub>First mission</sub>
-</td>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/gta-vcs.jpg" alt="Grand Theft Auto: Vice City Stories" width="100%"><br>
-<b>Grand Theft Auto: Vice City Stories</b><br>
-<sub>Gameplay</sub>
-</td>
-</tr>
-<tr>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/flatout2.jpg" alt="FlatOut 2" width="100%"><br>
-<b>FlatOut 2</b><br>
-<sub>Race start</sub>
-</td>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/boku2.jpg" alt="Boku no Natsuyasumi 2" width="100%"><br>
-<b>Boku no Natsuyasumi 2</b><br>
-<sub>Demo gameplay (built with no game-specific code)</sub>
-</td>
-</tr>
-<tr>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/gta-lcs.jpg" alt="Grand Theft Auto: Liberty City Stories" width="100%"><br>
-<b>Grand Theft Auto: Liberty City Stories</b><br>
-<sub>City behind the title screen (built with no game-specific fixes)</sub>
-</td>
-<td align="center" valign="top" width="50%">
-<img src="docs/screenshots/sopranos.jpg" alt="The Sopranos: Road to Respect" width="100%"><br>
-<b>The Sopranos: Road to Respect</b><br>
-<sub>Main menu</sub>
-</td>
-</tr>
-<tr>
-<td align="center" colspan="2">
-<sub>Ben 10: Alien Force screenshot is coming. Gran Turismo 4 and MotorStorm: Arctic Edge do not show a picture yet.</sub>
-</td>
-</tr>
-</table>
 
 The original project's documentation is in its [wiki](https://github.com/ran-j/PS2Recomp/wiki).
