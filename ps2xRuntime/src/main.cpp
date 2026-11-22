@@ -15,6 +15,16 @@
 #include <algorithm>
 #include <cstdlib>
 
+#ifdef _WIN32
+// Laptops with two GPUs (NVIDIA Optimus, AMD switchable graphics) run a program on the integrated one unless the
+// executable asks for the other: these exports are what the drivers look for. The integrated GPU often lacks the
+// OpenGL 4.6 the GPU rasterizers need, and is slower in any case.
+extern "C" {
+__declspec(dllexport) unsigned long NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 #if defined(__ANDROID__)
 #include <android/log.h>
 #include <unistd.h>
