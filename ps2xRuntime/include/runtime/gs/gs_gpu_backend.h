@@ -25,6 +25,9 @@ public:
     // Must be called on the thread that owns the main window (GLFW requirement).
     // Returns nullptr, with a reason on stderr, when the GPU path is unavailable.
     static std::unique_ptr<GSRasterBackend> Create(bool requireHardware = false);
+    // Main-window thread only. True when the driver gives an OpenGL 4.6 core context (both GPU rasterizers need
+    // one). Probes with a hidden window; the current context is left as it was.
+    static bool HostSupportsGl46();
     ~GSGpuBackend() override;
 
     void Initialize(uint8_t *vram, uint32_t vramSize) override;

@@ -1095,6 +1095,13 @@ bool PS2Runtime::initialize(const char *title)
             if (gsBackend && std::string(gsBackend) == "cpu")
                 throw std::runtime_error("This build requires the host GPU rasterizer; PS2X_GS=cpu is incompatible");
 #endif
+            if (gsBackend && std::string(gsBackend) == "hw" && !GSGpuBackend::HostSupportsGl46())
+            {
+                // The native renderer needs OpenGL 4.6; without it every frame would be its clear colour. The GPU
+                // rasterizer needs the same context, so this is the software path.
+                std::cerr << "[gs] PS2X_GS=hw needs OpenGL 4.6, which this GPU driver does not offer: using the software rasterizer" << std::endl;
+                gsBackend = "cpu";
+            }
             if (gsBackend && std::string(gsBackend) == "hw")
             {
                 // Native renderer (render targets, texture cache) on its own GS thread. Its context shares objects

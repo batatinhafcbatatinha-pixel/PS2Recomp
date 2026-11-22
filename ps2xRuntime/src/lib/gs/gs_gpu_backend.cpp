@@ -1179,6 +1179,22 @@ bool GSGpuBackend::GetNativePresentation(NativePresentation &out) {
     return false;
 }
 
+bool GSGpuBackend::HostSupportsGl46()
+{
+    glfwDefaultWindowHints();
+    glfwWindowHint(kGlfwVisible, 0);
+    glfwWindowHint(kGlfwClientApi, kGlfwOpenGlApi);
+    glfwWindowHint(kGlfwContextVersionMajor, 4);
+    glfwWindowHint(kGlfwContextVersionMinor, 6);
+    glfwWindowHint(kGlfwOpenGlProfile, kGlfwOpenGlCoreProfile);
+    GLFWwindow *probe = glfwCreateWindow(16, 16, "ps2x-gl-probe", nullptr, nullptr);
+    glfwDefaultWindowHints();
+    if (!probe)
+        return false;
+    glfwDestroyWindow(probe);
+    return true;
+}
+
 std::unique_ptr<GSRasterBackend> GSGpuBackend::Create(bool requireHardware)
 {
     std::unique_ptr<GSGpuBackend> backend(new GSGpuBackend());
