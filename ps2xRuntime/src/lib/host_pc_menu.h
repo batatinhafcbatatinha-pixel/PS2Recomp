@@ -80,6 +80,9 @@ namespace host_menu {
     inline int graphicsApi = 0;       // 0 OpenGL, 1 Vulkan (host_vulkan.h)
     inline int gpuIndex = -1;         // Vulkan: the launcher's GPU (DXGI index); -1 the first discrete one
     inline int dlssQuality = 2;       // DLSS preset: 0 performance, 1 balanced, 2 quality, 3 ultra performance, 5 DLAA
+    inline int dlss5 = 0;             // Vulkan: DLSS 5 (Neural Rendering) with the player's nvngx_dlssnr.dll
+    inline int dlss5Strength = 50;    // 0..100
+    inline int dlss5Style = 0;        // 0 default, 1 natural, 2 cinematic
     inline int vsync = 0;
     inline int fpsLimit = 60;         // presentation only, the guest vblank stays at 60 Hz: 0 none, -1 the monitor's rate
     inline int gpuPreference = 0, bootGpuPreference = 0;  // Windows graphics preference, applied at the next start
@@ -216,7 +219,8 @@ void main() {
              << "\nmodern_layout=" << modernLayout << "\nvibration=" << vibration << "\nfxaa=" << fxaa
              << "\nres_w=" << host_video::resolutionWidth << "\nres_h=" << host_video::resolutionHeight
              << "\nrefresh=" << host_video::refreshRate << "\nfps_limit=" << fpsLimit << "\nmenu_language=" << uiLanguage
-             << "\napi=" << graphicsApi << "\ngpu=" << gpuIndex << "\ndlss_quality=" << dlssQuality << "\n";
+             << "\napi=" << graphicsApi << "\ngpu=" << gpuIndex << "\ndlss_quality=" << dlssQuality
+             << "\ndlss5=" << dlss5 << "\ndlss5_strength=" << dlss5Strength << "\ndlss5_style=" << dlss5Style << "\n";
     }
     inline void load() {
         std::ifstream file("pc-settings.ini");
@@ -235,6 +239,9 @@ void main() {
         graphicsApi = get("api", 0, 0, 1);
         gpuIndex = get("gpu", -1, -1, 64);
         dlssQuality = get("dlss_quality", 2, 0, 5);
+        dlss5 = get("dlss5", 0, 0, 1);
+        dlss5Strength = get("dlss5_strength", 50, 0, 100);
+        dlss5Style = get("dlss5_style", 0, 0, 2);
         vsync = get("vsync", 0, 0, 1);
         volume = get("volume", 100, 0, 100);
         showFps = get("show_fps", 0, 0, 1);

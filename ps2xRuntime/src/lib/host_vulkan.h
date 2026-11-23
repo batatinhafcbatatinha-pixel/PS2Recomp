@@ -32,7 +32,8 @@ namespace host_vulkan {
 
     inline int settingsSignature() {
         return host_menu::filter | (host_menu::vsync << 2) | ((host_video::stretch ? 1 : 0) << 3) |
-               (host_menu::dlssQuality << 4) | ((host_menu::gpuIndex + 1) << 8);
+               (host_menu::dlssQuality << 4) | ((host_menu::gpuIndex + 1) << 8) | (host_menu::dlss5 << 16) |
+               (host_menu::dlss5Style << 17) | (host_menu::dlss5Strength << 20);
     }
 
     inline void stop() {
@@ -64,6 +65,9 @@ namespace host_vulkan {
         config.stretch = host_video::stretch ? 1 : 0;
         config.aspect = host_video::stretch ? 0.0f : 4.0f / 3.0f;   // a TV's shape, as the OpenGL path shows it
         config.dlss_quality = host_menu::dlssQuality;
+        config.dlss5 = host_menu::dlss5;
+        config.dlss5_strength = static_cast<float>(host_menu::dlss5Strength) / 100.0f;
+        config.dlss5_style = host_menu::dlss5Style;
         port_gfx_config_from_env(&config);
         if (child && port_gfx_open(child, &config)) {
             state = 1;
