@@ -11,6 +11,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <string>
 #include <vector>
 
 using namespace ps2_syscalls;
@@ -549,9 +550,15 @@ void register_ps2_runtime_interrupt_tests()
             env.runtime.eeScheduler().reset(env.rdram.data(), mainContext);
             env.runtime.eeScheduler().run();
 
-            const std::vector<int> expected{1, 2, 3};
-            t.IsTrue(g_dispatchTrace == expected,
-                     "the dispatcher should run wait, IRQ frame, then the resumed base context in exact order");
+            // VBlank runs at wall-clock rate: a slow host can deliver more than one IRQ frame before the base context
+            // resumes. The order is what matters: the wait, then only IRQ frames, then the resumed base context.
+            bool ordered = g_dispatchTrace.size() >= 3u && g_dispatchTrace.front() == 1 && g_dispatchTrace.back() == 3;
+            for (size_t i = 1; ordered && i + 1 < g_dispatchTrace.size(); ++i)
+                ordered = g_dispatchTrace[i] == 2;
+            std::string trace = "the dispatcher should run wait, IRQ frame, then the resumed base context in order; got";
+            for (int step : g_dispatchTrace)
+                trace += " " + std::to_string(step);
+            t.IsTrue(ordered, trace.c_str());
             t.Equals(g_lastIntcArg.load(std::memory_order_relaxed), 0xCAFEu,
                      "the IRQ frame should receive its registered argument");
         });
