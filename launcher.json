@@ -698,6 +698,7 @@
         "libxi-dev",
         "libgl-dev",
         "libegl-dev",
+        "libopengl-dev",
         "libasound2-dev",
         "libavcodec-dev",
         "libavformat-dev",

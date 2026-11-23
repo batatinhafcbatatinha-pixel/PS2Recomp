@@ -48,7 +48,9 @@ bool tryBindCodWawMpeg(PS2Runtime &runtime, uint8_t *rdram, uint32_t target);
 #include "ps2x/iop/iop_subsystem.h"
 
 #include <iostream>
+#if !defined(USE_SSE2NEON)
 #include <immintrin.h>
+#endif
 #if defined(_WIN32)   // Windows (MSVC, llvm-mingw) intrinsics header; Linux and macOS compilers have them built in
 #include <intrin.h>
 #endif

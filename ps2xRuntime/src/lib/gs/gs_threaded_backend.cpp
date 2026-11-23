@@ -23,6 +23,13 @@
 #endif
 #include <chrono>
 
+// Time-stamp counter for the per-phase profile; sse2neon supplies the ARM one.
+#if defined(USE_SSE2NEON)
+#define GS_PHASE_TICKS() _rdtsc()
+#else
+#define GS_PHASE_TICKS() __rdtsc()
+#endif
+
 void ps2ProfilerRegisterCurrentThread(const char *name);
 
 namespace
@@ -292,7 +299,7 @@ void GSThreadedBackend::Execute(const std::vector<uint8_t> &chunk, GSPrimitiveBa
         offset += 5u + length;
         if (phases)
         {
-            const uint64_t now = __rdtsc();
+            const uint64_t now = GS_PHASE_TICKS();
             if (phaseOp >= 0)
                 phaseTicks[phaseOp] += now - phaseStart;
             phaseStart = now;
@@ -372,7 +379,7 @@ void GSThreadedBackend::Execute(const std::vector<uint8_t> &chunk, GSPrimitiveBa
         }
     }
     if (phases && phaseOp >= 0)
-        phaseTicks[phaseOp] += __rdtsc() - phaseStart;
+        phaseTicks[phaseOp] += GS_PHASE_TICKS() - phaseStart;
 }
 
 void GSThreadedBackend::RunOnWorker(const std::function<void()> &function) const

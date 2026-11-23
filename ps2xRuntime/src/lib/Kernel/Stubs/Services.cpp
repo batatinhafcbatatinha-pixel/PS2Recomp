@@ -11,26 +11,7 @@
 
 namespace ps2_stubs
 {
-    // sceSifSearchModuleByName(name): the client binds the loadfile RPC (0x80000006) and spins until it answers.
-    // Modules are loaded natively by the runtime: report the ones this run already asked for by name (the boot code
-    // checks again before each load), "not loaded" (-1) otherwise so the game calls sceSifLoadModule.
-    void sceSifSearchModuleByName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        static std::mutex mutex;
-        static std::map<std::string, int32_t> seen;
-        const std::string name = readPs2CStringBounded(rdram, runtime, getRegU32(ctx, 4), 64);
-        int32_t result = -1;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            const auto it = seen.find(name);
-            if (it != seen.end())
-                result = it->second;
-            else
-                seen.emplace(name, static_cast<int32_t>(seen.size()) + 1);
-        }
-        RUNTIME_LOG("[sceSifSearchModuleByName] \"" << sanitizeForLog(name) << "\" -> " << result << std::endl);
-        setReturnS32(ctx, result);
-    }
+    // sceSifSearchModuleByName is in SIF.cpp (it answers from the modules the runtime loaded).
 
     // sceSifStopModule(id, args, argp, &result) / sceSifUnloadModule(id): nothing runs on an IOP to stop.
     void sceSifStopModule(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

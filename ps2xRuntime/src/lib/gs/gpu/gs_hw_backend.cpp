@@ -22,7 +22,11 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#if defined(USE_SSE2NEON)
+#include "sse2neon.h"
+#else
 #include <xmmintrin.h>
+#endif
 #include <atomic>
 #include <new>
 #include <thread>

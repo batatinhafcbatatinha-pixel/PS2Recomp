@@ -7,7 +7,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#if defined(USE_SSE2NEON)
+#include "sse2neon.h"
+#else
 #include <emmintrin.h>
+#endif
 
 // PS2X_VIF_SEQLOG=<seconds>:<count>: after <seconds>, logs <count> VIF1 BASE/OFFSET/MSCAL/MSCNT/STCYCL/UNPACK commands in
 // order with TOPS/DBF, to follow a double-buffered upload against the program that reads it.
