@@ -139,7 +139,11 @@ namespace
         speedX += (delta.x / seconds - speedX) * blend;
         speedY += (delta.y / seconds - speedY) * blend;
 
-        const float scale = host_menu::mouseSensitivity / 100.0f / kFullSpeed;
+        float scale = host_menu::mouseSensitivity / 100.0f / kFullSpeed;
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+        // The launcher's mouse sensitivity (input.ini, Controllers page) scales the PC menu's own.
+        if (host_pad::portInputRunning) scale *= port_input_settings()->mouse_sensitivity / 100.0f;
+#endif
         const float x = speedX * scale;
         const float y = (host_menu::mouseInvert ? -speedY : speedY) * scale;
         const float length = std::hypot(x, y);
