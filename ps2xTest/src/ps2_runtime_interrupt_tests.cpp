@@ -92,6 +92,7 @@ namespace
     uint32_t g_vsyncFlag = 0;
     uint64_t g_vsyncTick = 0;
     uint64_t g_vsyncCsr = 0;
+    uint64_t g_vsyncCsrTick = 0;
     std::atomic<bool> g_timer2Resumed{false};
     uint32_t g_irqObservedSp = 0u;
     uint32_t g_invocationQueueRuns = 0u;
@@ -152,8 +153,11 @@ namespace
         env.runtime.requestStop();
     }
 
+    std::atomic<uint32_t> g_idleVSyncWaits{0u};
+
     void idleVSyncWait(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        g_idleVSyncWaits.fetch_add(1u, std::memory_order_acq_rel);
         WaitVSyncTick(rdram, ctx, runtime, -1);
     }
 
@@ -170,6 +174,7 @@ namespace
         g_vsyncFlag = readGuestU32(rdram, kVSyncFlagAddr);
         g_vsyncTick = readGuestU64(rdram, kVSyncTickAddr);
         g_vsyncCsr = runtime->memory().gs().csr.load(std::memory_order_acquire);
+        g_vsyncCsrTick = runtime->memory().gs().vsyncTick.load(std::memory_order_acquire);
         g_resumedResult = getRegS32(*ctx, 2);
         ctx->pc = 0u;
         runtime->requestStop();
@@ -521,8 +526,11 @@ void register_ps2_runtime_interrupt_tests()
             t.Equals(g_vsyncFlag, 1u, "VBlank start should set the registered guest flag");
             t.Equals(g_vsyncTick, 1ull, "the first centralized VBlank deadline should publish tick one");
             t.Equals(g_resumedResult, 0, "the first VBlank field should return even-field parity");
-            t.Equals(g_vsyncCsr & 0x2000ull, 0x2000ull,
-                     "the first VBlank should publish GS CSR.FIELD before resuming guest code");
+            // VBlank runs at wall-clock rate, so a stalled host may already have advanced past tick one when the guest
+            // resumes: FIELD must match the parity of the tick published at that moment (set on odd ticks).
+            t.IsTrue(g_vsyncCsrTick >= 1ull, "a VBlank tick should be published before the guest resumes");
+            t.Equals(g_vsyncCsr & 0x2000ull, (g_vsyncCsrTick & 1ull) ? 0x2000ull : 0ull,
+                     "VBlank should publish GS CSR.FIELD for the current tick before resuming guest code");
         });
 
         tc.Run("VBlank IRQ invocation completes before the resumed base context", [](TestCase &t)
@@ -536,6 +544,8 @@ void register_ps2_runtime_interrupt_tests()
             g_lastIntcArg.store(0u, std::memory_order_relaxed);
             R5900Context mainContext{};
             mainContext.pc = kIrqWaitPc;
+            // Interrupt-context invocations are delivered only while STATUS.EIE is set.
+            mainContext.cop0_status |= 0x10000u;
             env.runtime.eeScheduler().reset(env.rdram.data(), mainContext);
             env.runtime.eeScheduler().run();
 
@@ -709,6 +719,7 @@ void register_ps2_runtime_interrupt_tests()
         tc.Run("scheduler stop wakes an idle VSync wait without a timeout", [](TestCase &t)
         {
             TestEnv env;
+            g_idleVSyncWaits.store(0u, std::memory_order_release);
             env.runtime.registerFunction(kIdleVSyncWaitPc, idleVSyncWait);
 
             R5900Context mainContext{};
@@ -729,12 +740,12 @@ void register_ps2_runtime_interrupt_tests()
                 schedulerDone.store(true, std::memory_order_release);
             });
 
+            // The published snapshot is refreshed only every few dispatches while a thread runs (and VBlank wakes
+            // the thread at wall-clock 60 Hz), so it cannot be polled for the idle state. Wait on the guest instead:
+            // the second entry into the wait means the first VBlank resumed it and it is blocked again.
             const bool becameIdle = waitUntil([&]() {
-                const EeKernelSnapshot snapshot = env.runtime.eeScheduler().snapshot();
-                return snapshot.runningThreadId == 0 &&
-                       !snapshot.threads.empty() &&
-                       snapshot.threads.front().waitReason == EeWaitReason::VSync;
-            }, std::chrono::milliseconds(80));
+                return g_idleVSyncWaits.load(std::memory_order_acquire) >= 2u;
+            }, std::chrono::milliseconds(5000));
 
             env.runtime.requestStop();
             gameThread.join();

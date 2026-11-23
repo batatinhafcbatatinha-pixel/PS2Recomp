@@ -278,9 +278,10 @@ void register_ps2_sif_rpc_tests()
             t.Equals(getRegS32(env.ctx, 2), KE_OK, "SifSetRpcQueue should succeed");
 
             setRegU32(env.ctx, 29, K_STACK_ADDR);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0x9000u);          // cfunc
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, kClientCbufAddr);  // cbuf
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, kQdAddr);          // qd
+            // EE EABI: arguments 5-7 (cfunc, cbuf, qd) travel in $t0-$t2, not on the stack.
+            setRegU32(env.ctx, 8, 0x9000u);          // cfunc
+            setRegU32(env.ctx, 9, kClientCbufAddr);  // cbuf
+            setRegU32(env.ctx, 10, kQdAddr);         // qd
 
             setRegU32(env.ctx, 4, kSdAddr);
             setRegU32(env.ctx, 5, kSid);
@@ -497,9 +498,10 @@ void register_ps2_sif_rpc_tests()
             t.Equals(getRegS32(env.ctx, 2), KE_OK, "SifSetRpcQueue should succeed");
 
             setRegU32(env.ctx, 29, K_STACK_ADDR);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0u);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, kServerCbufAddr);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, kQdAddr);
+            // EE EABI: arguments 5-7 (cfunc, cbuf, qd) travel in $t0-$t2, not on the stack.
+            setRegU32(env.ctx, 8, 0u);
+            setRegU32(env.ctx, 9, kServerCbufAddr);
+            setRegU32(env.ctx, 10, kQdAddr);
 
             setRegU32(env.ctx, 4, kSdAddr);
             setRegU32(env.ctx, 5, kSid);
@@ -570,9 +572,10 @@ void register_ps2_sif_rpc_tests()
             t.Equals(getRegS32(env.ctx, 2), KE_OK, "SifSetRpcQueue should succeed");
 
             setRegU32(env.ctx, 29, K_STACK_ADDR);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0u);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, 0u);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, kQdAddr);
+            // EE EABI: arguments 5-7 (cfunc, cbuf, qd) travel in $t0-$t2, not on the stack.
+            setRegU32(env.ctx, 8, 0u);
+            setRegU32(env.ctx, 9, 0u);
+            setRegU32(env.ctx, 10, kQdAddr);
 
             setRegU32(env.ctx, 4, kSdAddr);
             setRegU32(env.ctx, 5, kSid);

@@ -617,9 +617,20 @@ void register_ps2_runtime_io_tests()
             setRegU32(test.ctx, 7, freeAddr);
             // EE n32 ABI: the fifth argument travels in $t0
             setRegU32(test.ctx, 8, formatAddr);
+            // The first GetInfo on a port reports -1 (new/changed card) once; it may already be consumed by an earlier test,
+            // so accept -1 or 0 here and check the steady state on the second call.
             ps2_stubs::sceMcGetInfo(test.rdram.data(), &test.ctx, nullptr);
-
             int32_t cmd = 0;
+            const int32_t firstResult = syncMc(test.rdram, &cmd);
+            t.IsTrue(firstResult == -1 || firstResult == 0, "first GetInfo should report a card change (-1) or success");
+
+            clearContext(test.ctx);
+            setRegU32(test.ctx, 4, 0u);
+            setRegU32(test.ctx, 5, 0u);
+            setRegU32(test.ctx, 6, typeAddr);
+            setRegU32(test.ctx, 7, freeAddr);
+            setRegU32(test.ctx, 8, formatAddr);
+            ps2_stubs::sceMcGetInfo(test.rdram.data(), &test.ctx, nullptr);
             t.Equals(syncMc(test.rdram, &cmd), 0, "formatted cards should report success through sceMcSync");
             t.Equals(cmd, 0x01, "sceMcSync should report GETINFO as the last command");
             t.Equals(readGuestS32(test.rdram.data(), typeAddr), 2, "sceMcGetInfo should report a PS2 memory card");

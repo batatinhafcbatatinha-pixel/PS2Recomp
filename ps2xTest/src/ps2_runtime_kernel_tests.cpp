@@ -905,7 +905,10 @@ void register_ps2_runtime_kernel_tests()
 
             const uint32_t alignedAlloc = env.runtime.guestMalloc(0x20u, 64u);
             t.IsTrue(alignedAlloc != 0u, "guestMalloc should allocate");
-            t.IsTrue(alignedAlloc >= heapLimit, "guestMalloc should allocate outside the game heap (SetupHeap..EndOfHeap)");
+            // The runtime allocates from its own arena (default 0x80000-0x100000, below the game image), never from the
+            // game heap range SetupHeap..EndOfHeap.
+            t.IsTrue(alignedAlloc >= heapLimit || alignedAlloc + 0x20u <= heapBase,
+                     "guestMalloc should allocate outside the game heap (SetupHeap..EndOfHeap)");
             t.Equals(alignedAlloc & 0x3Fu, 0u, "guestMalloc should honor 64-byte alignment");
 
             env.runtime.guestFree(alignedAlloc);
@@ -1085,7 +1088,8 @@ void register_ps2_runtime_kernel_tests()
             TestEnv env;
             constexpr uint32_t kInitialLoaderSp = PS2_RAM_SIZE - 0x10u;
             constexpr uint32_t kMainStackSize = 0x00020000u;
-            constexpr uint32_t kExpectedStack = PS2_RAM_SIZE - kMainStackSize;
+            // SetupThread(stack=-1) puts the main stack at the end of RAM and returns/records its top (the initial sp).
+            constexpr uint32_t kExpectedStack = PS2_RAM_SIZE;
             constexpr uint32_t kMainGp = 0x0036A7F0u;
 
             env.ctx.pc = 0x00100000u;
@@ -1096,7 +1100,7 @@ void register_ps2_runtime_kernel_tests()
             t.IsTrue(callSyscall(0x3Cu, env.rdram.data(), &env.ctx, &env.runtime),
                      "SetupThread syscall should dispatch");
             t.Equals(::getRegU32(&env.ctx, 2), kExpectedStack,
-                     "automatic main stack should start below the reserved top-of-RDRAM area");
+                     "automatic main stack should start at the top of RDRAM and grow down");
 
             // ReferThreadStatus can be called after many nested frames have moved $sp.
             // It must report the initial stack recorded by SetupThread, not this live snapshot.

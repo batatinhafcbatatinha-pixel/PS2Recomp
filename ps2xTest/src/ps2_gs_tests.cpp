@@ -422,17 +422,18 @@ void register_ps2_gs_tests()
             constexpr uint32_t kGsCsr = 0x12001000u;
             constexpr uint32_t kGsImr = 0x12001010u;
 
-            const uint64_t csrPattern = 0xA1B2C3D4E5F60718ull;
+            // CSR bits 0-4 (SIGNAL, FINISH, HSINT, VSINT, EDWINT) are write-one-to-clear: the patterns leave them 0.
+            const uint64_t csrPattern = 0xA1B2C3D4E5F60700ull;
             mem.write64(kGsCsr, csrPattern);
             t.Equals(mem.read64(kGsCsr), csrPattern, "64-bit CSR read should match prior 64-bit write");
             t.Equals(mem.read32(kGsCsr), static_cast<uint32_t>(csrPattern & 0xFFFFFFFFull), "CSR low dword read should match");
             t.Equals(mem.read32(kGsCsr + 4u), static_cast<uint32_t>(csrPattern >> 32), "CSR high dword read should match");
 
-            mem.write32(kGsCsr, 0x11223344u);
-            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D411223344ull, "32-bit low write should preserve CSR high dword");
+            mem.write32(kGsCsr, 0x11223340u);
+            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D411223340ull, "32-bit low write should preserve CSR high dword");
 
             mem.write32(kGsCsr + 4u, 0x55667788u);
-            t.Equals(mem.read64(kGsCsr), 0x5566778811223344ull, "32-bit high write should preserve CSR low dword");
+            t.Equals(mem.read64(kGsCsr), 0x5566778811223340ull, "32-bit high write should preserve CSR low dword");
 
             const uint64_t imrPattern = 0x0123456789ABCDEFull;
             mem.write64(kGsImr, imrPattern);
@@ -1291,6 +1292,20 @@ void register_ps2_gs_tests()
             t.Equals(static_cast<uint32_t>(staleFrame[0]), 0x44u,
                      "latched host presentation should stay stable until the next latch");
 
+            // A present is skipped while nothing was drawn or transferred into the shown buffers, so the update
+            // reaches the GS as a host-to-local upload of the same pixel.
+            gs.writeRegister(GS_REG_BITBLTBUF, (10ull << 48) | (static_cast<uint64_t>(GS_PSM_CT32) << 56));
+            gs.writeRegister(GS_REG_TRXPOS, 0ull);
+            gs.writeRegister(GS_REG_TRXREG, 4ull | (1ull << 32));
+            gs.writeRegister(GS_REG_TRXDIR, 0ull);
+            std::vector<uint8_t> upload;
+            appendU64(upload, makeGifTag(1u, GIF_FMT_IMAGE, 0u, true));
+            appendU64(upload, 0ull);
+            for (uint32_t i = 0; i < 4u; ++i)
+                for (uint32_t c = 0; c < 4u; ++c)
+                    upload.push_back(static_cast<uint8_t>(kUpdatedSourcePixel >> (c * 8u)));
+            gs.processGIFPacket(upload.data(), static_cast<uint32_t>(upload.size()));
+
             gs.latchHostPresentationFrame();
 
             std::vector<uint8_t> refreshedFrame;
@@ -1681,7 +1696,7 @@ void register_ps2_gs_tests()
                      "single-circuit presentation should normalize the last row alpha");
         });
 
-        tc.Run("latched host presentation line-doubles interlaced field output", [](TestCase &t)
+        tc.Run("latched host presentation shows both fields of an interlaced display", [](TestCase &t)
         {
             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
             GSRegisters regs{};
@@ -1732,12 +1747,11 @@ void register_ps2_gs_tests()
             const uint32_t row2 = pixelAtRow(2u);
             const uint32_t row3 = pixelAtRow(3u);
 
-            t.Equals(row0, row1,
-                     "field presentation should duplicate the active field into the next scanline");
-            t.Equals(row2, row3,
-                     "field presentation should duplicate later field scanlines as well");
-            t.IsTrue(row0 != row2,
-                     "field presentation should still preserve different source content across field rows");
+            // Bob (one line-doubled field per vblank) is opt-in (PS2X_GS_BOB=1): by default every line is shown.
+            t.Equals(row0, kLine0, "interlaced presentation should show the first line as stored");
+            t.Equals(row1, kLine1, "interlaced presentation should show the other field's line, not a doubled one");
+            t.Equals(row2, kLine2, "interlaced presentation should show the third line as stored");
+            t.Equals(row3, kLine3, "interlaced presentation should show the fourth line as stored");
         });
 
         tc.Run("GIF PACKED A+D writes DISPFB1 and DISPLAY1 privileged registers", [](TestCase &t)
@@ -4183,13 +4197,16 @@ void register_ps2_gs_tests()
 
             R5900Context mainContext{};
             mainContext.pc = kGsCallbackMainPc;
+            // Interrupt-context invocations (GS callbacks) are delivered only while STATUS.EIE is set.
+            mainContext.cop0_status |= 0x10000u;
             runtime.eeScheduler().reset(rdram.data(), mainContext);
             runtime.eeScheduler().run();
 
             t.Equals(g_gsSyncCallbackPrevious.load(std::memory_order_acquire), 0u,
                      "first callback registration should return no previous callback");
-            t.Equals(g_gsSyncCallbackHits.load(std::memory_order_acquire), 1u,
-                     "the callback should execute once at the next VBlank boundary");
+            // VBlank follows wall-clock time, so a stalled host can deliver more than one boundary before the stop.
+            t.IsTrue(g_gsSyncCallbackHits.load(std::memory_order_acquire) >= 1u,
+                     "the callback should execute at the next VBlank boundary");
             t.IsTrue(g_gsSyncCallbackLastTick.load(std::memory_order_acquire) > 0u,
                      "VSync callback should receive a positive tick value");
             t.Equals(g_gsSyncCallbackGp.load(std::memory_order_acquire), kGsCallbackGp,

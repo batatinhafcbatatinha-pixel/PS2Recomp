@@ -959,8 +959,9 @@ void register_ps2_runtime_expansion_tests()
 
             t.IsFalse(runtime.isStopRequested(),
                       "sceIpuInit should tolerate the missing optional SetD4 helper");
-            t.Equals(runtime.memory().read32(0x10002010u), 0x40000000u,
-                     "sceIpuInit should still program IPU_CTRL");
+            // IPU_CTRL bit 30 is the write-only RST strobe: the IPU model resets and reads it back as 0 (FIFOs empty).
+            t.Equals(runtime.memory().read32(0x10002010u), 0u,
+                     "sceIpuInit should still program IPU_CTRL (reset strobe leaves an idle IPU)");
             t.Equals(runtime.memory().read32(0x10002000u), 0u,
                      "sceIpuInit should leave IPU_CMD reset after initialization");
         });
@@ -987,7 +988,8 @@ void register_ps2_runtime_expansion_tests()
                      "the invocation should receive the SetD4 enable argument");
             t.Equals(gIpuInitResult.load(std::memory_order_acquire), 0,
                      "the HLE completion should resume the preserved base context with success");
-            t.Equals(runtime.memory().read32(0x10002010u), 0x40000000u,
+            // IPU_CTRL bit 30 is the write-only RST strobe: the IPU model resets and reads it back as 0 (FIFOs empty).
+            t.Equals(runtime.memory().read32(0x10002010u), 0u,
                      "IPU initialization should finish only after the guest invocation completes");
         });
 

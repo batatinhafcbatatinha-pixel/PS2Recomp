@@ -1637,7 +1637,7 @@ void register_ps2_memory_tests()
 
             t.IsTrue(mem.writeIORegister(kVif1Ch + 0x10u, kSrc), "write VIF1 MADR should succeed");
             t.IsTrue(mem.writeIORegister(kVif1Ch + 0x20u, kQwc), "write VIF1 QWC should succeed");
-            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x00u, 0x100u), "write VIF1 CHCR STR should succeed");
+            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x00u, 0x101u), "write VIF1 CHCR STR|DIR should succeed");
 
             mem.processPendingTransfers();
 
@@ -2330,7 +2330,7 @@ void register_ps2_memory_tests()
 
             t.IsTrue(mem.writeIORegister(kVif1Ch + 0x10u, kSrc), "write VIF1 MADR should succeed");
             t.IsTrue(mem.writeIORegister(kVif1Ch + 0x20u, kQwc), "write VIF1 QWC should succeed");
-            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x00u, 0x100u), "write VIF1 CHCR STR should succeed");
+            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x00u, 0x101u), "write VIF1 CHCR STR|DIR should succeed");
 
             mem.processPendingTransfers();
 
