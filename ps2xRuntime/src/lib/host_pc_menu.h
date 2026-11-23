@@ -76,7 +76,10 @@ namespace host_menu {
     inline int uiLanguage = -1;       // menu language: -1 follows Windows, 0 Portuguese, 1 English
     inline int selected = 0;
     inline int scrollTop = 0;         // first row shown when the list is longer than the panel
-    inline int filter = 1;            // 0 sharp (nearest), 1 smooth (bilinear), 2 AMD FSR 1.0
+    inline int filter = 1;            // 0 sharp (nearest), 1 smooth (bilinear), 2 AMD FSR 1.0, 3 NVIDIA DLSS (Vulkan)
+    inline int graphicsApi = 0;       // 0 OpenGL, 1 Vulkan (host_vulkan.h)
+    inline int gpuIndex = -1;         // Vulkan: the launcher's GPU (DXGI index); -1 the first discrete one
+    inline int dlssQuality = 2;       // DLSS preset: 0 performance, 1 balanced, 2 quality, 3 ultra performance, 5 DLAA
     inline int vsync = 0;
     inline int fpsLimit = 60;         // presentation only, the guest vblank stays at 60 Hz: 0 none, -1 the monitor's rate
     inline int gpuPreference = 0, bootGpuPreference = 0;  // Windows graphics preference, applied at the next start
@@ -212,7 +215,8 @@ void main() {
              << "\nmouse_sensitivity=" << mouseSensitivity << "\nmouse_invert=" << mouseInvert
              << "\nmodern_layout=" << modernLayout << "\nvibration=" << vibration << "\nfxaa=" << fxaa
              << "\nres_w=" << host_video::resolutionWidth << "\nres_h=" << host_video::resolutionHeight
-             << "\nrefresh=" << host_video::refreshRate << "\nfps_limit=" << fpsLimit << "\nmenu_language=" << uiLanguage << "\n";
+             << "\nrefresh=" << host_video::refreshRate << "\nfps_limit=" << fpsLimit << "\nmenu_language=" << uiLanguage
+             << "\napi=" << graphicsApi << "\ngpu=" << gpuIndex << "\ndlss_quality=" << dlssQuality << "\n";
     }
     inline void load() {
         std::ifstream file("pc-settings.ini");
@@ -227,7 +231,10 @@ void main() {
             return it == values.end() ? fallback : std::clamp(it->second, lo, hi);
         };
         host_video::stretch = get("aspect", 0, 0, 1) != 0;
-        filter = get("filter", 1, 0, 2);
+        filter = get("filter", 1, 0, 3);
+        graphicsApi = get("api", 0, 0, 1);
+        gpuIndex = get("gpu", -1, -1, 64);
+        dlssQuality = get("dlss_quality", 2, 0, 5);
         vsync = get("vsync", 0, 0, 1);
         volume = get("volume", 100, 0, 100);
         showFps = get("show_fps", 0, 0, 1);
@@ -406,7 +413,7 @@ void main() {
     inline bool drawFsr(const Texture2D &frame, const Rectangle &src, const Rectangle &dst) {
         const int sw = static_cast<int>(src.width), sh = static_cast<int>(src.height);
         const int dw = static_cast<int>(std::lround(dst.width)), dh = static_cast<int>(std::lround(dst.height));
-        if (filter != 2 || sw < 16 || sh < 16 || (dw <= sw && dh <= sh)) return false;
+        if (filter < 2 || sw < 16 || sh < 16 || (dw <= sw && dh <= sh)) return false;
         if (easuProgram.id == 0) easuProgram = LoadShaderFromMemory(nullptr, kEasuShader);
         if (rcasProgram.id == 0) rcasProgram = LoadShaderFromMemory(nullptr, kRcasShader);
         if (!IsShaderValid(easuProgram) || !IsShaderValid(rcasProgram)) return false;
@@ -542,7 +549,8 @@ void main() {
                         T("Resolução em que o jogo é desenhado: maior = imagem mais nítida, mais trabalho para a placa. "
                           "Automática segue o monitor.",
                           "Higher rendering resolutions give a sharper image and increase GPU load. Automatic follows the monitor.")});
-        const char *filters[] = {T("Nítido (pixels)", "Sharp (pixels)"), T("Suave (bilinear)", "Smooth (bilinear)"), "AMD FSR 1.0"};
+        const char *filters[] = {T("Nítido (pixels)", "Sharp (pixels)"), T("Suave (bilinear)", "Smooth (bilinear)"), "AMD FSR 1.0",
+                                 T("NVIDIA DLSS (Vulkan)", "NVIDIA DLSS (Vulkan)")};
         list.push_back({T("Ampliação da imagem", "Upscaling"), filters[filter], kFilter, -1.0f,
                         T("Como a imagem é ampliada quando é menor que a tela. AMD FSR 1.0 reconstrói as bordas e aumenta "
                           "a nitidez; Nítido mostra os pixels do PS2.",
@@ -664,7 +672,7 @@ void main() {
         }
         case kFxaa: fxaa = (fxaa + direction + 8) % 8; break;
         case kAspect: host_video::stretch = !host_video::stretch; break;
-        case kFilter: filter = (filter + direction + 3) % 3; break;
+        case kFilter: filter = (filter + direction + 4) % 4; break;
         case kVsync: vsync = !vsync; applyRuntime(); break;
         case kFpsLimit: fpsLimit = cycle(frameLimits(), fpsLimit, direction); applyFrameLimit(); break;
         case kGpu:

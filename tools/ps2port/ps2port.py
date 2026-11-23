@@ -696,8 +696,23 @@ def compile_env(port):
     return vc_env() or os.environ.copy()
 
 
+def stage_video(port, exe):
+    """pc-settings.ini api=1 (Vulkan) with filter=3: NVIDIA's DLSS network next to the game (vulkan_layer.py)."""
+    values = {}
+    ini = port.observed.parent / 'pc-settings.ini'
+    if ini.is_file():
+        for line in ini.read_text(encoding='utf-8', errors='replace').splitlines():
+            key, _, value = line.partition('=')
+            values[key.strip()] = value.strip()
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import vulkan_layer
+    vulkan_layer.stage_dlss(Path(exe).parent, values.get('api') == '1' and values.get('filter') == '3',
+                            Path(__file__).resolve().parents[2] / '.local/downloads/vulkan')
+
+
 def step_play(port, args):
     exe = game_exe(port)
+    stage_video(port, exe)
     r = subprocess.run([str(exe), str(port.elf_path)], cwd=port.observed.parent, env=game_env(port, args))
     sys.exit(r.returncode)
 

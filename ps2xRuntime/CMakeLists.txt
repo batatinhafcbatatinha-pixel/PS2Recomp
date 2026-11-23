@@ -450,6 +450,14 @@ if(WIN32)
     target_include_directories(ps2x_port_input PUBLIC "${PS2X_PORT_INPUT_DIR}")
     target_link_libraries(ps2_runtime PRIVATE ps2x_port_input)
     target_compile_definitions(ps2_runtime PRIVATE PS2X_PORT_INPUT=1)
+    # port_gfx (third_party/port_gfx): the Vulkan output, FSR 1.0 and DLSS (host_vulkan.h). Its own library, built
+    # as C++ (the project enables no C compiler).
+    set(PS2X_PORT_GFX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/port_gfx")
+    add_library(ps2x_port_gfx STATIC "${PS2X_PORT_GFX_DIR}/port_gfx.c")
+    set_source_files_properties("${PS2X_PORT_GFX_DIR}/port_gfx.c" PROPERTIES LANGUAGE CXX)
+    target_include_directories(ps2x_port_gfx PUBLIC "${PS2X_PORT_GFX_DIR}" PRIVATE "${PS2X_PORT_GFX_DIR}/third_party")
+    target_link_libraries(ps2_runtime PRIVATE ps2x_port_gfx)
+    target_compile_definitions(ps2_runtime PRIVATE PS2X_PORT_GFX=1)
 endif()
 
 # Per-source definitions avoid invalidating the generated game's heavy PCH.

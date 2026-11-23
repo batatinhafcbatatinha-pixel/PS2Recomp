@@ -285,6 +285,76 @@
               "v": 2,
               "pt": "AMD FSR 1.0",
               "en": "AMD FSR 1.0"
+            },
+            {
+              "v": 3,
+              "pt": "NVIDIA DLSS (com API Vulkan; placas RTX)",
+              "en": "NVIDIA DLSS (with the Vulkan API; RTX cards)"
+            }
+          ]
+        },
+        {
+          "key": "api",
+          "pt": "API gráfica",
+          "en": "Graphics API",
+          "default": 0,
+          "restart": true,
+          "help_pt": "Vulkan apresenta a imagem do jogo em Vulkan (com FSR ou DLSS); o menu F1 continua em OpenGL. Sem placa com Vulkan, fica o OpenGL.",
+          "help_en": "Vulkan presents the game's picture through Vulkan (with FSR or DLSS); the F1 menu stays OpenGL. Without a Vulkan card, OpenGL stays.",
+          "choices": [
+            {
+              "v": 0,
+              "pt": "OpenGL (nativa)",
+              "en": "OpenGL (native)"
+            },
+            {
+              "v": 1,
+              "pt": "Vulkan",
+              "en": "Vulkan"
+            }
+          ]
+        },
+        {
+          "key": "gpu",
+          "pt": "Placa de vídeo (Vulkan)",
+          "en": "Graphics card (Vulkan)",
+          "default": -1,
+          "restart": true,
+          "source": "gpus",
+          "help_pt": "A placa que o Vulkan usa.",
+          "help_en": "The card Vulkan uses."
+        },
+        {
+          "key": "dlss_quality",
+          "pt": "Qualidade do DLSS",
+          "en": "DLSS quality",
+          "default": 2,
+          "restart": true,
+          "choices": [
+            {
+              "v": 0,
+              "pt": "Desempenho",
+              "en": "Performance"
+            },
+            {
+              "v": 1,
+              "pt": "Equilibrado",
+              "en": "Balanced"
+            },
+            {
+              "v": 2,
+              "pt": "Qualidade",
+              "en": "Quality"
+            },
+            {
+              "v": 3,
+              "pt": "Ultra desempenho",
+              "en": "Ultra performance"
+            },
+            {
+              "v": 5,
+              "pt": "DLAA",
+              "en": "DLAA"
             }
           ]
         },

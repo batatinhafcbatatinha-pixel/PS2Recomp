@@ -6,6 +6,7 @@
 #include "ps2_runtime.h"
 #include "ps2_timeline.h"
 #include "host_pc_menu.h"
+#include "host_vulkan.h"   // api=1: Vulkan output through port_gfx
 #include "runtime/gs/gs_shared_present.h"
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/gs_hw_backend.h"
@@ -558,6 +559,9 @@ namespace
 }
 
 extern std::atomic<bool> g_gsForceReadback;
+// The last frame's pixels (R8G8B8A8) and row pitch, for the Vulkan output.
+static const uint8_t *s_presentPixels = nullptr;
+static uint32_t s_presentPitch = 0u;
 
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
@@ -579,7 +583,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static const uint64_t dumpTicks = std::getenv("PS2X_FRAME_DUMP_TICKS") ? std::strtoull(std::getenv("PS2X_FRAME_DUMP_TICKS"), nullptr, 0) : 120u;
     const bool dumpDue = frameDump && *frameDump &&
                          (lastFrameDumpTick == std::numeric_limits<uint64_t>::max() || currentTick >= lastFrameDumpTick + dumpTicks);
-    const bool sharedFrames = GSSharedPresent::Active();
+    // Vulkan output (host_vulkan.h) presents pixels: the GS reads every frame back, as for a frame dump.
+    if (host_vulkan::active())
+        g_gsForceReadback.store(true, std::memory_order_relaxed);
+    const bool sharedFrames = GSSharedPresent::Active() && !host_vulkan::active();
     if (sharedFrames && !dumpDue)
     {
         if (currentTick != s_lastPresentationTick)
@@ -748,6 +755,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         return;
     }
     UpdateTexture(tex, s_uploadBuffer.data());
+    s_presentPixels = s_uploadBuffer.data();
+    s_presentPitch = static_cast<uint32_t>(texW) * 4u;
     outWidth = width;
     outHeight = height;
     s_hasUploadedFrame = true;
@@ -3490,6 +3499,8 @@ void PS2Runtime::run()
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
+        // Vulkan shows the frame itself; the OpenGL drawing below then only matters under the PC menu.
+        host_vulkan::present(s_presentPixels, presentWidth, presentHeight, s_presentPitch);
 
         BeginDrawing();
         ClearBackground(BLACK);
