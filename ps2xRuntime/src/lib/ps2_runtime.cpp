@@ -817,6 +817,9 @@ PS2Runtime::~PS2Runtime()
     try
     {
         requestStop();
+        // The VIF1 and GS worker threads use m_gs, m_vu1 and m_gifArbiter, which are destroyed before m_memory
+        // (whose destructor would stop them): stop them while those members are still alive.
+        m_memory.stopVifWorker();
         m_iopSubsystem.reset();
         m_iopHost.reset();
 #if defined(PLATFORM_VITA)
