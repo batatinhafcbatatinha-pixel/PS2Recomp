@@ -439,6 +439,19 @@ add_library(ps2_runtime STATIC
     src/lib/games_database.cpp
 )
 
+# port_input (third_party/port_input, shared with the other recompilers): every controller SDL3 knows, with the
+# player's controller choice, remaps, dead zones, sensitivities, wheels and vibration settings (host_pad.h). PRIVATE:
+# every runtime source sees the same host_pad.h, and the generated game's PCH is not touched.
+if(WIN32)
+    # Its own library: the runtime's include directories hold a PS2 rpc.h that windows.h would pick up.
+    set(PS2X_PORT_INPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/port_input")
+    add_library(ps2x_port_input STATIC "${PS2X_PORT_INPUT_DIR}/port_input.c")
+    set_source_files_properties("${PS2X_PORT_INPUT_DIR}/port_input.c" PROPERTIES LANGUAGE CXX)
+    target_include_directories(ps2x_port_input PUBLIC "${PS2X_PORT_INPUT_DIR}")
+    target_link_libraries(ps2_runtime PRIVATE ps2x_port_input)
+    target_compile_definitions(ps2_runtime PRIVATE PS2X_PORT_INPUT=1)
+endif()
+
 # Per-source definitions avoid invalidating the generated game's heavy PCH.
 set_source_files_properties(src/lib/ps2_runtime.cpp PROPERTIES
     COMPILE_DEFINITIONS "PS2X_REQUIRE_GPU_RASTERIZER=$<BOOL:${PS2X_REQUIRE_GPU_RASTERIZER}>")

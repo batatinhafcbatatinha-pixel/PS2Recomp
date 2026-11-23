@@ -21,6 +21,13 @@
 #include <string>
 #include <type_traits>
 
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+// port_input (third_party/port_input, shared with the other recompilers): when it runs, it reads the pads instead of
+// the SDL path below, with the player's controller choice, remaps, dead zones, sensitivities, wheels and vibration
+// settings (input.ini, the launcher's Controllers page).
+#include "port_input.h"
+#endif
+
 #if defined(_WIN32)
 extern "C" {
 __declspec(dllimport) void *__stdcall LoadLibraryExA(const char *, void *, unsigned long);
@@ -182,6 +189,38 @@ namespace host_pad {
     }
 #endif
 
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+    inline bool portInputRunning = false;
+
+    inline void readPortInput(int index, State &state) {
+        static constexpr struct { uint32_t from; int raylib; } kButtons[] = {
+            {PORT_BTN_UP, GAMEPAD_BUTTON_LEFT_FACE_UP}, {PORT_BTN_RIGHT, GAMEPAD_BUTTON_LEFT_FACE_RIGHT},
+            {PORT_BTN_DOWN, GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {PORT_BTN_LEFT, GAMEPAD_BUTTON_LEFT_FACE_LEFT},
+            {PORT_BTN_Y, GAMEPAD_BUTTON_RIGHT_FACE_UP}, {PORT_BTN_B, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT},
+            {PORT_BTN_A, GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {PORT_BTN_X, GAMEPAD_BUTTON_RIGHT_FACE_LEFT},
+            {PORT_BTN_LB, GAMEPAD_BUTTON_LEFT_TRIGGER_1}, {PORT_BTN_RB, GAMEPAD_BUTTON_RIGHT_TRIGGER_1},
+            {PORT_BTN_LT, GAMEPAD_BUTTON_LEFT_TRIGGER_2}, {PORT_BTN_RT, GAMEPAD_BUTTON_RIGHT_TRIGGER_2},
+            {PORT_BTN_BACK, GAMEPAD_BUTTON_MIDDLE_LEFT}, {PORT_BTN_GUIDE, GAMEPAD_BUTTON_MIDDLE},
+            {PORT_BTN_START, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {PORT_BTN_LS, GAMEPAD_BUTTON_LEFT_THUMB},
+            {PORT_BTN_RS, GAMEPAD_BUTTON_RIGHT_THUMB},
+        };
+        PortPad pad{};
+        port_input_pad(index, &pad);
+        state.connected = pad.connected != 0;
+        state.buttons = 0;
+        state.axes = {};
+        if (!state.connected) return;
+        for (const auto &button : kButtons)
+            if (pad.buttons & button.from) state.buttons |= 1u << button.raylib;
+        state.axes[GAMEPAD_AXIS_LEFT_X] = pad.lx;
+        state.axes[GAMEPAD_AXIS_LEFT_Y] = pad.ly;
+        state.axes[GAMEPAD_AXIS_RIGHT_X] = pad.rx;
+        state.axes[GAMEPAD_AXIS_RIGHT_Y] = pad.ry;
+        state.axes[GAMEPAD_AXIS_LEFT_TRIGGER] = pad.lt * 2.0f - 1.0f;    // raylib's triggers go from -1 to 1
+        state.axes[GAMEPAD_AXIS_RIGHT_TRIGGER] = pad.rt * 2.0f - 1.0f;
+    }
+#endif
+
     inline void readRaylib(int index, State &state) {
         state.connected = IsGamepadAvailable(index);
         state.buttons = 0;
@@ -195,6 +234,14 @@ namespace host_pad {
     // Called once the window exists.
     inline void initialize() {
         const std::string directory = GetApplicationDirectory();
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+        const char *off = std::getenv("PS2X_PORT_INPUT");
+        portInputRunning = !(off && off[0] == '0') && port_input_start(directory.c_str(), nullptr);
+        if (portInputRunning) {
+            std::cerr << "[pad:host] backend=port_input" << std::endl;
+            return;
+        }
+#endif
 #if defined(_WIN32)
         sdlRunning = startSdl(directory);
         std::cerr << "[pad:host] backend=" << (sdlRunning ? "SDL3" : "raylib") << std::endl;
@@ -209,6 +256,18 @@ namespace host_pad {
 
     // Once per host frame, before anything reads the pads.
     inline void update() {
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+        if (portInputRunning) {
+            port_input_update();
+            for (int index = 0; index < kMaxPads; ++index) {
+                const uint32_t wanted = rumbleEnabled ? rumbleWanted[index].load() : 0u;
+                port_input_rumble(index, (wanted >> 16) / 65535.0f, (wanted & 0xFFFFu) / 65535.0f);
+                pads[index].previous = pads[index].buttons;
+                readPortInput(index, pads[index]);
+            }
+            return;
+        }
+#endif
 #if defined(_WIN32)
         if (sdlRunning) {
             sdl.Update();
@@ -242,6 +301,13 @@ namespace host_pad {
     inline float axis(int pad, int which) { return available(pad) ? pads[pad].axes[which] : 0.0f; }
     inline std::string name(int pad) {
         if (!available(pad)) return {};
+#if defined(_WIN32) && defined(PS2X_PORT_INPUT)
+        if (portInputRunning) {
+            PortPad state{};
+            port_input_pad(pad, &state);
+            return state.name;
+        }
+#endif
 #if defined(_WIN32)
         if (sdlRunning) {
             const char *const text = sdl.GetName(sdlPads[pad]);

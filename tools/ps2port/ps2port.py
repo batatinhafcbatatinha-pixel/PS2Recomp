@@ -596,6 +596,8 @@ def game_env(port, args):
         env.setdefault(k, str(v))
     env.setdefault('PS2X_GS', 'hw')
     env.setdefault('PS2X_FPS_LIMIT', '240')
+    # input.ini in the port folder: this game's controller settings (port_input), over the global ones.
+    env.setdefault('PORT_INPUT_GAME_DIR', str(port.dir))
     port.observed.mkdir(exist_ok=True)
     (port.observed / 'vu1').mkdir(exist_ok=True)
     env.setdefault('PS2X_OBSERVE_DIR', str(port.observed))
